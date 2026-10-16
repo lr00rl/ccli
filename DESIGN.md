@@ -10,7 +10,8 @@ sessions between them. An account is one Claude Code config dir: `~/.claude`
 ccli is a reader. The only things it writes are:
 
 - its own database, `$XDG_DATA_HOME/ccli/ccli.db` (default
-  `~/.local/share/ccli/ccli.db`, override `CCLI_DB`);
+  `~/.local/share/ccli/ccli.db`, override `CCLI_DB`), which also holds
+  the marks `hide` sets;
 - for `copy`, `move`, `fork` and `resume --sync` only: transcript files of
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
@@ -148,6 +149,7 @@ so one file can be re-parsed without touching others.
 - `transfers`: the ledger of copies ccli made: time, mode (copy, move,
   fork), session, new session id for a fork, source and target account, and
   the byte range of each file written.
+- `hidden`: sessions set aside with `hide`, and when.
 - `dirty`: sessions whose reconciliation is out of date.
 - `meta`: schema version, price table hash, reconciliation version.
 
@@ -283,12 +285,12 @@ All result types are plain structs with JSON tags; `--json` prints them as is.
 
 ```
 ccli accounts                      accounts, identity, sessions, 30-day usage, live sessions
-ccli sessions [-a acct] [--days N] [--project p] [--model m] [-q text] [--sort last|cost|tokens|active] [-n N]
+ccli sessions [-a acct] [--days N] [--project p] [--model m] [-q text] [--sort last|cost|tokens|active] [-n N] [--hidden]
 ccli show <id>                     one session: totals, cost split, tree of subagents and runs, links, copies, resume command
 ccli log <id> [N | N-M | last]     turns: the list with costs, or turns in full [--tools --thinking --context --raw --all --sort cost]
 ccli log <id> --agent <a>          a subagent's transcript; --run <r> a workflow run's agents
 ccli view [id]                     interactive browser: sessions, turns, agents
-ccli prompts [-a acct] [--days N] [--project p] [-q text] [--sort last|cost|tokens|tools|duration|length] [-n N]
+ccli prompts [-a acct] [--days N] [--project p] [-q text] [--sort last|cost|tokens|tools|duration|length] [-n N] [--hidden]
 ccli stats [-a acct] [--days N]    overview: KPIs, daily chart, projects, models, hour x weekday, session shape, skills
 ccli quota [-a acct]               subscription limits per account
 ccli diff <a> <b> [--project p]    sessions only in a, only in b, identical, ahead, diverged
@@ -297,10 +299,28 @@ ccli move <id>... --to acct        copy, then archive and remove the source
 ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N]   batch
 ccli fork <id> --to acct [--from acct]   copy under a new session id
 ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume with the right account and cwd
+ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
 ccli index [--rebuild]
 ```
 
 Global flags: `--json`, `--no-index`, `--color auto|always|never`.
+
+## Hiding sessions
+
+`hide` sets sessions aside so lists stop showing them. It writes one row per
+session id to the `hidden` table and nothing else: transcripts stay where
+Claude Code put them, so `claude --resume` and `ccli resume` keep working.
+
+- A session counts as hidden while its last activity is no later than its
+  mark, so a session that is used again shows again without `unhide`.
+- The mark is per session id, so copies of the session in other accounts are
+  hidden with it.
+- `sessions`, `prompts` and the sessions list of `view` leave hidden sessions
+  out (`--hidden`, or `H` in `view`, lists only them). Totals in `stats`,
+  `quota` and `accounts` still count them, and `show` and `log` still open
+  them by id.
+- A session a Claude Code process is running is refused: its next line would
+  show it again.
 
 ## Copy and move
 

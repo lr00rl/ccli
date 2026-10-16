@@ -29,6 +29,10 @@ func (fakeSrc) Agent(context.Context, string, string) (*query.AgentLog, error) {
 func (fakeSrc) RunAgents(context.Context, string, string) (*query.RunInfo, []query.AgentNode, map[string]string, error) {
 	return nil, nil, nil, errBusy
 }
+func (fakeSrc) Hide(context.Context, []string, time.Time) ([]query.HideResult, error) {
+	return nil, errBusy
+}
+func (fakeSrc) Unhide(context.Context, []string) ([]query.HideResult, error) { return nil, errBusy }
 
 func newTestViewer(s *screen) *viewer {
 	v := &viewer{ctx: context.Background(), src: fakeSrc{}, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
@@ -55,7 +59,7 @@ func textItem(name string) item {
 		id:     name,
 		load:   func() (any, error) { return name, nil },
 		draw:   func(_ *viewer, data any, _ int) string { return "PREVIEW " + data.(string) },
-		open:   func(any) *screen { return newScreen("opened "+name, "") },
+		open:   func(any) *screen { return newScreen("opened "+name, agentsRole) },
 	}
 }
 
@@ -71,15 +75,16 @@ func key(k string) tea.KeyPressMsg {
 // nor a load still in flight may show one item's content for another.
 func TestRebuildDropsStalePreviews(t *testing.T) {
 	order := []string{"A", "B"}
-	s := newScreen("test", "")
-	s.rebuild = func(*viewer) []item {
+	s := newScreen("test", agentsRole)
+	s.rebuild = func(*viewer) ([]item, error) {
 		var its []item
 		for _, n := range order {
 			its = append(its, textItem(n))
 		}
-		return its
+		return its, nil
 	}
-	s.list.set(s.rebuild(nil))
+	items, _ := s.rebuild(nil)
+	s.list.set(items)
 	v := newTestViewer(s)
 	run(v, v.sync())
 	if got := s.vp.GetContent(); !strings.Contains(got, "PREVIEW A") {
@@ -109,7 +114,7 @@ func TestRebuildDropsStalePreviews(t *testing.T) {
 // A preview that failed to load leaves no data behind, and the keys that
 // use the data cope with that instead of panicking.
 func TestFailedLoadsDoNotPanic(t *testing.T) {
-	v := newTestViewer(newScreen("x", ""))
+	v := newTestViewer(newScreen("x", agentsRole))
 	s := v.agentsScreen("acct:sess", "agents", []query.AgentNode{{FileInfo: query.FileInfo{AgentID: "a1"}, Label: "agent"}}, nil)
 	v.stack = []*screen{s}
 	v.resize()
@@ -135,7 +140,7 @@ func TestFailedLoadsDoNotPanic(t *testing.T) {
 
 // Enter on an item whose preview has not loaded opens it once it has.
 func TestEnterOpensWhenLoaded(t *testing.T) {
-	s := newScreen("test", "")
+	s := newScreen("test", agentsRole)
 	s.list.set([]item{textItem("A")})
 	v := newTestViewer(s)
 	cmd := v.key(key("enter"))
@@ -149,7 +154,7 @@ func TestEnterOpensWhenLoaded(t *testing.T) {
 }
 
 func TestTinyTerminal(t *testing.T) {
-	s := newScreen("test", "")
+	s := newScreen("test", agentsRole)
 	s.list.set([]item{textItem("A")})
 	v := newTestViewer(s)
 	for _, w := range []int{1, 2, 3} {
@@ -166,7 +171,7 @@ func headerItem(name string) item {
 // Group titles are never selected: moving, jumping and clicking pass over
 // them, and the filter keeps a title only while an item under it matches.
 func TestHeadersAreSkipped(t *testing.T) {
-	s := newScreen("test", "")
+	s := newScreen("test", agentsRole)
 	s.list.set([]item{headerItem("P1"), textItem("a1"), textItem("a2"), headerItem("P2"), textItem("b1")})
 	v := newTestViewer(s)
 	sel := func() string {
@@ -232,5 +237,116 @@ func TestGroupByProject(t *testing.T) {
 	}
 	if s := strings.Join(got, " "); s != "ccli:13 app:2 ccli:4" {
 		t.Fatalf("groups %q", s)
+	}
+}
+
+// sessionSrc serves a fixed set of sessions and keeps what was hidden.
+type sessionSrc struct {
+	fakeSrc
+	rows   []query.SessionRow
+	hidden map[string]bool
+}
+
+func (s *sessionSrc) Sessions(_ context.Context, f query.Filter) (query.SessionPage, error) {
+	var p query.SessionPage
+	for _, r := range s.rows {
+		r.Hidden = s.hidden[r.ID]
+		switch {
+		case (f.Show == query.HiddenOnly) == r.Hidden:
+			p.Sessions = append(p.Sessions, r)
+		case r.Hidden:
+			p.Hidden++
+		}
+	}
+	return p, nil
+}
+
+func (s *sessionSrc) set(refs []string, hide bool) []query.HideResult {
+	var out []query.HideResult
+	for _, ref := range refs {
+		id := ref[strings.IndexByte(ref, ':')+1:]
+		out = append(out, query.HideResult{Ref: ref, ID: id, Done: s.hidden[id] != hide})
+		s.hidden[id] = hide
+	}
+	return out
+}
+
+func (s *sessionSrc) Hide(_ context.Context, refs []string, _ time.Time) ([]query.HideResult, error) {
+	return s.set(refs, true), nil
+}
+
+func (s *sessionSrc) Unhide(_ context.Context, refs []string) ([]query.HideResult, error) {
+	return s.set(refs, false), nil
+}
+
+// Marking two sessions and hiding them asks first, then leaves them out of
+// the list; H lists them, and u brings one back.
+func TestHideFromTheSessionsList(t *testing.T) {
+	src := &sessionSrc{hidden: map[string]bool{}, rows: []query.SessionRow{
+		{Account: "default", ID: "a1", Cwd: "/w/a", Project: "a", Title: "first"},
+		{Account: "default", ID: "a2", Cwd: "/w/a", Project: "a", Title: "second"},
+		{Account: "work", ID: "b1", Cwd: "/w/b", Project: "b", Title: "third"},
+	}}
+	v := &viewer{ctx: context.Background(), src: src, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
+	s, err := v.sessionsScreen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.stack = []*screen{s}
+	v.resize()
+	listed := func() string {
+		var out []string
+		for _, i := range s.list.shown {
+			if it := s.list.all[i]; !it.header {
+				out = append(out, it.id)
+			}
+		}
+		return strings.Join(out, " ")
+	}
+
+	v.key(key("m"))
+	v.key(key("m"))
+	if got := strings.Join(s.list.targets(), " "); got != "default:a1 default:a2" {
+		t.Fatalf("marked %q", got)
+	}
+	v.key(key("x"))
+	if v.confirm == nil || !strings.Contains(v.confirm.question, "2 sessions") {
+		t.Fatalf("x asked %+v", v.confirm)
+	}
+	v.key(key("n"))
+	if v.confirm != nil || len(src.hidden) != 0 {
+		t.Fatal("answering no hid something")
+	}
+	v.key(key("x"))
+	v.key(key("y"))
+	if !src.hidden["a1"] || !src.hidden["a2"] || src.hidden["b1"] {
+		t.Fatalf("hidden %v", src.hidden)
+	}
+	if got := listed(); got != "work:b1" {
+		t.Fatalf("after hiding the list shows %q", got)
+	}
+	if len(s.list.marked) != 0 || !strings.HasPrefix(v.status, "hid 2 sessions") || !strings.Contains(s.hint, "2 hidden") {
+		t.Fatalf("marks %v, status %q, hint %q", s.list.marked, v.status, s.hint)
+	}
+
+	v.key(key("H"))
+	if got := listed(); got != "default:a1 default:a2" || s.title != "hidden sessions" {
+		t.Fatalf("hidden list %q titled %q", got, s.title)
+	}
+	v.key(key("x"))
+	if v.confirm != nil {
+		t.Fatal("x in the hidden list asked to hide again")
+	}
+	v.key(key("u"))
+	if v.confirm == nil || !strings.Contains(v.confirm.question, "this session") {
+		t.Fatalf("u asked %+v", v.confirm)
+	}
+	v.key(key("enter"))
+	if src.hidden["a1"] || !src.hidden["a2"] {
+		t.Fatalf("after bringing a1 back: %v", src.hidden)
+	}
+	v.key(key("H"))
+	if got := listed(); got != "default:a1 work:b1" {
+		t.Fatalf("back in the full list %q", got)
 	}
 }

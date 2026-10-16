@@ -69,6 +69,18 @@ ccli sessions --project checkout -q payment
 Teammates of an agent team appear with their name in brackets. A red id is a
 session that is running now.
 
+To stop seeing sessions you are done with, hide them:
+
+```sh
+ccli hide 9614539f 5bd7b5d9           # leave them out of lists
+ccli sessions --hidden                # list only hidden sessions
+ccli unhide 9614539f                  # bring one back
+```
+
+Hiding is a mark in ccli's own index: the transcripts stay where Claude Code
+put them, `resume` still works, and totals in `stats` and `quota` still count
+hidden sessions. A hidden session that is used again shows again by itself.
+
 ### One session
 
 ```sh
@@ -124,11 +136,14 @@ ccli view 928fce20            # start at one session's turns
 ![ccli view: the turn list on the left and the selected turn on the right](docs/images/view.png)
 
 `view` is the same in an interactive browser: sessions grouped by project,
-each project under a title in its own color, then a session's turns, then the agents a turn started (`o`), then an agent's transcript or a
-workflow run's agents. The preview follows the selection. `/` filters by what
-the prompt says, `s` sorts by cost, `y` copies the prompt to the clipboard,
-and `t`, `T` and `c` toggle tool details, thinking and added context. The
-mouse wheel scrolls the pane under the pointer; `?` lists every key.
+each project under a title in its own color, then a session's turns, then the
+agents a turn started (`o`), then an agent's transcript or a workflow run's
+agents. The preview follows the selection. `/` filters by what the prompt
+says, `s` sorts by cost, `y` copies the prompt to the clipboard, and `t`, `T`
+and `c` toggle tool details, thinking and added context. In the sessions
+list, `m` marks sessions and `x` hides the marked ones (or the selected one)
+after asking; `H` lists hidden sessions, where `u` brings them back. The mouse
+wheel scrolls the pane under the pointer; `?` lists every key.
 
 ```sh
 ccli prompts --sort cost      # your costliest prompts across all sessions
@@ -239,7 +254,7 @@ tutorial has [examples with jq](docs/tutorial.md#script-it).
 | Command | What it does |
 |---------|--------------|
 | `ccli accounts` | accounts with email, sessions, 30-day usage and what is running now |
-| `ccli sessions` | sessions with tokens and cost; filter by account, days, project, model, title |
+| `ccli sessions` | sessions with tokens and cost; filter by account, days, project, model, title; `--hidden` for hidden ones |
 | `ccli show <id>` | one session: models, cost split, agent tree, workflow runs, tools, resume command |
 | `ccli log <id> [turn\|N-M\|last]` | the session turn by turn, or turns in full; `--agent` and `--run` for agents |
 | `ccli prompts` | your prompts across sessions; sort by cost, tools, duration, tokens or length |
@@ -250,6 +265,7 @@ tutorial has [examples with jq](docs/tutorial.md#script-it).
 | `ccli copy\|move <id>... --to <acct>` | copy a session to another account; `move` archives the source |
 | `ccli fork <id> --to <acct>` | continue a session under a new id, in any account |
 | `ccli resume <id> [-a <acct> --sync]` | run `claude --resume` in the right account and folder |
+| `ccli hide\|unhide <id>...` | leave sessions out of lists, or bring them back; totals still count them |
 | `ccli statusline -- <cmd>` | status line wrapper that records the rate limits |
 | `ccli index [--rebuild]` | update the index (every other command does this first) |
 

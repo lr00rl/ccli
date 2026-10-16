@@ -610,6 +610,9 @@ func (d *DB) Prompts(ctx context.Context, f Filter) (PromptPage, error) {
 	type skeyT = skey
 	meta := map[skeyT]SessionRow{}
 	for _, s := range sessions {
+		if !f.Show.keeps(s.Hidden) {
+			continue
+		}
 		meta[skey{s.Account, s.ID}] = s
 	}
 	q := `SELECT f.account, f.session_id, t.seq, t.offset, t.ts, t.last_ts, t.kind, t.text, t.chars, t.images, t.tool_calls, t.agents, CASE WHEN t.duration_ms > 0 THEN t.duration_ms ELSE t.active_ms END,
