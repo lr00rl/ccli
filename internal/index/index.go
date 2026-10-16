@@ -25,7 +25,7 @@ import (
 
 // ParserVersion changes when parsing changes; files parsed by an older version
 // are read again from the start.
-const ParserVersion = 2
+const ParserVersion = 3
 
 const headBytes = 4096
 

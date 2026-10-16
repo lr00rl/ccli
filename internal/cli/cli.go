@@ -63,7 +63,7 @@ var commands = map[string]func(context.Context, *app, []string) error{
 	"index": cmdIndex,
 }
 
-const usage = `ccli: Claude Code sessions across local accounts
+const usage = `ccli: Claude Code and Codex sessions across local accounts
 
 Usage:
   ccli accounts                      accounts, identity, sessions, 30-day usage, live sessions
@@ -81,6 +81,7 @@ Usage:
   ccli resume <id>                   run claude --resume in the session's account and folder
   ccli resume <id> -a <acct> --sync  resume in another account, bringing its copy up to date first
   ccli hide|unhide <id>...           leave sessions out of lists, or bring them back (totals still count them)
+  ccli rename <id> <title>           name a session in ccli (--clear brings back its own title)
   ccli statusline -- <cmd> [args]    status line wrapper that records rate limits
   ccli index [--rebuild]             update the index (other commands do this first)
   ccli version
@@ -95,7 +96,7 @@ func (a *app) open() error {
 		return err
 	}
 	if len(accts) == 0 {
-		return errors.New("no Claude Code config dir found (looked for ~/.claude and ~/.claude-*)")
+		return errors.New("no Claude Code or Codex home found (looked for ~/.claude, ~/.claude-*, ~/.codex and ~/.codex-*)")
 	}
 	a.accts = accts
 	path, err := store.DefaultPath()

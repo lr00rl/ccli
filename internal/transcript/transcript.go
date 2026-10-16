@@ -434,9 +434,12 @@ func (p *parser) line(raw []byte) {
 	}
 	if l.TeamName != "" {
 		res.TeamName = l.TeamName
-	}
-	if l.AgentName != "" {
-		res.AgentName = l.AgentName
+		// A teammate's lines carry its name along with the team's. An
+		// agent-name entry on its own (Claude Code's /rename writes one)
+		// names the session, not a teammate.
+		if l.AgentName != "" {
+			res.AgentName = l.AgentName
+		}
 	}
 	if l.AgentID != "" && res.AgentID == "" {
 		res.AgentID = l.AgentID

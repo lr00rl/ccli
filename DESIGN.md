@@ -14,7 +14,7 @@ ccli is a reader. The only things it writes are:
 
 - its own database, `$XDG_DATA_HOME/ccli/ccli.db` (default
   `~/.local/share/ccli/ccli.db`, override `CCLI_DB`), which also holds
-  the marks `hide` sets;
+  the marks `hide` sets and the titles `rename` gives;
 - for `copy`, `move`, `fork` and `resume --sync` only: transcript files of
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
@@ -224,6 +224,7 @@ so one file can be re-parsed without touching others.
   fork), session, new session id for a fork, source and target account, and
   the byte range of each file written.
 - `hidden`: sessions set aside with `hide`, and when.
+- `titles`: names given to sessions with `rename`, and when.
 - `dirty`: sessions whose reconciliation is out of date.
 - `meta`: schema version, price table hash, reconciliation version.
 
@@ -375,6 +376,7 @@ ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N
 ccli fork <id> --to acct [--from acct]   copy under a new session id
 ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
+ccli rename <id> <title> / --clear   name a session in ccli, or remove the name
 ccli index [--rebuild]
 ```
 
@@ -396,6 +398,26 @@ Claude Code put them, so `claude --resume` and `ccli resume` keep working.
   them by id.
 - A session a Claude Code process is running is refused: its next line would
   show it again.
+
+## Naming sessions
+
+`rename` gives a session a title kept in the `titles` table, one row per
+session id, and writes nothing else. Running Claude Code's own `/rename`
+(`claude -p --resume <id> "/rename ..."`) was considered and rejected: it
+starts a Claude Code process (with the account's hooks and MCP servers),
+appends several lines to the transcript and moves the session's last
+activity, which reorders lists and brings a hidden session back.
+
+- The name shows instead of the tool's own title while it is set
+  (`title_source` is `ccli`); the tool's title stays in `tool_title`, and
+  `show` prints both. Search matches either.
+- It is per session id, so it names the session's copies in other accounts,
+  and it works the same for Codex sessions and running sessions.
+- `--clear`, or an empty name in `view`, removes it.
+- Claude Code's resume picker does not see it. A title set with `/rename` in
+  Claude Code (a `custom-title` line) is read as before.
+- `/rename` also writes an `agent-name` line. `agentName` counts as a
+  teammate's name only on lines that also carry `teamName`.
 
 ## Copy and move
 

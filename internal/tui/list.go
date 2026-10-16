@@ -10,6 +10,7 @@ import (
 type item struct {
 	row    func(w int) string // the row's text, at most w cells
 	search string             // lower-cased text the filter matches
+	title  string             // what R offers to edit: a session's title
 	id     string             // stable across rebuilds, to keep the selection
 	dim    bool               // turns nobody typed, and the like
 	// header marks a group title: it cannot be selected and stays shown
