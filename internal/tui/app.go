@@ -44,19 +44,22 @@ const (
 
 // screen is one level of the browser.
 type screen struct {
-	title   string
-	role    role
-	hint    string
-	list    list
-	data    map[int]any
-	errs    map[int]error
-	loading map[int]bool
-	vp      viewport.Model
-	shown   string // cache key of what the preview holds
-	focus   bool   // the preview has the keyboard
-	full    bool   // narrow terminals: the preview fills the screen
-	// rebuild lists the items again, after a sort, a toggle or a change
-	// such as hiding sessions. Nil for screens that never change.
+	title string
+	role  role
+	hint  string
+	list  list
+	data  map[int]any
+	errs  map[int]error
+	// inflight is the item a preview load is running for, -1 for none. One
+	// load runs at a time: the store has one connection, so loads for rows
+	// the cursor has already left would queue ahead of everything else.
+	inflight int
+	vp       viewport.Model
+	shown    string // cache key of what the preview holds
+	focus    bool   // the preview has the keyboard
+	full     bool   // narrow terminals: the preview fills the screen
+	// rebuild lists the items again, after a sort or a toggle, from what is
+	// already loaded. Nil for screens that never change this way.
 	rebuild func(v *viewer) ([]item, error)
 	// gen changes whenever the items are rebuilt, so the index a load or a
 	// cached preview was made for can no longer point at another item.
@@ -67,7 +70,7 @@ type screen struct {
 }
 
 func newScreen(title string, r role) *screen {
-	return &screen{title: title, role: r, data: map[int]any{}, errs: map[int]error{}, loading: map[int]bool{}, vp: viewport.New(), pending: -1}
+	return &screen{title: title, role: r, data: map[int]any{}, errs: map[int]error{}, inflight: -1, vp: viewport.New(), pending: -1}
 }
 
 type viewer struct {
@@ -202,10 +205,10 @@ func (v *viewer) sync() tea.Cmd {
 	}
 	s.vp.SetContent(dim("loading…"))
 	s.shown = ""
-	if s.loading[idx] {
-		return nil
+	if s.inflight >= 0 {
+		return nil // when that load lands, the item selected then loads
 	}
-	s.loading[idx] = true
+	s.inflight = idx
 	gen := s.gen
 	return func() tea.Msg {
 		data, err := it.load()
@@ -237,10 +240,15 @@ func (v *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, v.sync()
 	case previewMsg:
 		s := msg.scr
+		s.inflight = -1
 		if msg.gen != s.gen {
-			return v, nil // loaded for items that have since been rebuilt
+			// Loaded for items that have since been rebuilt; load what is
+			// selected now instead.
+			if s == v.cur() {
+				return v, v.sync()
+			}
+			return v, nil
 		}
-		s.loading[msg.idx] = false
 		if msg.data != nil {
 			s.data[msg.idx] = msg.data
 		}
@@ -272,6 +280,8 @@ func (v *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		v.status = string(msg)
 		return v, nil
+	case sessionsLoaded:
+		return v, v.applySessions(msg)
 	case tea.MouseWheelMsg:
 		return v, v.wheel(msg.Mouse())
 	case tea.MouseClickMsg:
@@ -498,24 +508,32 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 	return v.sync()
 }
 
-// refresh rebuilds a screen's items (after a sort, a toggle or a change),
-// keeping the selected item when it is still there. On an error the screen
-// keeps its items.
+// refresh rebuilds a screen's items after a sort or a toggle, keeping the
+// selected item when it is still there. On an error the screen keeps its
+// items.
 func (v *viewer) refresh(s *screen) error {
 	items, err := s.rebuild(v)
 	if err != nil {
 		return err
 	}
+	v.replace(s, items)
+	return nil
+}
+
+// replace gives a screen new items and keeps the selected item selected.
+// What was loaded for the old items is dropped, since an index may now name
+// another item; a load still running keeps its place until it lands.
+func (v *viewer) replace(s *screen, items []item) {
 	keep := ""
 	if idx := s.list.selected(); idx >= 0 {
 		keep = s.list.all[idx].id
 	}
 	s.list.set(items)
-	s.data, s.errs, s.loading, s.shown = map[int]any{}, map[int]error{}, map[int]bool{}, ""
+	s.data, s.errs, s.shown = map[int]any{}, map[int]error{}, ""
 	s.gen++
 	s.pending = -1
 	if keep == "" {
-		return nil
+		return
 	}
 	for i, it := range s.list.all {
 		if it.id == keep {
@@ -523,7 +541,6 @@ func (v *viewer) refresh(s *screen) error {
 			break
 		}
 	}
-	return nil
 }
 
 func (v *viewer) wheel(m tea.Mouse) tea.Cmd {

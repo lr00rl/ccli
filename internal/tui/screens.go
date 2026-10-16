@@ -15,29 +15,30 @@ import (
 
 // sessionsScreen lists sessions grouped by project, under a title row in
 // the project's color. The project used last comes first, and the newest
-// session first within it; the preview is `ccli show`.
+// session first within it; the preview is `ccli show`. Later reads of the
+// list run off the update loop (reloadSessions).
 func (v *viewer) sessionsScreen() (*screen, error) {
 	s := newScreen("sessions", sessionsRole)
-	s.rebuild = func(v *viewer) ([]item, error) { return v.sessionItems(s) }
-	items, err := s.rebuild(v)
+	page, err := v.src.Sessions(v.ctx, v.sessionFilter(v.showHidden))
 	if err != nil {
 		return nil, err
 	}
-	s.list.set(items)
+	v.setSessions(s, page, v.showHidden)
 	return s, nil
 }
 
-// sessionItems lists the sessions to show, the hidden ones when the viewer
-// asks for them, and sets the screen's title and hint to match.
-func (v *viewer) sessionItems(s *screen) ([]item, error) {
+// sessionFilter selects the hidden sessions, or the others.
+func (v *viewer) sessionFilter(hidden bool) query.Filter {
 	f := query.Filter{Loc: v.loc, Sort: "last"}
-	if v.showHidden {
+	if hidden {
 		f.Show = query.HiddenOnly
 	}
-	page, err := v.src.Sessions(v.ctx, f)
-	if err != nil {
-		return nil, err
-	}
+	return f
+}
+
+// setSessions lists a page of sessions on s, the hidden ones or the others,
+// and sets the screen's title and hint to match.
+func (v *viewer) setSessions(s *screen, page query.SessionPage, hidden bool) {
 	groups := groupByProject(page.Sessions)
 	var items []item
 	for _, g := range groups {
@@ -46,18 +47,18 @@ func (v *viewer) sessionItems(s *screen) ([]item, error) {
 			items = append(items, v.sessionItem(row))
 		}
 	}
+	v.replace(s, items)
 	projects := render.Plural(len(groups), "project")
-	if v.showHidden {
+	if hidden {
 		s.title = "hidden sessions"
 		s.hint = render.Plural(len(page.Sessions), "hidden session") + " · " + projects
-		return items, nil
+		return
 	}
 	s.title = "sessions"
 	s.hint = render.Plural(len(page.Sessions), "session") + " · " + projects
 	if page.Hidden > 0 {
 		s.hint += fmt.Sprintf(" · %d hidden", page.Hidden)
 	}
-	return items, nil
 }
 
 type projectGroup struct {

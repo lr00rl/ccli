@@ -44,20 +44,72 @@ func (v *viewer) sessionKey(s *screen, k string) (cmd tea.Cmd, ok bool) {
 		v.ask(s, false)
 		return nil, true
 	case "H":
-		v.showHidden = !v.showHidden
-		s.list.marked = nil
-		if err := v.refresh(s); err != nil {
-			v.showHidden = !v.showHidden
-			v.status = err.Error()
-			return nil, true
-		}
-		s.list.top()
-		if v.showHidden && len(s.list.shown) == 0 {
-			v.status = "no hidden sessions"
-		}
-		return v.sync(), true
+		return v.reloadSessions(s, !v.showHidden, nil), true
 	}
 	return nil, false
+}
+
+// sessionsLoaded is the sessions list read again off the update loop.
+type sessionsLoaded struct {
+	scr    *screen
+	hidden bool // the list holds the hidden sessions
+	page   query.SessionPage
+	err    error
+	status string // what the work before the read did, for the footer
+	done   bool   // that work is done: the marks it acted on go
+	other  bool   // the list asked for is the other one: start at its top
+}
+
+// reloadSessions reads the sessions list, the hidden sessions or the others,
+// off the update loop, after running work (hiding, say) there too. Reading
+// the store in the update loop would freeze the screen while it is busy.
+func (v *viewer) reloadSessions(s *screen, hidden bool, work func() (string, error)) tea.Cmd {
+	src, ctx, f := v.src, v.ctx, v.sessionFilter(hidden)
+	other := hidden != v.showHidden
+	return func() tea.Msg {
+		msg := sessionsLoaded{scr: s, hidden: hidden, other: other}
+		if work != nil {
+			if msg.status, msg.err = work(); msg.err != nil {
+				return msg
+			}
+			msg.done = true
+		}
+		msg.page, msg.err = src.Sessions(ctx, f)
+		return msg
+	}
+}
+
+// applySessions shows a sessions list that was read off the update loop.
+func (v *viewer) applySessions(msg sessionsLoaded) tea.Cmd {
+	s := msg.scr
+	if msg.status != "" {
+		v.status = msg.status
+	}
+	if msg.done {
+		s.list.marked = nil
+	}
+	if msg.err != nil {
+		v.status = msg.err.Error()
+		return nil
+	}
+	switch {
+	case msg.other:
+		v.showHidden = msg.hidden
+		s.list.marked = nil
+	case msg.hidden != v.showHidden:
+		return nil // the other list is showing now
+	}
+	v.setSessions(s, msg.page, msg.hidden)
+	if msg.other {
+		s.list.top()
+		if msg.hidden && len(s.list.shown) == 0 {
+			v.status = "no hidden sessions"
+		}
+	}
+	if s != v.cur() {
+		return nil
+	}
+	return v.sync()
 }
 
 // ask puts the question of hiding (or bringing back) the marked sessions,
@@ -81,25 +133,27 @@ func (v *viewer) ask(s *screen, hide bool) {
 	v.confirm = &confirmation{question: q, yes: func() tea.Cmd { return v.setHidden(s, refs, hide) }}
 }
 
+// setHidden hides the sessions refs name, or brings them back, and lists the
+// sessions again; both run off the update loop.
 func (v *viewer) setHidden(s *screen, refs []string, hide bool) tea.Cmd {
-	var rs []query.HideResult
-	var err error
-	if hide {
-		rs, err = v.src.Hide(v.ctx, refs, time.Now())
-	} else {
-		rs, err = v.src.Unhide(v.ctx, refs)
+	src, ctx := v.src, v.ctx
+	v.status = "hiding…"
+	if !hide {
+		v.status = "bringing back…"
 	}
-	if err != nil {
-		v.status = err.Error()
-		return nil
-	}
-	s.list.marked = nil
-	if err := v.refresh(s); err != nil {
-		v.status = err.Error()
-		return nil
-	}
-	v.status = hideSummary(rs, hide)
-	return v.sync()
+	return v.reloadSessions(s, v.showHidden, func() (string, error) {
+		var rs []query.HideResult
+		var err error
+		if hide {
+			rs, err = src.Hide(ctx, refs, time.Now())
+		} else {
+			rs, err = src.Unhide(ctx, refs)
+		}
+		if err != nil {
+			return "", err
+		}
+		return hideSummary(rs, hide), nil
+	})
 }
 
 // hideSummary says in one line what hiding or bringing back did.

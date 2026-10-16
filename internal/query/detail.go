@@ -193,7 +193,7 @@ func (d *DB) session(ctx context.Context, ref string) (*SessionDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	all, err := d.loadSessions(ctx, Filter{Accounts: []string{acct}})
+	all, err := d.querySessions(ctx, Filter{Accounts: []string{acct}}, &skey{acct, id})
 	if err != nil {
 		return nil, err
 	}
