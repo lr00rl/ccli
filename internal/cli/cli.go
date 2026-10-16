@@ -73,7 +73,7 @@ Usage:
   ccli view [id]                     browse sessions, turns and agents interactively
   ccli prompts [flags]               your prompts across sessions, sortable by cost
   ccli stats [flags]                 overview: KPIs, daily chart, projects, models, hours, shape, skills
-  ccli quota [-a account]            subscription limits from the status line, and recent usage
+  ccli quota [-a account] [--offline] current limits, asked of Claude Code and Codex, and usage in them
   ccli diff <a> <b>                  sessions only in a, only in b, identical, ahead or diverged
   ccli copy|move <id>... --to <acct> copy a session (move also archives and removes the source)
   ccli copy|move --from a --to b     batch, dry run unless --apply

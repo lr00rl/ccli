@@ -23,7 +23,7 @@ const maxParse = 1 << 20
 // Window is one rate-limit window from a status line snapshot.
 type Window struct {
 	UsedPercent float64   `json:"used_percent"`
-	ResetsAt    time.Time `json:"resets_at"`
+	ResetsAt    time.Time `json:"resets_at,omitzero"` // zero when the source did not say
 }
 
 // Expired reports whether the window has reset since the snapshot; never when
@@ -51,13 +51,20 @@ type Snapshot struct {
 	FiveHour   *Window   `json:"five_hour,omitempty"`
 	SevenDay   *Window   `json:"seven_day,omitempty"`
 	// Source is where the reading came from: empty for the status line
-	// wrapper, FromCodexLog for the rate limits Codex writes to its logs.
+	// wrapper, FromCodexLog for the rate limits Codex writes to its logs,
+	// FromClaudeLive or FromCodexLive for a live check.
 	Source string `json:"source,omitempty"`
 	Plan   string `json:"plan,omitempty"` // the subscription plan, when the source names it
+	// Limits and Extra come only from a live check (see Checker).
+	Limits []Limit `json:"limits,omitempty"`
+	Extra  *Extra  `json:"extra_usage,omitempty"`
 }
 
 // FromCodexLog marks a snapshot read from Codex's session logs.
 const FromCodexLog = "codex-log"
+
+// FromCcline marks a snapshot read from ccline's usage cache.
+const FromCcline = "ccline"
 
 type statusLine struct {
 	SessionID      string `json:"session_id"`
@@ -169,8 +176,16 @@ func fallbackDir(configDirEnv string) (string, bool) {
 // Save writes the snapshot atomically (temp file + rename, mode 0600) to
 // dataDir/quota/<account>.json, creating the folder with mode 0700. An
 // existing snapshot with a later CapturedAt is kept (no overwrite with older data).
-func Save(dataDir string, s Snapshot) error {
-	dir := filepath.Join(dataDir, "quota")
+func Save(dataDir string, s Snapshot) error { return saveIn(filepath.Join(dataDir, "quota"), s) }
+
+// SaveLive saves a live check's answer in dataDir/quota/live/<account>.json,
+// apart from the passive readings, so a status line write cannot replace the
+// windows and plan only a live check reports.
+func SaveLive(dataDir string, s Snapshot) error {
+	return saveIn(filepath.Join(dataDir, "quota", "live"), s)
+}
+
+func saveIn(dir string, s Snapshot) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -240,7 +255,15 @@ func writeAtomic(path string, data []byte) error {
 // Load returns the saved snapshots by account name. A missing folder is not
 // an error. Unreadable or invalid files are skipped.
 func Load(dataDir string) (map[string]Snapshot, error) {
-	dir := filepath.Join(dataDir, "quota")
+	return loadDir(filepath.Join(dataDir, "quota"))
+}
+
+// LoadLive returns the saved live check answers by account name.
+func LoadLive(dataDir string) (map[string]Snapshot, error) {
+	return loadDir(filepath.Join(dataDir, "quota", "live"))
+}
+
+func loadDir(dir string) (map[string]Snapshot, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -351,7 +374,7 @@ type Reading struct {
 	UsedPercent float64   `json:"used_percent"`
 	ResetsAt    time.Time `json:"resets_at,omitempty"` // zero when the source did not say
 	At          time.Time `json:"reported_at"`
-	Source      string    `json:"source"` // "status line", "ccline" or "Codex's logs"
+	Source      string    `json:"source"` // "Claude Code" or "Codex" (live), "status line", "ccline" or "Codex's logs"
 }
 
 // Expired reports whether the window has reset since the reading.
@@ -376,7 +399,7 @@ func CclineCache(dir string) (Snapshot, bool) {
 	if json.Unmarshal(b, &v) != nil || v.CachedAt.IsZero() {
 		return Snapshot{}, false
 	}
-	s := Snapshot{CapturedAt: v.CachedAt}
+	s := Snapshot{CapturedAt: v.CachedAt, Source: FromCcline}
 	if v.Five != nil {
 		s.FiveHour = &Window{UsedPercent: *v.Five}
 	}
@@ -386,36 +409,51 @@ func CclineCache(dir string) (Snapshot, bool) {
 	return s, s.FiveHour != nil || s.SevenDay != nil
 }
 
-// Latest picks, for each window, the most recent of the status line
-// snapshot and the ccline cache. A reading without a reset time borrows the
-// other source's when that is still ahead of the reading.
-func Latest(status, ccline *Snapshot) (five, seven *Reading) {
+// SourceName is how a snapshot's Source reads in output.
+func SourceName(source string) string {
+	switch source {
+	case FromCodexLog:
+		return "Codex's logs"
+	case FromClaudeLive:
+		return "Claude Code"
+	case FromCodexLive:
+		return "Codex"
+	case FromCcline:
+		return "ccline"
+	}
+	return "status line"
+}
+
+// Latest picks, for each window, the most recent reading among the
+// snapshots given (nil ones are skipped). A reading without a reset time
+// borrows the newest other reading's when that is still ahead of it.
+func Latest(snaps ...*Snapshot) (five, seven *Reading) {
 	pick := func(get func(*Snapshot) *Window) *Reading {
-		var out, other *Reading
-		for _, src := range []struct {
-			s    *Snapshot
-			name string
-		}{{status, "status line"}, {ccline, "ccline"}} {
-			if src.s == nil {
+		var all []*Reading
+		for _, s := range snaps {
+			if s == nil {
 				continue
 			}
-			w := get(src.s)
-			if w == nil {
-				continue
-			}
-			name := src.name
-			if src.s.Source == FromCodexLog {
-				name = "Codex's logs"
-			}
-			r := &Reading{UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt, At: src.s.CapturedAt, Source: name}
-			if out == nil || r.At.After(out.At) {
-				out, other = r, out
-			} else {
-				other = r
+			if w := get(s); w != nil {
+				all = append(all, &Reading{UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt, At: s.CapturedAt, Source: SourceName(s.Source)})
 			}
 		}
-		if out != nil && out.ResetsAt.IsZero() && other != nil && other.ResetsAt.After(out.At) {
-			out.ResetsAt = other.ResetsAt
+		var out *Reading
+		for _, r := range all {
+			if out == nil || r.At.After(out.At) {
+				out = r
+			}
+		}
+		if out != nil && out.ResetsAt.IsZero() {
+			var from *Reading
+			for _, r := range all {
+				if r != out && r.ResetsAt.After(out.At) && (from == nil || r.At.After(from.At)) {
+					from = r
+				}
+			}
+			if from != nil {
+				out.ResetsAt = from.ResetsAt
+			}
 		}
 		return out
 	}

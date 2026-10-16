@@ -437,15 +437,34 @@ you. Copying, moving and forking work between Claude Code accounts only.
 ## Watch your limits
 
 `ccli quota` shows, for each account, how much of the 5-hour and the weekly
-window is used, when each resets, and what this machine used inside each
-window.
+window is used, when each resets, any per-model weekly limit or extra use the
+plan has, and what this machine used inside each window.
 
 ![ccli quota](images/quota.png)
 
-The percentages are Anthropic's own. Claude Code passes them to your status
-line command after each reply, so ccli reads them there: put
-`ccli statusline --` in front of the status line command in each account's
-`settings.json`.
+The figures are current: `quota` asks each account's own tool at that moment.
+Claude Code answers with the data its `/usage` command shows, so use on
+claude.ai, the desktop app and other machines is included; Codex's app server
+answers with the account's rate limits, including windows of other lengths. ccli
+starts each tool once, all accounts in parallel, in an empty folder of its own.
+It sends no prompt, loads none of your hooks, plugins or MCP servers, and
+writes no transcript. It never reads your credentials: the tool signs in as it
+always does. The check takes a few seconds, and ccli says so on the terminal
+while it waits.
+
+When a check fails, the account says why and shows its saved figures instead:
+
+```
+codex  Codex
+  live check failed: Codex: codex account authentication required to read rate limits
+  no limits recorded yet
+```
+
+Every check is saved, so `ccli quota --offline` shows the last figures at once
+without starting anything. Two passive sources keep those saved figures fresh
+between checks. Claude Code passes the limits to your status line command
+after each reply; put `ccli statusline --` in front of that command in each
+account's `settings.json`:
 
 ```json
 "statusLine": { "type": "command", "command": "ccli statusline -- ~/.claude/ccline/ccline" }
@@ -453,16 +472,11 @@ line command after each reply, so ccli reads them there: put
 
 The wrapper records the numbers, runs your command with the same input and
 prints its output unchanged; it adds about 20 ms. If you have no status line
-yet, `ccli statusline -- true` records the numbers and shows nothing.
-
-If you use [ccline](https://github.com/Haleclipse/CCometixLine), ccli also
-reads the percentages from its cache, which is often fresher for an account
-you have not used for a while. Each reading says where it came from and how
-old it is. Use on claude.ai, the desktop app or another machine counts toward
-the same limits but shows up only in the next reading.
-
-Codex needs none of this: it writes its own limits to its session logs with
-each reply, and the index picks up the latest reading for each Codex account.
+yet, `ccli statusline -- true` records the numbers and shows nothing. If you
+use [ccline](https://github.com/Haleclipse/CCometixLine), ccli also reads the
+percentages from its cache. For Codex, the index picks up the limits Codex
+writes to its session logs with each reply. Each reading says where it came
+from and how old it is.
 
 ## Script it
 

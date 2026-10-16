@@ -194,9 +194,20 @@ ccli quota
 ![ccli quota: the 5-hour and weekly windows per account, with reset times and the usage counted in each](docs/images/quota.png)
 
 For each account: how much of the 5-hour and the weekly window is used, when
-each resets, and what this machine used inside each window, counted from the
-window's real start. For Claude Code the percentages are Anthropic's own figures,
-and ccli takes them from two places, whichever reported last:
+each resets, per-model weekly limits and extra use when the plan has them, and
+what this machine used inside each window, counted from the window's real
+start.
+
+The figures are current. `quota` asks each account's own tool: Claude Code
+answers with the same data `/usage` shows, and Codex's app server with its
+rate limits. Use on claude.ai, the desktop app and other machines is
+included. ccli starts each tool once, in parallel, in an empty folder of its
+own, with no prompt, none of your hooks or MCP servers, and no transcript; it
+never reads your credentials, because the tool uses its own login. This takes
+a few seconds. Starting a tool updates its own caches the way any start does.
+
+`ccli quota --offline` skips the check and shows the last saved figures. They
+come from the last check, and from two passive sources:
 
 - Claude Code passes `rate_limits` to your status line command after each
   reply. To let ccli record them, put `ccli statusline --` in front of your
@@ -207,14 +218,11 @@ and ccli takes them from two places, whichever reported last:
   "statusLine": { "type": "command", "command": "ccli statusline -- <your current command>" }
   ```
 
-- If you use [ccline](https://github.com/Haleclipse/CCometixLine), its cache
-  in `<config dir>/ccline/.api_usage_cache.json` holds the same percentages
-  from the usage API, often fresher when an account has been idle. ccli reads
-  only those numbers.
+- If you use [ccline](https://github.com/Haleclipse/CCometixLine), ccli reads
+  the percentages from its cache in `<config dir>/ccline/.api_usage_cache.json`.
 
-Use on claude.ai, the desktop app or another machine counts toward the same
-limits but appears only in the next report. When a window has reset since the
-last report, `quota` says so, and whether anything was used here since.
+A check that fails (the tool is not installed, not signed in, or does not
+answer) says why, and the account falls back to its saved figures.
 
 ### Moving between accounts
 
@@ -277,9 +285,10 @@ archived, it prints the `codex unarchive` command to run first).
 
 ![ccli log for a Codex turn: the prompt, the reasoning summary, the patch and the commands Codex ran, and its reply](docs/images/codex.png)
 
-Codex writes its rate limits to its own logs with each reply, so `quota`
-shows a Codex account's 5-hour and weekly windows without any setup. Copying
-and moving work between Claude Code accounts only.
+`quota` asks Codex's app server for an account's current limits, including
+windows of other lengths such as a free plan's 30-day window, and falls back
+to the limits Codex writes to its logs with each reply. Copying and moving
+work between Claude Code accounts only.
 
 ## Commands
 
@@ -292,7 +301,7 @@ and moving work between Claude Code accounts only.
 | `ccli prompts` | your prompts across sessions; sort by cost, tools, duration, tokens or length |
 | `ccli view [id]` | interactive browser over sessions, turns and agents |
 | `ccli stats` | dashboard: totals, daily chart, projects, models, accounts, hours, skills |
-| `ccli quota` | 5-hour and weekly limits per account, with reset times |
+| `ccli quota` | current 5-hour and weekly limits per account, asked of Claude Code and Codex; `--offline` shows the last saved ones |
 | `ccli diff <a> <b>` | sessions only in one account, in both, ahead or diverged |
 | `ccli copy\|move <id>... --to <acct>` | copy a session to another account; `move` archives the source |
 | `ccli fork <id> --to <acct>` | continue a session under a new id, in any account |
@@ -341,7 +350,9 @@ ccli reads transcripts and keeps its own index in
 `~/.local/share/ccli/ccli.db`. It never reads credentials or the Keychain,
 never writes `settings.json` or `.claude.json`, and never calls a model. In a
 Codex home it reads only the session logs: never `auth.json`, `config.toml`
-or Codex's own databases. Only
+or Codex's own databases. The one exception is `quota`, which starts Claude
+Code and Codex to ask for your limits; they update their own caches as on any
+start (`--offline` starts nothing). Only
 `copy`, `move`, `fork` and `resume --sync` write into an account, and only the
 files of the session involved. `hide` and `tag` write only to ccli's own
 index. A transcript that cannot be read is reported

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -436,21 +435,20 @@ func (d *DB) fillLinks(ctx context.Context, det *SessionDetail) error {
 
 func (d *DB) resume(det *SessionDetail) Resume {
 	r := Resume{Account: det.Account, Cwd: det.Cwd}
+	acct := account.Account{Name: det.Account, Tool: d.toolOf(det.Account)}
 	for _, a := range d.accts {
 		if a.Name == det.Account {
-			r.ConfigDir = a.Dir
+			acct = a
 		}
 	}
-	if d.toolOf(det.Account) == account.Codex {
-		r.Program, r.Args, r.Env = "codex", []string{"resume", det.ID}, "CODEX_HOME"
-		if home, err := os.UserHomeDir(); err != nil || filepath.Clean(r.ConfigDir) != filepath.Join(home, ".codex") {
-			r.EnvValue = r.ConfigDir
-		}
+	r.ConfigDir = acct.Dir
+	if acct.Dir != "" {
+		r.Env, r.EnvValue = acct.SelectEnv()
+	}
+	if acct.Kind() == account.Codex {
+		r.Program, r.Args = "codex", []string{"resume", det.ID}
 	} else {
-		r.Program, r.Args, r.Env, r.ForkArg = "claude", []string{"--resume", det.ID}, "CLAUDE_CONFIG_DIR", "--fork-session"
-		if det.Account != "default" {
-			r.EnvValue = r.ConfigDir
-		}
+		r.Program, r.Args, r.ForkArg = "claude", []string{"--resume", det.ID}, "--fork-session"
 	}
 	line := func(args ...string) string {
 		cmd := r.Program + " " + strings.Join(args, " ")
