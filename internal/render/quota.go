@@ -24,8 +24,8 @@ type QuotaRow struct {
 	// windows of other lengths, and pay-as-you-go use past the plan.
 	Limits     []quota.Limit `json:"limits,omitempty"`
 	Extra      *quota.Extra  `json:"extra_usage,omitempty"`
-	LimitsAt   time.Time     `json:"-"` // when the snapshot holding Limits was taken
-	LimitsFrom string        `json:"-"` // and by what
+	LimitsAt   time.Time     `json:"limits_at,omitzero"`    // when the live check holding Limits and Extra answered
+	LimitsFrom string        `json:"limits_from,omitempty"` // and which tool
 	// Live is true when the figures were checked just now; LiveError says
 	// why a check failed, and the figures are then the last saved ones.
 	Live      bool   `json:"live"`
@@ -35,17 +35,22 @@ type QuotaRow struct {
 
 // WindowUse is what this machine's transcripts used in a window.
 type WindowUse struct {
-	Since  time.Time    `json:"since"`
-	Exact  bool         `json:"exact"` // Since is the window's real start (from its reset time), not just now minus its length
-	Tokens query.Tokens `json:"tokens"`
-	Cost   query.Cost   `json:"cost"`
+	Counted bool         `json:"-"` // ccli counted use in this window (the 5-hour and weekly ones)
+	Since   time.Time    `json:"since"`
+	Exact   bool         `json:"exact"` // Since is the window's real start (from its reset time), not just now minus its length
+	Tokens  query.Tokens `json:"tokens"`
+	Cost    query.Cost   `json:"cost"`
 }
 
 // Quota prints subscription limits per account.
 func (t Term) Quota(rows []QuotaRow) {
-	missing, claude, codex, offline := false, false, false, false
+	// What the footnotes describe: only the sources these rows used.
+	missing, offline, failed, claudeLive, codexLive := false, false, false, false, false
 	for i, r := range rows {
 		offline = offline || r.Offline
+		failed = failed || r.LiveError != ""
+		claudeLive = claudeLive || r.Live && r.Tool != account.Codex
+		codexLive = codexLive || r.Live && r.Tool == account.Codex
 		lw := 9 // the label column: "5-hour", "weekly", or a longer limit's name
 		for _, l := range r.Limits {
 			lw = max(lw, width(l.Name)+1)
@@ -64,11 +69,6 @@ func (t Term) Quota(rows []QuotaRow) {
 			head += t.dim(" · " + r.Plan + " plan")
 		}
 		t.println(head)
-		if r.Tool == account.Codex {
-			codex = true
-		} else {
-			claude = true
-		}
 		if r.LiveError != "" {
 			t.printf("  %s\n", t.warn("live check failed: "+r.LiveError))
 		}
@@ -81,6 +81,8 @@ func (t Term) Quota(rows []QuotaRow) {
 		var more *quota.Reading // the time and source of the extra windows
 		for _, l := range r.Limits {
 			t.window(l.Name, &quota.Reading{UsedPercent: l.UsedPercent, ResetsAt: l.ResetsAt}, WindowUse{}, lw)
+		}
+		if len(r.Limits) > 0 || r.Extra != nil {
 			more = &quota.Reading{At: r.LimitsAt, Source: r.LimitsFrom}
 		}
 		if e := r.Extra; e != nil {
@@ -95,17 +97,18 @@ func (t Term) Quota(rows []QuotaRow) {
 		}
 	}
 	t.println()
-	switch {
-	case offline:
+	if offline {
 		t.println(t.dim("These are the last saved figures. Without --offline, ccli asks Claude Code and Codex for the current ones."))
-	default:
-		if claude {
-			t.println(t.dim("Claude figures come from Claude Code itself, with the same request /usage makes, so use on claude.ai and"))
-			t.println(t.dim("other machines counts. ccli starts it once per account with no prompt, hooks or MCP servers, and saves the result."))
-		}
-		if codex {
-			t.println(t.dim("Codex figures come from Codex's app server, started once per account; a failed check falls back to its logs."))
-		}
+	}
+	if claudeLive {
+		t.println(t.dim("Live Claude figures come from Claude Code itself, with the same request /usage makes, so use on claude.ai"))
+		t.println(t.dim("and other machines counts. ccli starts it once per account with no prompt, hooks or MCP servers."))
+	}
+	if codexLive {
+		t.println(t.dim("Live Codex figures come from Codex's app server, started once per account."))
+	}
+	if failed {
+		t.println(t.dim("An account whose check failed shows its last saved figures, each with its source and age."))
 	}
 	if missing && offline {
 		t.println(t.dim("To record limits as you work, put \"ccli statusline --\" in front of your statusLine command (see ccli statusline -h)."))
@@ -130,11 +133,15 @@ func (t Term) window(name string, rd *quota.Reading, use WindowUse, lw int) {
 		}
 		return
 	case rd.Expired(t.Now):
-		state := "no use recorded here since, so likely near 0%"
-		if use.Tokens.InOut() > 0 {
-			state = spent + "; the next report will give the new figure"
+		text := fmt.Sprintf("reset at %s (was %s)", clock(t, rd.ResetsAt), pct(rd.UsedPercent))
+		switch {
+		case !use.Counted: // a window ccli does not count use in
+		case use.Tokens.InOut() > 0:
+			text += "; " + spent + "; the next report will give the new figure"
+		default:
+			text += "; no use recorded here since, so likely near 0%"
 		}
-		t.printf("  %s %s\n", label, t.dim(fmt.Sprintf("reset at %s (was %s); %s", clock(t, rd.ResetsAt), pct(rd.UsedPercent), state)))
+		t.printf("  %s %s\n", label, t.dim(text))
 		return
 	}
 	const cells = 24

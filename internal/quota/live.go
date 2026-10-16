@@ -14,7 +14,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/lr00rl/ccli/internal/account"
 )
@@ -54,8 +56,9 @@ type Checker struct {
 }
 
 // Check asks the account's tool for its limits now. The snapshot carries
-// the account, its dir and Source FromClaudeLive or FromCodexLive.
-func (c Checker) Check(ctx context.Context, a account.Account, now time.Time) (Snapshot, error) {
+// the account, its dir, Source FromClaudeLive or FromCodexLive, and the time
+// the answer arrived.
+func (c Checker) Check(ctx context.Context, a account.Account) (Snapshot, error) {
 	timeout := c.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -78,7 +81,7 @@ func (c Checker) Check(ctx context.Context, a account.Account, now time.Time) (S
 		}
 		return Snapshot{}, err
 	}
-	s.Account, s.ConfigDir, s.CapturedAt = a.Name, a.Dir, now
+	s.Account, s.ConfigDir, s.CapturedAt = a.Name, a.Dir, time.Now().UTC()
 	return s, nil
 }
 
@@ -111,13 +114,17 @@ func (c Checker) claude(ctx context.Context, a account.Account) (Snapshot, error
 	return parseClaudeUsage(line)
 }
 
+// claudeWindow is one window in Claude Code's answer.
 type claudeWindow struct {
 	Utilization *float64 `json:"utilization"`
 	ResetsAt    *string  `json:"resets_at"`
 }
 
-func (w *claudeWindow) window() *Window {
-	if w == nil || w.Utilization == nil {
+// claudeWindowFrom reads one window. A window that is missing, null or has
+// a field of the wrong type is left out; it never fails the whole answer.
+func claudeWindowFrom(raw json.RawMessage) *Window {
+	var w claudeWindow
+	if len(raw) == 0 || json.Unmarshal(raw, &w) != nil || w.Utilization == nil {
 		return nil
 	}
 	out := &Window{UsedPercent: *w.Utilization}
@@ -129,58 +136,40 @@ func (w *claudeWindow) window() *Window {
 	return out
 }
 
-// parseClaudeUsage reads Claude Code's answer to get_usage.
+// parseClaudeUsage reads Claude Code's answer to get_usage. Each part is
+// decoded on its own, so a change in one optional field costs only that
+// field.
 func parseClaudeUsage(line []byte) (Snapshot, error) {
 	var v struct {
 		Response struct {
-			Subtype  string `json:"subtype"`
-			Error    string `json:"error"`
-			Response struct {
-				Subscription *string `json:"subscription_type"`
-				Available    bool    `json:"rate_limits_available"`
-				Limits       *struct {
-					FiveHour *claudeWindow `json:"five_hour"`
-					SevenDay *claudeWindow `json:"seven_day"`
-					Opus     *claudeWindow `json:"seven_day_opus"`
-					Sonnet   *claudeWindow `json:"seven_day_sonnet"`
-					Models   []struct {
-						Name string `json:"display_name"`
-						claudeWindow
-					} `json:"model_scoped"`
-					Extra *struct {
-						Enabled     bool     `json:"is_enabled"`
-						Utilization *float64 `json:"utilization"`
-						Used        *float64 `json:"used_credits"`
-						Limit       *float64 `json:"monthly_limit"`
-						Currency    *string  `json:"currency"`
-						Places      *int     `json:"decimal_places"`
-					} `json:"extra_usage"`
-				} `json:"rate_limits"`
-			} `json:"response"`
+			Subtype  string          `json:"subtype"`
+			Error    json.RawMessage `json:"error"`
+			Response json.RawMessage `json:"response"`
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(line, &v); err != nil {
 		return Snapshot{}, fmt.Errorf("Claude Code's answer: %w", err)
 	}
-	r := v.Response
-	switch {
-	case r.Subtype != "success":
-		if r.Error == "" {
-			r.Error = "no reason given"
-		}
-		return Snapshot{}, fmt.Errorf("Claude Code: %s", r.Error)
-	case !r.Response.Available:
+	if v.Response.Subtype != "success" {
+		return Snapshot{}, fmt.Errorf("Claude Code: %s", rawText(v.Response.Error))
+	}
+	var body map[string]json.RawMessage
+	_ = json.Unmarshal(v.Response.Response, &body)
+	var available bool
+	if json.Unmarshal(body["rate_limits_available"], &available) != nil || !available {
 		return Snapshot{}, errors.New("this login has no plan limits (an API key or a cloud provider)")
-	case r.Response.Limits == nil:
+	}
+	var limits map[string]json.RawMessage
+	if json.Unmarshal(body["rate_limits"], &limits) != nil || limits == nil {
 		return Snapshot{}, errors.New("Claude Code could not reach the usage service")
 	}
-	l := r.Response.Limits
-	s := Snapshot{Source: FromClaudeLive, FiveHour: l.FiveHour.window(), SevenDay: l.SevenDay.window()}
-	if r.Response.Subscription != nil {
-		s.Plan = *r.Response.Subscription
+	s := Snapshot{Source: FromClaudeLive, FiveHour: claudeWindowFrom(limits["five_hour"]), SevenDay: claudeWindowFrom(limits["seven_day"])}
+	var plan string
+	if json.Unmarshal(body["subscription_type"], &plan) == nil {
+		s.Plan = plan
 	}
-	add := func(name string, w *claudeWindow) {
-		win := w.window()
+	add := func(name string, raw json.RawMessage) {
+		win := claudeWindowFrom(raw)
 		if win == nil {
 			return
 		}
@@ -191,12 +180,31 @@ func parseClaudeUsage(line []byte) (Snapshot, error) {
 		}
 		s.Limits = append(s.Limits, Limit{Name: name, Window: *win})
 	}
-	add("Opus weekly", l.Opus)
-	add("Sonnet weekly", l.Sonnet)
-	for _, m := range l.Models {
-		add(m.Name+" weekly", &m.claudeWindow)
+	add("Opus weekly", limits["seven_day_opus"])
+	add("Sonnet weekly", limits["seven_day_sonnet"])
+	var models []json.RawMessage
+	if json.Unmarshal(limits["model_scoped"], &models) == nil {
+		for _, m := range models {
+			var n struct {
+				Name string `json:"display_name"`
+			}
+			_ = json.Unmarshal(m, &n)
+			name := strings.TrimSpace(n.Name)
+			if name == "" {
+				name = "Model"
+			}
+			add(name+" weekly", m)
+		}
 	}
-	if e := l.Extra; e != nil && e.Enabled && e.Utilization != nil {
+	var e struct {
+		Enabled     bool     `json:"is_enabled"`
+		Utilization *float64 `json:"utilization"`
+		Used        *float64 `json:"used_credits"`
+		Limit       *float64 `json:"monthly_limit"`
+		Currency    *string  `json:"currency"`
+		Places      *int     `json:"decimal_places"`
+	}
+	if json.Unmarshal(limits["extra_usage"], &e) == nil && e.Enabled && e.Utilization != nil {
 		s.Extra = &Extra{UsedPercent: *e.Utilization}
 		if e.Places != nil && e.Used != nil && e.Limit != nil {
 			scale := math.Pow10(*e.Places)
@@ -210,6 +218,40 @@ func parseClaudeUsage(line []byte) (Snapshot, error) {
 		return Snapshot{}, errors.New("Claude Code reported no limit windows")
 	}
 	return s, nil
+}
+
+// rawText is a JSON value as plain text: a string's contents, anything
+// else as written, cut short and without control characters.
+func rawText(raw json.RawMessage) string {
+	text := string(raw)
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		text = s
+	}
+	if text = plainText(text, 300); text == "" || text == "null" {
+		return "no reason given"
+	}
+	return text
+}
+
+// plainText makes text from a tool safe to print: valid UTF-8, control
+// characters (escape sequences included) dropped, whitespace made single
+// spaces, and at most n characters.
+func plainText(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, ""))
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		s = string(r[:n]) + "…"
+	}
+	return s
 }
 
 func (c Checker) codex(ctx context.Context, a account.Account) (Snapshot, error) {
@@ -261,23 +303,31 @@ func rpcError(line []byte) error {
 }
 
 type codexWindow struct {
-	UsedPercent float64 `json:"usedPercent"`
-	Minutes     *int64  `json:"windowDurationMins"`
-	ResetsAt    *int64  `json:"resetsAt"`
+	UsedPercent *float64 `json:"usedPercent"`
+	Minutes     *int64   `json:"windowDurationMins"`
+	ResetsAt    *int64   `json:"resetsAt"`
 }
 
 type codexBucket struct {
-	LimitID   string       `json:"limitId"`
+	LimitID   *string      `json:"limitId"`
 	LimitName *string      `json:"limitName"`
 	Plan      *string      `json:"planType"`
 	Primary   *codexWindow `json:"primary"`
 	Secondary *codexWindow `json:"secondary"`
 }
 
+func (b codexBucket) id() string {
+	if b.LimitID == nil {
+		return ""
+	}
+	return *b.LimitID
+}
+
 // parseCodexLimits reads the app server's answer to account/rateLimits/read.
 // Windows are told apart by their length, not by primary and secondary,
 // whose meaning has changed: 300 minutes is the 5-hour window and 10080
-// the weekly one.
+// the weekly one. A window without a percentage is left out, never shown
+// as 0%.
 func parseCodexLimits(line []byte) (Snapshot, error) {
 	if err := rpcError(line); err != nil {
 		return Snapshot{}, err
@@ -291,19 +341,38 @@ func parseCodexLimits(line []byte) (Snapshot, error) {
 	if err := json.Unmarshal(line, &v); err != nil {
 		return Snapshot{}, fmt.Errorf("Codex's answer: %w", err)
 	}
-	if v.Result == nil || v.Result.Main == nil {
+	if v.Result == nil {
 		return Snapshot{}, errors.New("Codex reported no rate limits")
 	}
-	main := *v.Result.Main
+	ids := make([]string, 0, len(v.Result.Buckets))
+	for id := range v.Result.Buckets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	// The main bucket is rateLimits; without it, the "codex" bucket, or
+	// else the first by name.
+	main, mainKey := v.Result.Main, ""
+	if main == nil {
+		for _, id := range ids {
+			if id == "codex" || mainKey == "" {
+				mainKey = id
+			}
+		}
+		if mainKey == "" {
+			return Snapshot{}, errors.New("Codex reported no rate limits")
+		}
+		b := v.Result.Buckets[mainKey]
+		main = &b
+	}
 	s := Snapshot{Source: FromCodexLive}
 	if main.Plan != nil {
 		s.Plan = *main.Plan
 	}
 	put := func(prefix string, w *codexWindow) {
-		if w == nil {
+		if w == nil || w.UsedPercent == nil {
 			return
 		}
-		win := Window{UsedPercent: w.UsedPercent}
+		win := Window{UsedPercent: *w.UsedPercent}
 		if w.ResetsAt != nil {
 			win.ResetsAt = Unix(*w.ResetsAt)
 		}
@@ -322,15 +391,13 @@ func parseCodexLimits(line []byte) (Snapshot, error) {
 	}
 	put("", main.Primary)
 	put("", main.Secondary)
-	ids := make([]string, 0, len(v.Result.Buckets))
-	for id := range v.Result.Buckets {
-		if id != main.LimitID {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
 	for _, id := range ids {
 		b := v.Result.Buckets[id]
+		// The main bucket is usually listed here too, under its id; a null
+		// id falls back to the key it is listed under.
+		if id == mainKey || (main.id() != "" && b.id() == main.id()) || (main.id() == "" && id == "codex") {
+			continue
+		}
 		name := id
 		if b.LimitName != nil && *b.LimitName != "" {
 			name = *b.LimitName
@@ -358,7 +425,7 @@ func windowName(mins int64) string {
 	case mins > 0:
 		return fmt.Sprintf("%d-minute", mins)
 	}
-	return "window"
+	return "window of unknown length"
 }
 
 // toolEnv is ccli's environment for the account's tool, pointed at the
@@ -400,6 +467,10 @@ func start(ctx context.Context, dir string, env []string, name string, args ...s
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir, cmd.Env = dir, env
+	// Its own process group, so a timeout or a kill ends whatever the tool
+	// started as well.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killGroup(cmd) }
 	cmd.WaitDelay = 2 * time.Second
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -448,7 +519,7 @@ func (p *proc) fail(err error) error {
 	// exec copies stderr from its own goroutine and is done only when Wait
 	// returns, so wait for the tool before reading what it said.
 	p.wait(2 * time.Second)
-	if msg := strings.TrimSpace(p.stderr.String()); msg != "" {
+	if msg := plainText(p.stderr.String(), 300); msg != "" {
 		return fmt.Errorf("%s stopped: %s", p.name, msg)
 	}
 	if errors.Is(err, io.ErrUnexpectedEOF) {
@@ -472,9 +543,15 @@ func (p *proc) wait(d time.Duration) {
 	select {
 	case <-p.done:
 	case <-time.After(d):
-		p.cmd.Process.Kill()
+		killGroup(p.cmd)
 		<-p.done
 	}
+}
+
+// killGroup kills the tool and everything in its process group. It is only
+// called while the tool is running, so its group id cannot have been reused.
+func killGroup(cmd *exec.Cmd) error {
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
 
 // tailBuffer keeps the last max bytes written to it. exec copies the

@@ -54,10 +54,18 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	}
 	svc, err := a.prepare(ctx, c, accts)
 	if err != nil {
+		if checks != nil {
+			cancel() // kills the tools; wait so none outlives ccli
+			<-checks
+		}
 		return err
 	}
 	defer a.close()
-	snaps, err := quota.Load(store.DataDir())
+	saved, err := quota.Load(store.DataDir())
+	if err != nil {
+		return err
+	}
+	savedLive, err := quota.LoadLive(store.DataDir())
 	if err != nil {
 		return err
 	}
@@ -67,9 +75,9 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 		// The tools take a few seconds to start and answer; say so on a
 		// terminal, and clear the line once they have.
 		f, ok := a.errw.(*os.File)
-		note := ok && !c.json && term.IsTerminal(int(f.Fd()))
+		note := ok && !c.json && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd()))
 		if note {
-			fmt.Fprint(f, "Asking each account's tool for its current limits (--offline skips this)…")
+			fmt.Fprint(f, "Checking current limits… (--offline skips this)")
 		}
 		live = <-checks
 		if note {
@@ -80,27 +88,36 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	var rows []render.QuotaRow
 	for _, ac := range chosen {
 		r := render.QuotaRow{Account: ac.Name, Email: ac.Email, Tool: ac.Kind(), Offline: *offline}
-		var status, cc *quota.Snapshot
-		if s, ok := snaps[ac.Name]; ok {
-			status = &s
+		// Every source this account has; for each window the newest wins.
+		var passive, lastLive, cc *quota.Snapshot
+		if s, ok := saved[ac.Name]; ok {
+			passive = &s
+		}
+		if s, ok := savedLive[ac.Name]; ok {
+			lastLive = &s
 		}
 		if l, ok := live[ac.Name]; ok {
 			if l.err != nil {
 				r.LiveError = l.err.Error()
 			} else {
-				status, r.Live = &l.snap, true
+				lastLive, r.Live = &l.snap, true
 			}
-		}
-		if status != nil {
-			r.Plan, r.Limits, r.Extra = status.Plan, status.Limits, status.Extra
-			r.LimitsAt, r.LimitsFrom = status.CapturedAt, quota.SourceName(status.Source)
 		}
 		if ac.Kind() == account.Claude {
 			if s, ok := quota.CclineCache(ac.Dir); ok {
 				cc = &s
 			}
 		}
-		r.FiveHour, r.SevenDay = quota.Latest(status, cc)
+		// Only a live check reports the extra windows, extra use and, for
+		// Claude, the plan; they come from the newest one.
+		if lastLive != nil {
+			r.Plan, r.Limits, r.Extra = lastLive.Plan, lastLive.Limits, lastLive.Extra
+			r.LimitsAt, r.LimitsFrom = lastLive.CapturedAt, quota.SourceName(lastLive.Source)
+		}
+		if r.Plan == "" && passive != nil {
+			r.Plan = passive.Plan
+		}
+		r.FiveHour, r.SevenDay = quota.Latest(passive, lastLive, cc)
 		// Usage is counted from the start of each window as the server
 		// defines it: the reset time minus the window's length.
 		for _, w := range []struct {
@@ -116,7 +133,7 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 				}
 				w.use.Exact = true
 			}
-			w.use.Since = since
+			w.use.Since, w.use.Counted = since, true
 			if w.use.Tokens, w.use.Cost, err = svc.Usage(ctx, ac.Name, since); err != nil {
 				return err
 			}
@@ -141,7 +158,6 @@ type liveCheck struct {
 // an empty folder of ccli's own (see quota.Checker).
 func checkLive(ctx context.Context, accts []account.Account, dataDir string) map[string]liveCheck {
 	c := quota.Checker{WorkDir: filepath.Join(dataDir, "tool-runs"), Client: Version}
-	now := time.Now()
 	out := make(map[string]liveCheck, len(accts))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -149,11 +165,11 @@ func checkLive(ctx context.Context, accts []account.Account, dataDir string) map
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s, err := c.Check(ctx, ac, now)
+			s, err := c.Check(ctx, ac)
 			if err == nil {
 				// The figures are shown either way; a failed save only
 				// means --offline will not have them.
-				_ = quota.Save(dataDir, s)
+				_ = quota.SaveLive(dataDir, s)
 			}
 			mu.Lock()
 			out[ac.Name] = liveCheck{s, err}

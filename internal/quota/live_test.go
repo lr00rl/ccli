@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -48,7 +50,7 @@ echo 'not json'
 echo '`+claudeAnswer+`'
 `)
 	work := filepath.Join(root, "work")
-	now := time.Date(2026, 10, 16, 10, 40, 0, 0, time.UTC)
+	before := time.Now()
 	c := Checker{WorkDir: work}
 	for _, tc := range []struct {
 		acct account.Account
@@ -57,11 +59,11 @@ echo '`+claudeAnswer+`'
 		{account.Account{Name: "default", Dir: filepath.Join(root, ".claude")}, ""},
 		{account.Account{Name: "work", Dir: filepath.Join(root, ".claude-work")}, filepath.Join(root, ".claude-work")},
 	} {
-		s, err := c.Check(context.Background(), tc.acct, now)
+		s, err := c.Check(context.Background(), tc.acct)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.acct.Name, err)
 		}
-		if s.Account != tc.acct.Name || s.Source != FromClaudeLive || s.Plan != "max" || !s.CapturedAt.Equal(now) {
+		if s.Account != tc.acct.Name || s.Source != FromClaudeLive || s.Plan != "max" || s.CapturedAt.Before(before) || s.CapturedAt.After(time.Now()) {
 			t.Fatalf("%s: %+v", tc.acct.Name, s)
 		}
 		if s.FiveHour == nil || s.FiveHour.UsedPercent != 26 || s.FiveHour.ResetsAt.Format(time.RFC3339) != "2026-10-16T12:00:00Z" {
@@ -90,17 +92,17 @@ func TestCheckFailures(t *testing.T) {
 	root, bin, _ := liveEnv(t)
 	c := Checker{WorkDir: filepath.Join(root, "work"), Timeout: 300 * time.Millisecond}
 	codex := account.Account{Name: "codex", Tool: account.Codex, Dir: filepath.Join(root, ".codex")}
-	if _, err := c.Check(context.Background(), codex, time.Now()); err == nil || !strings.Contains(err.Error(), "codex is not installed") {
+	if _, err := c.Check(context.Background(), codex); err == nil || !strings.Contains(err.Error(), "codex is not installed") {
 		t.Fatalf("missing tool: %v", err)
 	}
 	fakeTool(t, bin, "claude", "sleep 5\n")
 	start := time.Now()
-	_, err := c.Check(context.Background(), account.Account{Name: "default", Dir: filepath.Join(root, ".claude")}, time.Now())
+	_, err := c.Check(context.Background(), account.Account{Name: "default", Dir: filepath.Join(root, ".claude")})
 	if err == nil || !strings.Contains(err.Error(), "no answer in 300ms") || time.Since(start) > 4*time.Second {
 		t.Fatalf("silent tool: %v after %s", err, time.Since(start))
 	}
 	fakeTool(t, bin, "claude", "read line\necho 'please log in' >&2\n")
-	if _, err := c.Check(context.Background(), account.Account{Name: "default", Dir: filepath.Join(root, ".claude")}, time.Now()); err == nil || !strings.Contains(err.Error(), "please log in") {
+	if _, err := c.Check(context.Background(), account.Account{Name: "default", Dir: filepath.Join(root, ".claude")}); err == nil || !strings.Contains(err.Error(), "please log in") {
 		t.Fatalf("tool that exits: %v", err)
 	}
 }
@@ -118,7 +120,7 @@ echo '{"method":"remoteControl/status/changed","params":{}}'
 echo '{"id":2,"result":{"rateLimits":{"limitId":"codex","planType":"free","primary":{"usedPercent":4,"windowDurationMins":43200,"resetsAt":1794739288},"secondary":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","planType":"free","primary":{"usedPercent":4,"windowDurationMins":43200,"resetsAt":1794739288}}}}}'
 `)
 	c := Checker{WorkDir: filepath.Join(root, "work"), Client: "1.2.3"}
-	s, err := c.Check(context.Background(), account.Account{Name: "codex-work", Tool: account.Codex, Dir: filepath.Join(root, ".codex-work")}, time.Now())
+	s, err := c.Check(context.Background(), account.Account{Name: "codex-work", Tool: account.Codex, Dir: filepath.Join(root, ".codex-work")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,5 +182,79 @@ func TestParseCodexLimits(t *testing.T) {
 	}
 	if _, err := parseCodexLimits([]byte(`{"id":2,"error":{"code":-32000,"message":"not logged in"}}`)); err == nil || !strings.Contains(err.Error(), "not logged in") {
 		t.Fatalf("error answer: %v", err)
+	}
+}
+
+// A tool that started a child and never answers is killed with its child
+// when the check times out: nothing it started outlives the check.
+func TestCheckKillsWhatTheToolStarted(t *testing.T) {
+	root, bin, out := liveEnv(t)
+	fakeTool(t, bin, "codex", "sleep 30 &\necho $! > \"$FAKE_OUT\"\nsleep 30\n")
+	c := Checker{WorkDir: filepath.Join(root, "work"), Timeout: 400 * time.Millisecond}
+	_, err := c.Check(context.Background(), account.Account{Name: "codex", Tool: account.Codex, Dir: filepath.Join(root, ".codex")})
+	if err == nil || !strings.Contains(err.Error(), "no answer") {
+		t.Fatalf("check: %v", err)
+	}
+	b, _ := os.ReadFile(out)
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
+	if perr != nil {
+		t.Fatalf("child pid %q", b)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("child %d outlived the check", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A field of the wrong type or shape costs only that field, and an error
+// given as an object still says what it is.
+func TestParseClaudeUsageIsLenient(t *testing.T) {
+	line := `{"type":"control_response","response":{"subtype":"success","request_id":"ccli-usage","response":{"subscription_type":"pro","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":40,"resets_at":"2026-10-16T12:00:00Z"},"seven_day":{"utilization":"23%","resets_at":"2026-10-22T11:00:00Z"},"model_scoped":{"oops":true},"extra_usage":"n/a"}}}}`
+	s, err := parseClaudeUsage([]byte(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.FiveHour == nil || s.FiveHour.UsedPercent != 40 || s.SevenDay != nil || len(s.Limits) != 0 || s.Extra != nil || s.Plan != "pro" {
+		t.Fatalf("%+v", s)
+	}
+	unnamed := `{"type":"control_response","response":{"subtype":"success","request_id":"ccli-usage","response":{"rate_limits_available":true,"rate_limits":{"model_scoped":[{"utilization":5,"resets_at":null},{"display_name":"Fable","utilization":"x"}]}}}}`
+	if s, err := parseClaudeUsage([]byte(unnamed)); err != nil || len(s.Limits) != 1 || s.Limits[0].Name != "Model weekly" {
+		t.Fatalf("unnamed model window: %v %+v", err, s.Limits)
+	}
+	obj := `{"type":"control_response","response":{"subtype":"error","request_id":"ccli-usage","error":{"message":"busy \u001b[31mnow"}}}`
+	if _, err := parseClaudeUsage([]byte(obj)); err == nil || !strings.Contains(err.Error(), "busy") || strings.Contains(err.Error(), "\x1b") {
+		t.Fatalf("object error: %v", err)
+	}
+}
+
+// Shapes Codex might send that must not show wrong figures as live.
+func TestParseCodexLimitsEdges(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		check      func(Snapshot) bool
+	}{
+		{"missing percent is left out, not 0%",
+			`{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"windowDurationMins":300,"resetsAt":1},"secondary":{"usedPercent":7,"windowDurationMins":10080}}}}`,
+			func(s Snapshot) bool { return s.FiveHour == nil && s.SevenDay != nil && s.SevenDay.UsedPercent == 7 }},
+		{"null main id does not repeat the main windows",
+			`{"id":2,"result":{"rateLimits":{"limitId":null,"primary":{"usedPercent":9,"windowDurationMins":300}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":9,"windowDurationMins":300}}}}}`,
+			func(s Snapshot) bool { return s.FiveHour != nil && len(s.Limits) == 0 }},
+		{"null main falls back to the codex bucket",
+			`{"id":2,"result":{"rateLimits":null,"rateLimitsByLimitId":{"codex":{"limitId":"codex","planType":"plus","primary":{"usedPercent":12,"windowDurationMins":10080}}}}}`,
+			func(s Snapshot) bool {
+				return s.SevenDay != nil && s.SevenDay.UsedPercent == 12 && s.Plan == "plus" && len(s.Limits) == 0
+			}},
+		{"a window without a length says so",
+			`{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":3}}}}`,
+			func(s Snapshot) bool { return len(s.Limits) == 1 && s.Limits[0].Name == "window of unknown length" }},
+	} {
+		s, err := parseCodexLimits([]byte(tc.line))
+		if err != nil || !tc.check(s) {
+			t.Errorf("%s: %v %+v", tc.name, err, s)
+		}
 	}
 }

@@ -360,3 +360,31 @@ func TestCclineCacheAndLatest(t *testing.T) {
 		t.Fatalf("missing cache read as present")
 	}
 }
+
+// A live check's answer is kept apart from the passive readings: a later
+// status line write does not erase the windows only a live check reports.
+func TestLiveAnswerSurvivesAStatusLineWrite(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2026, 10, 16, 10, 0, 0, 0, time.UTC)
+	live := Snapshot{Account: "default", CapturedAt: at, Source: FromClaudeLive, Plan: "max",
+		FiveHour: &Window{UsedPercent: 26}, Limits: []Limit{{Name: "Fable weekly", Window: Window{UsedPercent: 3}}}}
+	if err := SaveLive(dir, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(dir, Snapshot{Account: "default", CapturedAt: at.Add(time.Minute), FiveHour: &Window{UsedPercent: 27}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadLive(dir)
+	if err != nil || len(got["default"].Limits) != 1 || got["default"].Plan != "max" {
+		t.Fatalf("live answer after a status line write: %v %+v", err, got["default"])
+	}
+	passive, _ := Load(dir)
+	if len(passive) != 1 || passive["default"].FiveHour.UsedPercent != 27 {
+		t.Fatalf("passive readings: %+v", passive)
+	}
+	// For each window the newest of all sources wins.
+	l, p := got["default"], passive["default"]
+	if five, _ := Latest(&p, &l, nil); five.UsedPercent != 27 || five.Source != "status line" {
+		t.Fatalf("latest %+v", five)
+	}
+}

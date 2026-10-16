@@ -15,6 +15,10 @@ ccli is a reader. The only things it writes are:
 - its own database, `$XDG_DATA_HOME/ccli/ccli.db` (default
   `~/.local/share/ccli/ccli.db`, override `CCLI_DB`), which also holds
   the marks `hide` sets and the tags `tag` gives;
+- its quota readings under `$XDG_DATA_HOME/ccli/quota/` (the status line
+  wrapper's and the latest Codex log reading in `<account>.json`, live check
+  answers in `live/<account>.json`), and `$XDG_DATA_HOME/ccli/tool-runs/`,
+  the empty folder `quota` starts the tools in;
 - for `copy`, `move`, `fork` and `resume --sync` only: transcript files of
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
@@ -22,7 +26,8 @@ ccli is a reader. The only things it writes are:
   `$XDG_DATA_HOME/ccli/archive/` before the source files are removed.
 
 In a Codex home it reads only the rollout files under `sessions/` and
-`archived_sessions/`, and writes nothing. It never opens `auth.json` (which
+`archived_sessions/`, and writes nothing itself (a `quota` live check starts
+Codex's app server, which writes to Codex's own files; see below). It never opens `auth.json` (which
 holds the credentials and the signed-in identity) or `config.toml`, and never
 opens Codex's SQLite databases: opening one read-only can still create a
 `-shm` file next to it.
@@ -523,9 +528,19 @@ while the index is brought up to date:
   `CLAUDE_CODE_ENTRYPOINT` (so neither takes itself for a nested run), with
   `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set for an account other than the
   default dir and unset for it. The tool's login is used as it is.
+- Each tool runs in its own process group; a timeout kills the group, so
+  nothing it started outlives the check. The answer is timed when it
+  arrives and saved to `quota/live/<account>.json`, apart from the passive
+  readings, so a later status line write cannot drop the windows and plan
+  only a live check reports. Parts of an answer are decoded one by one: a
+  field of the wrong type costs that field, and a window without a
+  percentage is left out, never shown as 0%.
 - A check that fails (not installed, not signed in, an API-key login, no
   answer in 30 seconds) is reported with the tool's reason, and the account
   falls back to its saved readings. `--offline` makes no check.
+- For each window the newest reading among all sources wins (a live answer,
+  the status line, ccline, Codex's logs); a reading without a reset time
+  borrows the newest other reading's that is still ahead of it.
 
 Passive sources, kept for `--offline` and as the fallback:
 
