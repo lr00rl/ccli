@@ -30,7 +30,7 @@ type Source interface {
 	RunAgents(ctx context.Context, ref, runID string) (*query.RunInfo, []query.AgentNode, map[string]string, error)
 	Hide(ctx context.Context, refs []string, now time.Time) ([]query.HideResult, error)
 	Unhide(ctx context.Context, refs []string) ([]query.HideResult, error)
-	Rename(ctx context.Context, ref, name string, now time.Time) (query.RenameResult, error)
+	Tag(ctx context.Context, ref, tag string, now time.Time) (query.TagResult, error)
 }
 
 // role is what a screen lists; its keys and footer follow from it.
@@ -715,7 +715,7 @@ func (v *viewer) footer() string {
 			if v.showHidden {
 				keys = append(keys, "m mark", "u bring back", "H all sessions")
 			} else {
-				keys = append(keys, "m mark", "x hide", "R rename", "H hidden")
+				keys = append(keys, "m mark", "x hide", "# tag", "H hidden")
 			}
 		case turnsRole:
 			keys = append(keys, "s sort", "a all turns", "o agents", "y copy prompt", "t tools")
@@ -744,7 +744,7 @@ func (v *viewer) helpLines(n int) []string {
 		"  m              mark the session, to hide several at once (/ then m to pick from a filter)",
 		"  x              hide the marked sessions, or the selected one: lists leave them out",
 		"  H              list only hidden sessions, where u brings them back",
-		"  R              rename the session in ccli; an empty name brings back its own title",
+		"  #              tag the session: a label shown next to its title; an empty tag removes it",
 		"",
 		bold("  Turns"),
 		"  /              filter the list by what the prompt says",

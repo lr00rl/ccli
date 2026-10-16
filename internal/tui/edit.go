@@ -51,32 +51,32 @@ func (v *viewer) editFooter(e *editLine) string {
 	return fitLine(prompt+text+"\x1b[7m \x1b[0m"+hint, v.w)
 }
 
-// askName puts the selected session's title in the footer to edit. The name
-// is kept in ccli's index only (see query.Rename); an empty one removes it.
-func (v *viewer) askName(s *screen) {
+// askTag puts the selected session's tag in the footer to edit. The tag is
+// kept in ccli's index only (see query.Tag); an empty one removes it.
+func (v *viewer) askTag(s *screen) {
 	idx := s.list.selected()
 	if idx < 0 {
 		return
 	}
 	it := s.list.all[idx]
-	ref, current := it.id, it.title
+	ref, current := it.id, it.tag
 	src, ctx := v.src, v.ctx
-	v.edit = &editLine{prompt: "rename:", text: current, submit: func(text string) tea.Cmd {
+	v.edit = &editLine{prompt: "tag:", text: current, submit: func(text string) tea.Cmd {
 		text = strings.Join(strings.Fields(text), " ")
 		if text == current {
 			v.status = "left as it was"
 			return nil
 		}
-		v.status = "renaming…"
+		v.status = "tagging…"
 		return v.reloadSessions(s, v.showHidden, func() (string, error) {
-			r, err := src.Rename(ctx, ref, text, time.Now())
+			r, err := src.Tag(ctx, ref, text, time.Now())
 			if err != nil {
 				return "", err
 			}
 			if r.Cleared {
-				return query.ShortID(r.ID) + " shows its own title again", nil
+				return "removed the tag of " + query.ShortID(r.ID), nil
 			}
-			return "renamed " + query.ShortID(r.ID) + " in ccli", nil
+			return "tagged " + query.ShortID(r.ID) + " " + r.Tag, nil
 		})
 	}}
 }

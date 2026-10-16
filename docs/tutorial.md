@@ -14,7 +14,7 @@ sessions, ids and costs; only the times move with the day you generate it.
 - [Follow the agents](#follow-the-agents)
 - [Browse interactively](#browse-interactively)
 - [Set sessions aside](#set-sessions-aside)
-- [Give a session a better title](#give-a-session-a-better-title)
+- [Tag sessions](#tag-sessions)
 - [Work with two accounts](#work-with-two-accounts)
 - [Codex sessions](#codex-sessions)
 - [Watch your limits](#watch-your-limits)
@@ -240,7 +240,7 @@ ccli view 7a93706c      # start at one session's turns
 | `m` | in the sessions list, mark a session (to hide several at once) |
 | `x` | hide the marked sessions, or the selected one, after asking |
 | `H` | list only hidden sessions; `u` there brings them back |
-| `R` | rename the selected session; an empty name brings back its own title |
+| `#` | tag the selected session; an empty tag removes it |
 | `?` | list every key |
 | `q` | quit |
 
@@ -272,34 +272,47 @@ session back with `ccli unhide <id>` or `u` in that list. A hidden session
 that you resume and use again shows again by itself. A session that is running
 cannot be hidden: hide it once it has ended.
 
-## Give a session a better title
+## Tag sessions
 
 A session's title is its own `/rename`, the title Claude Code generated, or
-its first prompt, and the first prompt often says little about what the
-session became. Name it in ccli:
+its first prompt. When several sessions look alike, give them tags: short
+labels you choose, shown next to the title.
 
 ```sh
-ccli rename 3b3b57cb "Dedupe invoice events by event id"
+ccli tag 3b3b57cb dedupe fix
+ccli tag 7a93706c payments
 ```
 
 ```
-✓ 3b3b57cb renamed to Dedupe invoice events by event id
-  its own title: Investigate duplicate invoice events
+✓ 3b3b57cb tagged dedupe fix · Investigate duplicate invoice events
+✓ 7a93706c tagged payments · Audit payment retries across services
 ```
 
-The name shows in `sessions`, `show`, `log`, `prompts` and `view`, and search
-finds the session by the new title or the old one. `ccli show` prints both.
-In `ccli view`, `R` opens the title in a line at the bottom: edit it and press
-`enter` to save, or `esc` to leave it.
+The title stays as it is. Lists add a TAG column when some session on them
+has a tag, `show` prints the tag above the project, and `-q` finds a session
+by its tag as well as its title:
 
-The name lives in ccli's index, like a hide mark. Nothing is written to the
+```sh
+ccli sessions -q payments
+```
+
+```
+LAST    ACCOUNT  ID        TAG       PROJECT           TITLE                                 MODEL        ACTIVE  TOKENS  CACHED    COST
+2h ago  work     7a93706c  payments  checkout-service  Audit payment retries across servic…  opus-5-5 +2  2h 42m  210.6K   25.7M  $11.72
+1 session · 210.6K tokens · 25.7M cached · $11.72 list price
+```
+
+In `ccli view`, `#` opens the selected session's tag in a line at the bottom:
+type it and press `enter` to save, or `esc` to leave it. Tags line up in their
+own column in the list. A tag is at most 40 characters; `ccli tag <id>
+--clear`, or an empty tag after `#`, removes it.
+
+A tag lives in ccli's index, like a hide mark. Nothing is written to the
 transcript, no Claude Code process starts, and the session keeps its place in
-the list because its last activity does not change. It names the session's
-copies in every account, and Codex sessions too. The one thing it cannot do
-is reach Claude Code's own resume picker; for that, use `/rename` inside
-Claude Code, and ccli picks that title up as well. While a ccli name is set it
-wins; `ccli rename 3b3b57cb --clear`, or an empty name after `R`, brings back
-the session's own title.
+the list because its last activity does not change. It labels the session's
+copies in every account, and Codex sessions too. Claude Code's own resume
+picker does not show tags; to change the title it shows, use `/rename` inside
+Claude Code, and ccli picks that title up as well.
 
 ## Work with two accounts
 

@@ -40,11 +40,12 @@ func (v *viewer) sessionFilter(hidden bool) query.Filter {
 // and sets the screen's title and hint to match.
 func (v *viewer) setSessions(s *screen, page query.SessionPage, hidden bool) {
 	groups := groupByProject(page.Sessions)
+	cols := measureSessions(page.Sessions)
 	var items []item
 	for _, g := range groups {
 		items = append(items, projectHeader(g))
 		for _, row := range g.rows {
-			items = append(items, v.sessionItem(row))
+			items = append(items, v.sessionItem(row, cols))
 		}
 	}
 	v.replace(s, items)
@@ -123,7 +124,32 @@ func projectHeader(g *projectGroup) item {
 	}
 }
 
-func (v *viewer) sessionItem(row query.SessionRow) item {
+// maxTagCells is the widest the tag column gets in the list; a longer tag
+// is cut short there and shown whole in the preview.
+const maxTagCells = 12
+
+// sessionCols are the widths of the padded columns in session rows, so
+// tags and titles line up down the list.
+type sessionCols struct{ account, tag int }
+
+// measureSessions sizes the columns to the widest value on the page. The
+// tag column is left out (width 0) when no session has a tag.
+func measureSessions(rows []query.SessionRow) sessionCols {
+	var c sessionCols
+	for _, row := range rows {
+		c.account = max(c.account, ansi.StringWidth(row.Account))
+		c.tag = max(c.tag, min(maxTagCells, ansi.StringWidth(row.Tag)))
+	}
+	return c
+}
+
+// padCells pads s with spaces to w cells, cutting it short when wider.
+func padCells(s string, w int) string {
+	s = ansi.Truncate(s, w, "…")
+	return s + strings.Repeat(" ", max(0, w-ansi.StringWidth(s)))
+}
+
+func (v *viewer) sessionItem(row query.SessionRow, cols sessionCols) item {
 	ref := row.Account + ":" + row.ID
 	title := row.Title
 	if title == "" {
@@ -137,11 +163,15 @@ func (v *viewer) sessionItem(row query.SessionRow) item {
 			if row.Live {
 				live = paint("38;5;203", "●")
 			}
-			return dim(when) + " " + money(cost) + " " + live + " " + dim(row.Account) + " " + title
+			line := dim(when) + " " + money(cost) + " " + live + " " + dim(padCells(row.Account, cols.account)) + " "
+			if cols.tag > 0 {
+				line += tagged(padCells(row.Tag, cols.tag)) + " "
+			}
+			return line + title
 		},
-		search: strings.ToLower(title + " " + row.ToolTitle + " " + row.ID + " " + row.Cwd + " " + row.Account),
+		search: strings.ToLower(title + " " + row.Tag + " " + row.ID + " " + row.Cwd + " " + row.Account),
 		id:     ref,
-		title:  row.Title,
+		tag:    row.Tag,
 		load: func() (any, error) {
 			d, err := v.src.Session(v.ctx, ref)
 			if err != nil {

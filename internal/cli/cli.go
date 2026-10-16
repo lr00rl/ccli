@@ -81,7 +81,7 @@ Usage:
   ccli resume <id>                   run claude --resume in the session's account and folder
   ccli resume <id> -a <acct> --sync  resume in another account, bringing its copy up to date first
   ccli hide|unhide <id>...           leave sessions out of lists, or bring them back (totals still count them)
-  ccli rename <id> <title>           name a session in ccli (--clear brings back its own title)
+  ccli tag <id> <tag>                label a session in ccli, shown next to its title (--clear removes it)
   ccli statusline -- <cmd> [args]    status line wrapper that records rate limits
   ccli index [--rebuild]             update the index (other commands do this first)
   ccli version

@@ -14,7 +14,7 @@ ccli is a reader. The only things it writes are:
 
 - its own database, `$XDG_DATA_HOME/ccli/ccli.db` (default
   `~/.local/share/ccli/ccli.db`, override `CCLI_DB`), which also holds
-  the marks `hide` sets and the titles `rename` gives;
+  the marks `hide` sets and the tags `tag` gives;
 - for `copy`, `move`, `fork` and `resume --sync` only: transcript files of
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
@@ -224,7 +224,8 @@ so one file can be re-parsed without touching others.
   fork), session, new session id for a fork, source and target account, and
   the byte range of each file written.
 - `hidden`: sessions set aside with `hide`, and when.
-- `titles`: names given to sessions with `rename`, and when.
+- `tags`: labels given to sessions with `tag`, and when. (A `titles` table
+  from the short-lived `rename` is moved into it once, then dropped.)
 - `dirty`: sessions whose reconciliation is out of date.
 - `meta`: schema version, price table hash, reconciliation version.
 
@@ -376,7 +377,7 @@ ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N
 ccli fork <id> --to acct [--from acct]   copy under a new session id
 ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
-ccli rename <id> <title> / --clear   name a session in ccli, or remove the name
+ccli tag <id> <tag> / --clear       label a session in ccli, or remove the label
 ccli index [--rebuild]
 ```
 
@@ -399,25 +400,31 @@ Claude Code put them, so `claude --resume` and `ccli resume` keep working.
 - A session a Claude Code process is running is refused: its next line would
   show it again.
 
-## Naming sessions
+## Tagging sessions
 
-`rename` gives a session a title kept in the `titles` table, one row per
-session id, and writes nothing else. Running Claude Code's own `/rename`
-(`claude -p --resume <id> "/rename ..."`) was considered and rejected: it
-starts a Claude Code process (with the account's hooks and MCP servers),
-appends several lines to the transcript and moves the session's last
-activity, which reorders lists and brings a hidden session back.
+`tag` gives a session a short label kept in the `tags` table, one row per
+session id, and writes nothing else. The session's title is untouched: a tag
+is a separate field (`tag` in JSON) shown in its own column.
 
-- The name shows instead of the tool's own title while it is set
-  (`title_source` is `ccli`); the tool's title stays in `tool_title`, and
-  `show` prints both. Search matches either.
-- It is per session id, so it names the session's copies in other accounts,
+- Lists add a TAG column only when a session on the page has a tag. The
+  viewer pads the account and tag columns to the widest value on the page,
+  so titles line up, and cuts a tag longer than 12 cells there; `show`
+  prints it whole. A tag is at most 40 characters.
+- Search (`-q`, `/` in `view`) matches the tag as well as the title.
+- It is per session id, so it labels the session's copies in other accounts,
   and it works the same for Codex sessions and running sessions.
-- `--clear`, or an empty name in `view`, removes it.
-- Claude Code's resume picker does not see it. A title set with `/rename` in
-  Claude Code (a `custom-title` line) is read as before.
-- `/rename` also writes an `agent-name` line. `agentName` counts as a
-  teammate's name only on lines that also carry `teamName`.
+- `--clear`, or an empty tag in `view`, removes it.
+
+The first version of this feature (`rename`) replaced the title in ccli's
+lists instead. A title that silently differs from the one Claude Code shows
+was confusing, so it became a label next to the title. Running Claude Code's
+own `/rename` (`claude -p --resume <id> "/rename ..."`) was rejected
+throughout: it starts a Claude Code process (with the account's hooks and
+MCP servers), appends several lines to the transcript and moves the session's
+last activity, which reorders lists and brings a hidden session back. A
+title set with `/rename` in Claude Code (a `custom-title` line) is read as
+before. `/rename` also writes an `agent-name` line; `agentName` counts as a
+teammate's name only on lines that also carry `teamName`.
 
 ## Copy and move
 

@@ -78,3 +78,40 @@ func TestApplyFromStaleOffsetIsSkipped(t *testing.T) {
 		t.Fatalf("lines %d calls %d, want 3 and 2", lines, calls)
 	}
 }
+
+// Names an earlier ccli gave sessions with `rename` become tags when the
+// database is opened, and the old table goes.
+func TestTitlesBecomeTags(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "ccli.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE titles(session_id TEXT PRIMARY KEY, title TEXT NOT NULL, at INTEGER NOT NULL)`,
+		`INSERT INTO titles VALUES('s1', 'payments audit', 1), ('s2', 'old name', 2)`,
+		`INSERT INTO tags VALUES('s2', 'kept', 3)`,
+	} {
+		if _, err := s.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+
+	s, err = Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tags, err := s.Tags(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 2 || tags["s1"] != "payments audit" || tags["s2"] != "kept" {
+		t.Fatalf("tags %v", tags)
+	}
+	var n int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'titles'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("titles table left behind: %v %d", err, n)
+	}
+}
