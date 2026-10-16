@@ -2,63 +2,137 @@ package tui
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lr00rl/ccli/internal/conv"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
 )
 
-// sessionsScreen lists sessions, newest first; the preview is `ccli show`.
+// sessionsScreen lists sessions grouped by project, under a title row in
+// the project's color. The project used last comes first, and the newest
+// session first within it; the preview is `ccli show`.
 func (v *viewer) sessionsScreen() (*screen, error) {
 	page, err := v.src.Sessions(v.ctx, query.Filter{Loc: v.loc, Sort: "last"})
 	if err != nil {
 		return nil, err
 	}
 	s := newScreen("sessions", "")
+	groups := groupByProject(page.Sessions)
 	var items []item
-	for _, row := range page.Sessions {
-		row := row
-		ref := row.Account + ":" + row.ID
-		title := row.Title
-		if title == "" {
-			title = "(untitled)"
+	for _, g := range groups {
+		items = append(items, projectHeader(g))
+		for _, row := range g.rows {
+			items = append(items, v.sessionItem(row))
 		}
-		items = append(items, item{
-			row: func(w int) string {
-				when := fmt.Sprintf("%-9s", v.term(0).Ago(row.Last))
-				cost := fmt.Sprintf("%8s", render.USD(row.Cost.USD))
-				live := " "
-				if row.Live {
-					live = paint("38;5;203", "●")
-				}
-				return dim(when) + " " + money(cost) + " " + live + " " + dim(row.Account) + " " + title
-			},
-			search: strings.ToLower(title + " " + row.ID + " " + row.Cwd + " " + row.Account),
-			load: func() (any, error) {
-				d, err := v.src.Session(v.ctx, ref)
-				if err != nil {
-					return nil, err // never a nil *SessionDetail inside a non-nil any
-				}
-				return d, nil
-			},
-			draw: func(v *viewer, data any, w int) string {
-				return v.capture(w, func(t render.Term) { t.Session(data.(*query.SessionDetail), false) })
-			},
-			open: func(any) *screen {
-				s, err := v.turnsScreen(ref)
-				if err != nil {
-					v.status = err.Error()
-					return nil
-				}
-				return s
-			},
-		})
 	}
 	s.list.set(items)
-	s.hint = fmt.Sprintf("%d sessions", len(items))
+	s.hint = fmt.Sprintf("%d sessions · %d projects", len(page.Sessions), len(groups))
 	return s, nil
+}
+
+type projectGroup struct {
+	name string
+	rows []query.SessionRow
+	usd  float64
+}
+
+// groupByProject keeps the order rows arrive in: a project is placed where
+// its first session is. Sessions group by folder, so two folders with the
+// same base name stay apart.
+func groupByProject(rows []query.SessionRow) []*projectGroup {
+	var groups []*projectGroup
+	byKey := map[string]*projectGroup{}
+	for _, row := range rows {
+		key := row.Cwd
+		if key == "" {
+			key = row.ProjectKey
+		}
+		g := byKey[key]
+		if g == nil {
+			name := row.Project
+			if name == "" {
+				name = "(no folder)"
+			}
+			g = &projectGroup{name: name}
+			byKey[key] = g
+			groups = append(groups, g)
+		}
+		g.rows = append(g.rows, row)
+		g.usd += row.Cost.USD
+	}
+	return groups
+}
+
+// projectColors are one cool family around the accent blue, from sea
+// green through blue to lavender, all mid-light so they read on dark and
+// light backgrounds alike.
+var projectColors = []string{"72", "73", "74", "67", "68", "110", "104", "140"}
+
+// projectColor picks a color from the project's name, so a project keeps
+// its color from one run to the next.
+func projectColor(name string) string {
+	h := fnv.New32a()
+	h.Write([]byte(name))
+	return projectColors[h.Sum32()%uint32(len(projectColors))]
+}
+
+func projectHeader(g *projectGroup) item {
+	return item{
+		header: true,
+		id:     "project:" + g.name,
+		row: func(w int) string {
+			n := "1 session"
+			if len(g.rows) != 1 {
+				n = fmt.Sprintf("%d sessions", len(g.rows))
+			}
+			text := " " + paint("1;38;5;"+projectColor(g.name), g.name) + dim("  "+n+" · "+render.USD(g.usd)+" ")
+			return text + dim(strings.Repeat("─", max(0, w-ansi.StringWidth(text))))
+		},
+	}
+}
+
+func (v *viewer) sessionItem(row query.SessionRow) item {
+	ref := row.Account + ":" + row.ID
+	title := row.Title
+	if title == "" {
+		title = "(untitled)"
+	}
+	return item{
+		row: func(w int) string {
+			when := fmt.Sprintf("%-10s", v.term(0).Ago(row.Last))
+			cost := fmt.Sprintf("%8s", render.USD(row.Cost.USD))
+			live := " "
+			if row.Live {
+				live = paint("38;5;203", "●")
+			}
+			return dim(when) + " " + money(cost) + " " + live + " " + dim(row.Account) + " " + title
+		},
+		search: strings.ToLower(title + " " + row.ID + " " + row.Cwd + " " + row.Account),
+		id:     ref,
+		load: func() (any, error) {
+			d, err := v.src.Session(v.ctx, ref)
+			if err != nil {
+				return nil, err // never a nil *SessionDetail inside a non-nil any
+			}
+			return d, nil
+		},
+		draw: func(v *viewer, data any, w int) string {
+			return v.capture(w, func(t render.Term) { t.Session(data.(*query.SessionDetail), false) })
+		},
+		open: func(any) *screen {
+			s, err := v.turnsScreen(ref)
+			if err != nil {
+				v.status = err.Error()
+				return nil
+			}
+			return s
+		},
+	}
 }
 
 // turnsScreen lists a session's turns; the preview is the turn in full.

@@ -12,6 +12,9 @@ type item struct {
 	search string             // lower-cased text the filter matches
 	id     string             // stable across rebuilds, to keep the selection
 	dim    bool               // turns nobody typed, and the like
+	// header marks a group title: it cannot be selected and stays shown
+	// while any item under it, up to the next header, passes the filter.
+	header bool
 
 	// load fetches what the preview shows; draw renders it. A nil load
 	// means the row has no preview.
@@ -43,22 +46,62 @@ func (l *list) set(items []item) {
 func (l *list) apply() {
 	l.shown = l.shown[:0]
 	q := strings.ToLower(strings.TrimSpace(l.filter))
+	head := -1 // the header whose items have not matched yet
 	for i, it := range l.all {
-		if q == "" || strings.Contains(it.search, q) {
+		switch {
+		case it.header:
+			head = i
+		case q == "" || strings.Contains(it.search, q):
+			if head >= 0 {
+				l.shown = append(l.shown, head)
+				head = -1
+			}
 			l.shown = append(l.shown, i)
 		}
 	}
 	if l.cursor >= len(l.shown) {
 		l.cursor = max(0, len(l.shown)-1)
 	}
+	l.settle(1)
 }
+
+// isHeader reports whether shown row c is a group title.
+func (l *list) isHeader(c int) bool { return l.all[l.shown[c]].header }
+
+// settle moves the cursor off a header, in direction d first.
+func (l *list) settle(d int) {
+	for _, dir := range []int{d, -d} {
+		c := l.cursor
+		for c >= 0 && c < len(l.shown) && l.isHeader(c) {
+			c += dir
+		}
+		if c >= 0 && c < len(l.shown) {
+			l.cursor = c
+			return
+		}
+	}
+}
+
+// top and bottom select the first and the last item.
+func (l *list) top()    { l.cursor = 0; l.settle(1) }
+func (l *list) bottom() { l.cursor = max(0, len(l.shown)-1); l.settle(-1) }
 
 // selected returns the index into all of the selected item, or -1.
 func (l *list) selected() int {
-	if len(l.shown) == 0 {
+	if len(l.shown) == 0 || l.isHeader(l.cursor) {
 		return -1
 	}
 	return l.shown[l.cursor]
+}
+
+// previews reports whether any item has a preview.
+func (l *list) previews() bool {
+	for _, it := range l.all {
+		if it.load != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // selectIndex moves the cursor to the item with index i into all, if shown.
@@ -76,6 +119,11 @@ func (l *list) move(d int) {
 		return
 	}
 	l.cursor = min(max(l.cursor+d, 0), len(l.shown)-1)
+	if d < 0 {
+		l.settle(-1)
+	} else {
+		l.settle(1)
+	}
 }
 
 func (l *list) scrollInto(height int) {
@@ -84,6 +132,10 @@ func (l *list) scrollInto(height int) {
 	}
 	if l.cursor < l.offset {
 		l.offset = l.cursor
+	}
+	// Scrolling up to the first item of a group brings its title along.
+	if l.cursor == l.offset && l.cursor > 0 && l.isHeader(l.cursor-1) && height > 1 {
+		l.offset--
 	}
 	if l.cursor >= l.offset+height {
 		l.offset = l.cursor - height + 1
@@ -104,6 +156,10 @@ func (l *list) view(w, height int, focused bool) []string {
 			continue
 		}
 		it := l.all[l.shown[c]]
+		if it.header {
+			out = append(out, fitLine(it.row(w), w))
+			continue
+		}
 		text := it.row(w - 2)
 		if it.dim {
 			text = dim(ansi.Strip(text))

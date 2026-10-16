@@ -158,3 +158,79 @@ func TestTinyTerminal(t *testing.T) {
 		_ = v.View()
 	}
 }
+
+func headerItem(name string) item {
+	return item{header: true, id: "h:" + name, row: func(int) string { return name }}
+}
+
+// Group titles are never selected: moving, jumping and clicking pass over
+// them, and the filter keeps a title only while an item under it matches.
+func TestHeadersAreSkipped(t *testing.T) {
+	s := newScreen("test", "")
+	s.list.set([]item{headerItem("P1"), textItem("a1"), textItem("a2"), headerItem("P2"), textItem("b1")})
+	v := newTestViewer(s)
+	sel := func() string {
+		if idx := s.list.selected(); idx >= 0 {
+			return s.list.all[idx].id
+		}
+		return ""
+	}
+	if got := sel(); got != "a1" {
+		t.Fatalf("starts on %q, want a1", got)
+	}
+	v.key(key("j"))
+	v.key(key("j"))
+	if got := sel(); got != "b1" {
+		t.Fatalf("down twice lands on %q, want b1 past the P2 title", got)
+	}
+	v.key(key("k"))
+	if got := sel(); got != "a2" {
+		t.Fatalf("up lands on %q, want a2", got)
+	}
+	v.key(key("g"))
+	v.key(key("k"))
+	if got := sel(); got != "a1" {
+		t.Fatalf("up from the first item moves to %q, want a1", got)
+	}
+	v.key(key("G"))
+	if got := sel(); got != "b1" {
+		t.Fatalf("G selects %q, want b1", got)
+	}
+	v.click(tea.Mouse{Button: tea.MouseLeft, X: 2, Y: 1}) // the P1 title
+	if got := sel(); got != "b1" {
+		t.Fatalf("clicking a title selected %q", got)
+	}
+
+	s.list.filter = "b"
+	s.list.apply()
+	var shown []string
+	for _, i := range s.list.shown {
+		shown = append(shown, s.list.all[i].id)
+	}
+	if got := strings.Join(shown, " "); got != "h:P2 b1" {
+		t.Fatalf("filtered rows %q, want the P2 title and b1", got)
+	}
+	if got := sel(); got != "b1" {
+		t.Fatalf("after the filter %q is selected, want b1", got)
+	}
+}
+
+func TestGroupByProject(t *testing.T) {
+	rows := []query.SessionRow{
+		{ID: "1", Cwd: "/w/ccli", Project: "ccli"},
+		{ID: "2", Cwd: "/w/app", Project: "app"},
+		{ID: "3", Cwd: "/w/ccli", Project: "ccli"},
+		{ID: "4", Cwd: "/old/ccli", Project: "ccli"},
+	}
+	var got []string
+	for _, g := range groupByProject(rows) {
+		ids := ""
+		for _, r := range g.rows {
+			ids += r.ID
+		}
+		got = append(got, g.name+":"+ids)
+	}
+	if s := strings.Join(got, " "); s != "ccli:13 app:2 ccli:4" {
+		t.Fatalf("groups %q", s)
+	}
+}

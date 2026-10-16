@@ -206,8 +206,9 @@ A workflow run lists its agents with their phase, how each ended (`done`,
 
 ## Browse interactively
 
-`ccli view` puts the same views in one browser: sessions, then a session's
-turns, then the agents a turn started, then an agent's transcript. The preview
+`ccli view` puts the same views in one browser: sessions grouped by project
+(the project used last first; `/` and a project name narrows the list to it),
+then a session's turns, then the agents a turn started, then an agent's transcript. The preview
 on the right follows the selection; on a narrow terminal the preview opens
 full screen.
 

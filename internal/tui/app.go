@@ -246,8 +246,8 @@ func (v *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.query += strings.Join(strings.Fields(msg.Content), " ")
 			s := v.cur()
 			s.list.filter = v.query
-			s.list.cursor = 0
 			s.list.apply()
+			s.list.top()
 			return v, v.sync()
 		}
 		return v, nil
@@ -291,8 +291,8 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 			v.query += msg.Text
 		}
 		s.list.filter = v.query
-		s.list.cursor = 0
 		s.list.apply()
+		s.list.top()
 		return v.sync()
 	}
 	if v.help {
@@ -449,13 +449,13 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		if previewKeys {
 			s.vp.GotoTop()
 		} else {
-			s.list.cursor = 0
+			s.list.top()
 		}
 	case "end", "G":
 		if previewKeys {
 			s.vp.GotoBottom()
 		} else {
-			s.list.cursor = max(0, len(s.list.shown)-1)
+			s.list.bottom()
 		}
 	case "J":
 		s.vp.ScrollDown(3)
@@ -523,7 +523,7 @@ func (v *viewer) click(m tea.Mouse) tea.Cmd {
 		return nil
 	}
 	row := s.list.offset + m.Y - 1
-	if row < len(s.list.shown) {
+	if row < len(s.list.shown) && !s.list.isHeader(row) {
 		s.list.cursor = row
 		s.focus = false
 	}
@@ -566,7 +566,7 @@ func (v *viewer) View() tea.View {
 		for _, ln := range strings.Split(s.vp.View(), "\n")[:min(body, len(strings.Split(s.vp.View(), "\n")))] {
 			lines = append(lines, fitLine(" "+ln, v.w))
 		}
-	case v.wide() && s.list.all != nil && s.list.all[0].load != nil:
+	case v.wide() && s.list.previews():
 		lw := v.listWidth()
 		left := s.list.view(lw, body, !s.focus)
 		right := strings.Split(s.vp.View(), "\n")

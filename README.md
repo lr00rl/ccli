@@ -123,8 +123,8 @@ ccli view 928fce20            # start at one session's turns
 
 ![ccli view: the turn list on the left and the selected turn on the right](docs/images/view.png)
 
-`view` is the same in an interactive browser: sessions, then a session's
-turns, then the agents a turn started (`o`), then an agent's transcript or a
+`view` is the same in an interactive browser: sessions grouped by project,
+each project under a title in its own color, then a session's turns, then the agents a turn started (`o`), then an agent's transcript or a
 workflow run's agents. The preview follows the selection. `/` filters by what
 the prompt says, `s` sorts by cost, `y` copies the prompt to the clipboard,
 and `t`, `T` and `c` toggle tool details, thinking and added context. The
