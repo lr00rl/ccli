@@ -83,7 +83,10 @@ func (d *DB) loadSessions(ctx context.Context, f Filter) ([]SessionRow, error) {
 		}
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, d.markHidden(ctx, out)
 }
 
 func matches(s SessionRow, f Filter) bool {
@@ -113,12 +116,21 @@ func containsFold(s, sub string) bool {
 
 // Sessions lists sessions active in the filter's range.
 func (d *DB) Sessions(ctx context.Context, f Filter) (SessionPage, error) {
-	all, err := d.loadSessions(ctx, f)
+	rows, err := d.loadSessions(ctx, f)
 	if err != nil {
 		return SessionPage{}, err
 	}
+	page := SessionPage{Filter: f}
+	all := rows[:0]
+	for _, s := range rows {
+		if f.Show.keeps(s.Hidden) {
+			all = append(all, s)
+		} else if s.Hidden {
+			page.Hidden++
+		}
+	}
 	sortSessions(all, f.Sort)
-	page := SessionPage{Filter: f, Matched: len(all)}
+	page.Matched = len(all)
 	for _, s := range all {
 		page.Tokens.add(s.Tokens)
 		page.Cost.add(s.Cost)

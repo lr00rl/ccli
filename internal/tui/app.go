@@ -28,21 +28,36 @@ type Source interface {
 	TurnRange(ctx context.Context, ref string, from, to int, all bool) ([]*query.TurnDetail, error)
 	Agent(ctx context.Context, ref, agentID string) (*query.AgentLog, error)
 	RunAgents(ctx context.Context, ref, runID string) (*query.RunInfo, []query.AgentNode, map[string]string, error)
+	Hide(ctx context.Context, refs []string, now time.Time) ([]query.HideResult, error)
+	Unhide(ctx context.Context, refs []string) ([]query.HideResult, error)
 }
+
+// role is what a screen lists; its keys and footer follow from it.
+type role int
+
+const (
+	sessionsRole role = iota
+	turnsRole
+	agentsRole
+	runRole // a workflow run's agents
+)
 
 // screen is one level of the browser.
 type screen struct {
-	title, kind string
-	hint        string
-	list        list
-	data        map[int]any
-	errs        map[int]error
-	loading     map[int]bool
-	vp          viewport.Model
-	shown       string // cache key of what the preview holds
-	focus       bool   // the preview has the keyboard
-	full        bool   // narrow terminals: the preview fills the screen
-	rebuild     func(v *viewer) []item
+	title   string
+	role    role
+	hint    string
+	list    list
+	data    map[int]any
+	errs    map[int]error
+	loading map[int]bool
+	vp      viewport.Model
+	shown   string // cache key of what the preview holds
+	focus   bool   // the preview has the keyboard
+	full    bool   // narrow terminals: the preview fills the screen
+	// rebuild lists the items again, after a sort, a toggle or a change
+	// such as hiding sessions. Nil for screens that never change.
+	rebuild func(v *viewer) ([]item, error)
 	// gen changes whenever the items are rebuilt, so the index a load or a
 	// cached preview was made for can no longer point at another item.
 	gen int
@@ -51,8 +66,8 @@ type screen struct {
 	pending int
 }
 
-func newScreen(title, kind string) *screen {
-	return &screen{title: title, kind: kind, data: map[int]any{}, errs: map[int]error{}, loading: map[int]bool{}, vp: viewport.New(), pending: -1}
+func newScreen(title string, r role) *screen {
+	return &screen{title: title, role: r, data: map[int]any{}, errs: map[int]error{}, loading: map[int]bool{}, vp: viewport.New(), pending: -1}
 }
 
 type viewer struct {
@@ -69,6 +84,9 @@ type viewer struct {
 	help     bool
 	status   string
 	rendered map[string]string
+
+	showHidden bool          // the sessions screen lists only hidden sessions
+	confirm    *confirmation // a question in the footer, answered by the next key
 }
 
 type previewMsg struct {
@@ -269,6 +287,14 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 	k := msg.String()
 	v.status = ""
 	s.pending = -1
+	if c := v.confirm; c != nil {
+		v.confirm = nil
+		if k == "y" || k == "enter" {
+			return c.yes()
+		}
+		v.status = "left as it was"
+		return nil
+	}
 	if v.filter {
 		switch k {
 		case "esc":
@@ -304,6 +330,11 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 	}
 	page := v.bodyHeight() - 1
 	previewKeys := s.focus || s.full
+	if s.role == sessionsRole && !previewKeys {
+		if cmd, ok := v.sessionKey(s, k); ok {
+			return cmd
+		}
+	}
 	switch k {
 	case "ctrl+c", "q":
 		return tea.Quit
@@ -411,7 +442,7 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		v.opt.Raw = !v.opt.Raw
 		return v.sync()
 	case "s", "a":
-		if s.rebuild == nil {
+		if s.role != turnsRole {
 			return nil
 		}
 		if k == "s" {
@@ -419,7 +450,9 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		} else {
 			v.allTurns = !v.allTurns
 		}
-		v.refresh(s)
+		if err := v.refresh(s); err != nil {
+			v.status = err.Error()
+		}
 		return v.sync()
 	case "down", "j":
 		if previewKeys {
@@ -465,19 +498,24 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 	return v.sync()
 }
 
-// refresh rebuilds a screen's items (after a sort or filter toggle),
-// keeping the selected item when it is still there.
-func (v *viewer) refresh(s *screen) {
+// refresh rebuilds a screen's items (after a sort, a toggle or a change),
+// keeping the selected item when it is still there. On an error the screen
+// keeps its items.
+func (v *viewer) refresh(s *screen) error {
+	items, err := s.rebuild(v)
+	if err != nil {
+		return err
+	}
 	keep := ""
 	if idx := s.list.selected(); idx >= 0 {
 		keep = s.list.all[idx].id
 	}
-	s.list.set(s.rebuild(v))
+	s.list.set(items)
 	s.data, s.errs, s.loading, s.shown = map[int]any{}, map[int]error{}, map[int]bool{}, ""
 	s.gen++
 	s.pending = -1
 	if keep == "" {
-		return
+		return nil
 	}
 	for i, it := range s.list.all {
 		if it.id == keep {
@@ -485,6 +523,7 @@ func (v *viewer) refresh(s *screen) {
 			break
 		}
 	}
+	return nil
 }
 
 func (v *viewer) wheel(m tea.Mouse) tea.Cmd {
@@ -596,20 +635,25 @@ func (v *viewer) header() string {
 	var crumbs []string
 	for _, s := range v.stack {
 		t := s.title
-		if s.kind != "" && s.kind != "turns" {
-			t = s.kind + " " + t
+		if s.role == runRole {
+			t = "workflow run " + t
 		}
 		crumbs = append(crumbs, t)
 	}
 	left := accent("ccli") + dim(" › ") + strings.Join(crumbs, dim(" › "))
 	s := v.cur()
 	right := s.hint
-	if s.rebuild != nil {
+	switch s.role {
+	case turnsRole:
 		if v.sortCost {
 			right += " · by cost"
 		}
 		if v.allTurns {
 			right += " · all turns"
+		}
+	case sessionsRole:
+		if n := len(s.list.marked); n > 0 {
+			right += fmt.Sprintf(" · %d marked", n)
 		}
 	}
 	if f := s.list.filter; f != "" {
@@ -624,6 +668,9 @@ func (v *viewer) footer() string {
 	if v.filter {
 		return fitLine(accent(" /")+v.query+"\x1b[7m \x1b[0m"+dim("  enter keeps it · esc clears"), v.w)
 	}
+	if c := v.confirm; c != nil {
+		return fitLine(warn(" "+c.question)+dim("  y yes · any other key no"), v.w)
+	}
 	if v.status != "" {
 		return fitLine(warn(v.status), v.w)
 	}
@@ -634,9 +681,16 @@ func (v *viewer) footer() string {
 		keys = []string{"↑↓ scroll", "space page", "esc back", "t tools", "T thinking", "c context", "o agents", "y copy prompt"}
 	default:
 		keys = []string{"↑↓ move", "enter open", "/ filter"}
-		if s.rebuild != nil {
+		switch s.role {
+		case sessionsRole:
+			if v.showHidden {
+				keys = append(keys, "m mark", "u bring back", "H all sessions")
+			} else {
+				keys = append(keys, "m mark", "x hide", "H hidden")
+			}
+		case turnsRole:
 			keys = append(keys, "s sort", "a all turns", "o agents", "y copy prompt", "t tools")
-		} else if s.kind != "" || len(v.stack) > 1 {
+		default:
 			keys = append(keys, "o agents")
 		}
 		if len(v.stack) > 1 {
@@ -656,6 +710,11 @@ func (v *viewer) helpLines(n int) []string {
 		"  enter          open: a session's turns, a workflow run's agents; on a turn, focus its preview",
 		"  tab → l        focus the preview; esc ← h goes back a level",
 		"  mouse          the wheel scrolls the pane under the pointer; a click selects a row",
+		"",
+		bold("  Sessions"),
+		"  m              mark the session, to hide several at once (/ then m to pick from a filter)",
+		"  x              hide the marked sessions, or the selected one: lists leave them out",
+		"  H              list only hidden sessions, where u brings them back",
 		"",
 		bold("  Turns"),
 		"  /              filter the list by what the prompt says",

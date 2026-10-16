@@ -80,6 +80,7 @@ Usage:
   ccli fork <id> --to <acct>         continue a session under a new id, in any account
   ccli resume <id>                   run claude --resume in the session's account and folder
   ccli resume <id> -a <acct> --sync  resume in another account, bringing its copy up to date first
+  ccli hide|unhide <id>...           leave sessions out of lists, or bring them back (totals still count them)
   ccli statusline -- <cmd> [args]    status line wrapper that records rate limits
   ccli index [--rebuild]             update the index (other commands do this first)
   ccli version

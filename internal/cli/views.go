@@ -149,6 +149,7 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 	days, since := sessionFlags(fs, &f, &accts)
 	fs.StringVar(&f.Sort, "sort", "last", "sort by last, start, cost, tokens or active")
 	fs.IntVar(&f.Limit, "n", 40, "show at most N sessions (0 = all)")
+	hiddenFlag(fs, &f)
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}

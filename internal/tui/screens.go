@@ -17,11 +17,27 @@ import (
 // the project's color. The project used last comes first, and the newest
 // session first within it; the preview is `ccli show`.
 func (v *viewer) sessionsScreen() (*screen, error) {
-	page, err := v.src.Sessions(v.ctx, query.Filter{Loc: v.loc, Sort: "last"})
+	s := newScreen("sessions", sessionsRole)
+	s.rebuild = func(v *viewer) ([]item, error) { return v.sessionItems(s) }
+	items, err := s.rebuild(v)
 	if err != nil {
 		return nil, err
 	}
-	s := newScreen("sessions", "")
+	s.list.set(items)
+	return s, nil
+}
+
+// sessionItems lists the sessions to show, the hidden ones when the viewer
+// asks for them, and sets the screen's title and hint to match.
+func (v *viewer) sessionItems(s *screen) ([]item, error) {
+	f := query.Filter{Loc: v.loc, Sort: "last"}
+	if v.showHidden {
+		f.Show = query.HiddenOnly
+	}
+	page, err := v.src.Sessions(v.ctx, f)
+	if err != nil {
+		return nil, err
+	}
 	groups := groupByProject(page.Sessions)
 	var items []item
 	for _, g := range groups {
@@ -30,12 +46,22 @@ func (v *viewer) sessionsScreen() (*screen, error) {
 			items = append(items, v.sessionItem(row))
 		}
 	}
-	s.list.set(items)
-	s.hint = fmt.Sprintf("%d sessions · %d projects", len(page.Sessions), len(groups))
-	return s, nil
+	projects := render.Plural(len(groups), "project")
+	if v.showHidden {
+		s.title = "hidden sessions"
+		s.hint = render.Plural(len(page.Sessions), "hidden session") + " · " + projects
+		return items, nil
+	}
+	s.title = "sessions"
+	s.hint = render.Plural(len(page.Sessions), "session") + " · " + projects
+	if page.Hidden > 0 {
+		s.hint += fmt.Sprintf(" · %d hidden", page.Hidden)
+	}
+	return items, nil
 }
 
 type projectGroup struct {
+	key  string // the folder, or the project key without one
 	name string
 	rows []query.SessionRow
 	usd  float64
@@ -58,7 +84,7 @@ func groupByProject(rows []query.SessionRow) []*projectGroup {
 			if name == "" {
 				name = "(no folder)"
 			}
-			g = &projectGroup{name: name}
+			g = &projectGroup{key: key, name: name}
 			byKey[key] = g
 			groups = append(groups, g)
 		}
@@ -84,7 +110,7 @@ func projectColor(name string) string {
 func projectHeader(g *projectGroup) item {
 	return item{
 		header: true,
-		id:     "project:" + g.name,
+		id:     "project:" + g.key,
 		row: func(w int) string {
 			n := "1 session"
 			if len(g.rows) != 1 {
@@ -145,9 +171,9 @@ func (v *viewer) turnsScreen(ref string) (*screen, error) {
 	if title == "" {
 		title = query.ShortID(l.Session.ID)
 	}
-	s := newScreen(title, "turns")
-	s.rebuild = func(v *viewer) []item { return v.turnItems(ref, l) }
-	s.list.set(s.rebuild(v))
+	s := newScreen(title, turnsRole)
+	s.rebuild = func(v *viewer) ([]item, error) { return v.turnItems(ref, l), nil }
+	s.list.set(v.turnItems(ref, l))
 	s.hint = fmt.Sprintf("%d typed · %s", l.Human(), render.USD(l.Session.Cost.USD))
 	// Start on the latest turn: that is usually the one being looked for.
 	if n := len(s.list.shown); n > 0 && !v.sortCost {
@@ -223,7 +249,7 @@ func (v *viewer) turnItems(ref string, l *query.TurnList) []item {
 
 // agentsScreen lists subagents (as a tree) and workflow runs.
 func (v *viewer) agentsScreen(ref, title string, nodes []query.AgentNode, runs []query.RunInfo) *screen {
-	s := newScreen(title, "")
+	s := newScreen(title, agentsRole)
 	var items []item
 	var walk func(ns []query.AgentNode, prefix string)
 	walk = func(ns []query.AgentNode, prefix string) {
@@ -263,7 +289,7 @@ func (v *viewer) agentsScreen(ref, title string, nodes []query.AgentNode, runs [
 			},
 			open: func(data any) *screen {
 				d := data.(runData)
-				rs := newScreen(name, "workflow run")
+				rs := newScreen(name, runRole)
 				var its []item
 				pw := 0
 				for _, n := range d.nodes {

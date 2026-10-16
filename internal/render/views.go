@@ -89,8 +89,15 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 	if p.Matched > len(p.Sessions) {
 		more = fmt.Sprintf(", showing %d (use -n)", len(p.Sessions))
 	}
-	t.println(t.dim(fmt.Sprintf("%d sessions%s · %s tokens · %s cached · %s list price", p.Matched, more,
+	count := plural(p.Matched, "session")
+	if p.Filter.Show == query.HiddenOnly {
+		count = plural(p.Matched, "hidden session")
+	}
+	t.println(t.dim(fmt.Sprintf("%s%s · %s tokens · %s cached · %s list price", count, more,
 		Num(p.Tokens.InOut()), Num(p.Tokens.CacheRead), costText(p.Cost))))
+	if p.Hidden > 0 {
+		t.println(t.dim(fmt.Sprintf("%s left out: ccli sessions --hidden lists them", plural(p.Hidden, "hidden session"))))
+	}
 	t.println(t.dim("● running   × transcript deleted (history kept)   + unpriced models left out"))
 }
 
@@ -150,6 +157,9 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 		state = t.paint(cLive, " ● running")
 	case d.Missing:
 		state = t.warn(" transcript deleted, history kept")
+	}
+	if d.Hidden {
+		state += t.dim(" · hidden from lists (ccli unhide brings it back)")
 	}
 	t.println(t.dim(d.ID+" · "+d.Account) + state)
 	t.println()

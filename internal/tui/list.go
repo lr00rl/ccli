@@ -36,6 +36,7 @@ type list struct {
 	cursor int   // index into shown
 	offset int   // first shown row on screen
 	filter string
+	marked map[string]bool // ids of marked items
 }
 
 func (l *list) set(items []item) {
@@ -164,16 +165,19 @@ func (l *list) view(w, height int, focused bool) []string {
 		if it.dim {
 			text = dim(ansi.Strip(text))
 		}
-		mark := "  "
+		bar, tick := " ", " "
 		if c == l.cursor {
 			if focused {
-				mark = accent("▌ ")
+				bar = accent("▌")
 			} else {
-				mark = dim("▌ ")
+				bar = dim("▌")
 			}
 			text = bold(ansi.Strip(text))
 		}
-		out = append(out, fitLine(mark+text, w))
+		if l.marked[it.id] {
+			tick = accent("✓")
+		}
+		out = append(out, fitLine(bar+tick+text, w))
 	}
 	return out
 }
@@ -202,3 +206,32 @@ func bold(s string) string   { return paint("1", s) }
 func accent(s string) string { return paint("38;5;75", s) }
 func money(s string) string  { return paint("38;5;114", s) }
 func warn(s string) string   { return paint("38;5;214", s) }
+
+// toggleMark marks the item with id, or clears its mark.
+func (l *list) toggleMark(id string) {
+	if l.marked[id] {
+		delete(l.marked, id)
+		return
+	}
+	if l.marked == nil {
+		l.marked = map[string]bool{}
+	}
+	l.marked[id] = true
+}
+
+// targets are the ids of the marked items in list order, or the selected
+// item's id when none is marked.
+func (l *list) targets() []string {
+	var ids []string
+	for _, it := range l.all {
+		if l.marked[it.id] {
+			ids = append(ids, it.id)
+		}
+	}
+	if len(ids) == 0 {
+		if idx := l.selected(); idx >= 0 {
+			ids = append(ids, l.all[idx].id)
+		}
+	}
+	return ids
+}

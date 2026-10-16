@@ -13,6 +13,7 @@ sessions, ids and costs; only the times move with the day you generate it.
 - [Find the prompts worth rewriting](#find-the-prompts-worth-rewriting)
 - [Follow the agents](#follow-the-agents)
 - [Browse interactively](#browse-interactively)
+- [Set sessions aside](#set-sessions-aside)
 - [Work with two accounts](#work-with-two-accounts)
 - [Watch your limits](#watch-your-limits)
 - [Script it](#script-it)
@@ -208,9 +209,9 @@ A workflow run lists its agents with their phase, how each ended (`done`,
 
 `ccli view` puts the same views in one browser: sessions grouped by project
 (the project used last first; `/` and a project name narrows the list to it),
-then a session's turns, then the agents a turn started, then an agent's transcript. The preview
-on the right follows the selection; on a narrow terminal the preview opens
-full screen.
+then a session's turns, then the agents a turn started, then an agent's
+transcript. The preview on the right follows the selection; on a narrow
+terminal the preview opens full screen.
 
 ```sh
 ccli view               # all sessions
@@ -233,12 +234,39 @@ ccli view 928fce20      # start at one session's turns
 | `o` | list the agents and workflow runs the selected turn started |
 | `y` | copy the prompt to the clipboard |
 | `t` `T` `c` `r` | toggle tool details, thinking, added context, raw text |
+| `m` | in the sessions list, mark a session (to hide several at once) |
+| `x` | hide the marked sessions, or the selected one, after asking |
+| `H` | list only hidden sessions; `u` there brings them back |
 | `?` | list every key |
 | `q` | quit |
 
 The mouse wheel scrolls the pane under the pointer, and a click selects a
 row. When you press `enter` on a row whose preview is still loading, it opens
 as soon as the preview arrives.
+
+## Set sessions aside
+
+One-off questions and abandoned attempts pile up and push the sessions you
+still care about down the list. Hide them:
+
+```sh
+ccli hide 9614539f 5bd7b5d9
+```
+
+Hidden sessions leave `ccli sessions`, `ccli prompts` and the sessions list of
+`ccli view`. Nothing else changes: the transcripts stay where Claude Code put
+them, so `ccli resume` still works, `ccli show` and `ccli log` still open them
+by id, and `stats`, `quota` and `accounts` still count what they used. Hiding
+marks the session, so its copies in other accounts go too.
+
+In `ccli view`, `m` marks sessions and `x` hides the marked ones, or the
+selected one when none is marked, after a question in the footer. Filtering
+first makes this quick: `/` and `tmp`, then `m` on each session to clear out.
+
+To see what you hid, use `ccli sessions --hidden` or `H` in `view`. Bring a
+session back with `ccli unhide <id>` or `u` in that list. A hidden session
+that you resume and use again shows again by itself. A session that is running
+cannot be hidden: hide it once it has ended.
 
 ## Work with two accounts
 

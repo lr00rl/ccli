@@ -33,6 +33,7 @@ type Filter struct {
 	Search   string         `json:"search,omitempty"`
 	Sort     string         `json:"sort,omitempty"` // last, start, cost, tokens, active
 	Limit    int            `json:"limit,omitempty"`
+	Show     Visibility     `json:"show"` // lists only: hidden sessions are left out unless asked for
 	Loc      *time.Location `json:"-"`
 }
 
@@ -141,6 +142,7 @@ type SessionRow struct {
 	Team         string    `json:"team,omitempty"`
 	AgentName    string    `json:"agent_name,omitempty"`
 	Live         bool      `json:"live"`
+	Hidden       bool      `json:"hidden,omitempty"` // set aside with `ccli hide`; counted in totals, left out of lists
 	Missing      bool      `json:"transcript_missing"`
 	GitBranch    string    `json:"git_branch,omitempty"`
 	Entrypoint   string    `json:"entrypoint,omitempty"`
@@ -152,6 +154,7 @@ type SessionPage struct {
 	Filter   Filter       `json:"filter"`
 	Sessions []SessionRow `json:"sessions"`
 	Matched  int          `json:"matched"`
+	Hidden   int          `json:"hidden"` // hidden sessions in range that were left out
 	Tokens   Tokens       `json:"tokens"`
 	Cost     Cost         `json:"cost"`
 }
