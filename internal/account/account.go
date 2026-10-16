@@ -42,6 +42,21 @@ func (a Account) Kind() Tool {
 	return a.Tool
 }
 
+// SelectEnv names the environment variable that points the account's tool
+// at its dir, and the value to give it. The value is empty for the tool's
+// default dir (~/.claude, ~/.codex), where the variable must stay unset:
+// Claude Code keys its login on whether CLAUDE_CONFIG_DIR is set at all.
+func (a Account) SelectEnv() (name, value string) {
+	name, def := "CLAUDE_CONFIG_DIR", ".claude"
+	if a.Kind() == Codex {
+		name, def = "CODEX_HOME", ".codex"
+	}
+	if home, err := os.UserHomeDir(); err != nil || filepath.Clean(a.Dir) != filepath.Join(home, def) {
+		value = a.Dir
+	}
+	return name, value
+}
+
 // Live is a running Claude Code process, from <dir>/sessions/<pid>.json.
 type Live struct {
 	Account   string `json:"account"`

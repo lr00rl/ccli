@@ -52,6 +52,7 @@ type fixture struct {
 func setup(t *testing.T) *fixture {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("HOME", root) // the default account is ~/.claude, as on a real machine
 	mk := func(name, dir string) account.Account {
 		os.MkdirAll(filepath.Join(dir, "projects"), 0o755)
 		return account.Account{Name: name, Dir: dir}

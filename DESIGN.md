@@ -33,8 +33,17 @@ registry), `teams/`, `jobs/`, `session-env/`, or anything else in a config dir.
 From `.claude.json` it reads only `oauthAccount.emailAddress`,
 `organizationName` and `billingType`, to label an account. From
 `<dir>/ccline/.api_usage_cache.json`, when a status line program left one,
-it reads only the usage percentages and times. It never sends a request to a
-model or to any other service (see Quota).
+it reads only the usage percentages and times. ccli itself never sends a
+request to a model or to any other service.
+
+The one exception to "reader" is `quota` without `--offline`: it starts each
+account's own tool once to ask for the current limits (see Quota). Claude
+Code and Codex answer with their own login; ccli still reads no credentials.
+Starting them does what any start does to their own files: Claude Code
+refreshes cache entries in `.claude.json`, and Codex writes to its databases
+and plugin cache. They run in `$XDG_DATA_HOME/ccli/tool-runs/`, an empty
+folder of ccli's own, and ccli saves each answer as the account's quota
+snapshot.
 
 ## What a session consists of
 
@@ -369,7 +378,7 @@ ccli log <id> --agent <a>          a subagent's transcript; --run <r> a workflow
 ccli view [id]                     interactive browser: sessions, turns, agents
 ccli prompts [-a acct] [--days N] [--project p] [-q text] [--sort last|cost|tokens|tools|duration|length] [-n N] [--hidden]
 ccli stats [-a acct] [--days N]    overview: KPIs, daily chart, projects, models, hour x weekday, session shape, skills
-ccli quota [-a acct]               subscription limits per account
+ccli quota [-a acct] [--offline]   subscription limits per account, asked of the tools now
 ccli diff <a> <b> [--project p]    sessions only in a, only in b, identical, ahead, diverged
 ccli copy <id>... --to acct        copy sessions (fast-forward only)
 ccli move <id>... --to acct        copy, then archive and remove the source
@@ -485,14 +494,40 @@ on the next open, except for sessions tagged in the meantime.
 
 ## Quota
 
-The only documented source of subscription limits is the status line input
-(code.claude.com/docs/en/statusline): `rate_limits.five_hour` and
-`rate_limits.seven_day`, each with `used_percentage` and `resets_at` (epoch
-seconds), for Pro and Max accounts, present after the session's first API
-response. `/usage` is not documented as available under `claude -p`, so ccli
-does not run it, and it never calls a usage endpoint with stored credentials
-(the terms forbid third-party tools collecting or intermediating Claude.ai
-credentials).
+ccli never calls a usage endpoint with stored credentials (the terms forbid
+third-party tools collecting or intermediating Claude.ai credentials), and
+it does not run `/usage`, which is not documented as available under
+`claude -p`. It asks the tools instead, and keeps passive sources as the
+fallback.
+
+Live check (`quota` without `--offline`), one per account, in parallel,
+while the index is brought up to date:
+
+- Claude Code: `claude -p --input-format stream-json --output-format
+  stream-json --verbose --setting-sources local --strict-mcp-config
+  --no-session-persistence`, sent one control request,
+  `{"subtype":"get_usage","skip_behaviors":true}`. This is the request behind
+  `/usage` in Claude Code's SDK protocol, which Claude Code marks
+  experimental. The answer has `rate_limits.five_hour`, `seven_day`,
+  `seven_day_opus`, `seven_day_sonnet` and `model_scoped[]` (each a
+  percentage and an ISO reset time), `extra_usage`, and `subscription_type`.
+  `--setting-sources local` in an empty folder leaves out the user's
+  settings, so no hook, plugin or settings env applies; `--strict-mcp-config`
+  with no config starts no MCP server; no prompt is sent and no transcript is
+  written. It takes about 3 to 5 seconds, most of it Claude Code starting.
+- Codex: `codex app-server`, sent `initialize`, `initialized` and
+  `account/rateLimits/read`. Windows are placed by `windowDurationMins` (300
+  and 10080), as in the logs; other lengths and other buckets
+  (`rateLimitsByLimitId`) become named extra windows.
+- Both get the user's environment minus `TMUX`, `TMUX_PANE`, `CLAUDECODE` and
+  `CLAUDE_CODE_ENTRYPOINT` (so neither takes itself for a nested run), with
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set for an account other than the
+  default dir and unset for it. The tool's login is used as it is.
+- A check that fails (not installed, not signed in, an API-key login, no
+  answer in 30 seconds) is reported with the tool's reason, and the account
+  falls back to its saved readings. `--offline` makes no check.
+
+Passive sources, kept for `--offline` and as the fallback:
 
 - `ccli statusline -- <command> [args]` is an opt-in wrapper for the user's
   status line. It reads the JSON from stdin, saves `rate_limits` for the
@@ -509,11 +544,13 @@ credentials).
 - Codex writes its own limits to its rollouts (see Codex): the index saves
   the latest reading per Codex account as that account's snapshot, marked
   as coming from Codex's logs, with the plan it names.
-- `ccli quota [-a acct]` shows, per account, each window's percentage, reset
-  time and source, and the tokens and list-price cost ccli counted since the
-  window started (its reset time minus 5 hours or 7 days). A window whose
-  reset time has passed is shown as reset, with whether anything was used
-  here since.
+Output: `ccli quota [-a acct] [--offline]` shows, per account, each window's
+percentage, reset time and source (live from the tool, or which saved
+source and how old), the extra windows and extra use a live check reports,
+and the tokens and list-price cost ccli counted since the 5-hour and weekly
+windows started (the reset time minus 5 hours or 7 days). A saved window
+whose reset time has passed is shown as reset, with whether anything was
+used here since.
 
 ## Format stability
 

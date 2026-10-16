@@ -51,9 +51,13 @@ type Snapshot struct {
 	FiveHour   *Window   `json:"five_hour,omitempty"`
 	SevenDay   *Window   `json:"seven_day,omitempty"`
 	// Source is where the reading came from: empty for the status line
-	// wrapper, FromCodexLog for the rate limits Codex writes to its logs.
+	// wrapper, FromCodexLog for the rate limits Codex writes to its logs,
+	// FromClaudeLive or FromCodexLive for a live check.
 	Source string `json:"source,omitempty"`
 	Plan   string `json:"plan,omitempty"` // the subscription plan, when the source names it
+	// Limits and Extra come only from a live check (see Checker).
+	Limits []Limit `json:"limits,omitempty"`
+	Extra  *Extra  `json:"extra_usage,omitempty"`
 }
 
 // FromCodexLog marks a snapshot read from Codex's session logs.
@@ -351,7 +355,7 @@ type Reading struct {
 	UsedPercent float64   `json:"used_percent"`
 	ResetsAt    time.Time `json:"resets_at,omitempty"` // zero when the source did not say
 	At          time.Time `json:"reported_at"`
-	Source      string    `json:"source"` // "status line", "ccline" or "Codex's logs"
+	Source      string    `json:"source"` // "Claude Code" or "Codex" (live), "status line", "ccline" or "Codex's logs"
 }
 
 // Expired reports whether the window has reset since the reading.
@@ -386,6 +390,19 @@ func CclineCache(dir string) (Snapshot, bool) {
 	return s, s.FiveHour != nil || s.SevenDay != nil
 }
 
+// SourceName is how a snapshot's Source reads in output.
+func SourceName(source string) string {
+	switch source {
+	case FromCodexLog:
+		return "Codex's logs"
+	case FromClaudeLive:
+		return "Claude Code"
+	case FromCodexLive:
+		return "Codex"
+	}
+	return "status line"
+}
+
 // Latest picks, for each window, the most recent of the status line
 // snapshot and the ccline cache. A reading without a reset time borrows the
 // other source's when that is still ahead of the reading.
@@ -404,8 +421,8 @@ func Latest(status, ccline *Snapshot) (five, seven *Reading) {
 				continue
 			}
 			name := src.name
-			if src.s.Source == FromCodexLog {
-				name = "Codex's logs"
+			if src.s.Source != "" {
+				name = SourceName(src.s.Source)
 			}
 			r := &Reading{UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt, At: src.s.CapturedAt, Source: name}
 			if out == nil || r.At.After(out.At) {

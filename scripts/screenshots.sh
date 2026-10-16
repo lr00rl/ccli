@@ -29,7 +29,10 @@ ccli() {
 }
 ccli index >/dev/null
 
-# Two status line snapshots, one per account, for ccli quota.
+# Saved readings for ccli quota, which runs with --offline here: a live
+# check would start the real Claude Code and Codex. The work account's comes
+# from the status line wrapper; the default account's is a live check's
+# answer as quota saves it, two minutes old.
 now=$(date +%s)
 snap() { # snap <config dir> <5h %> <5h reset> <7d %> <7d reset>
 	local tp
@@ -37,8 +40,12 @@ snap() { # snap <config dir> <5h %> <5h reset> <7d %> <7d reset>
 	printf '{"session_id":"demo","transcript_path":"%s","model":{"id":"claude-opus-5-5"},"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' \
 		"$tp" "$2" "$3" "$4" "$5" | ccli statusline -- cat >/dev/null
 }
-snap "$home/.claude" 31.5 $((now + 7800)) 58 $((now + 302400))
 snap "$home/.claude-work" 74 $((now + 3000)) 41.2 $((now + 190000))
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+jq -n --arg dir "$home/.claude" --arg at "$(iso $((now - 120)))" --arg r5 "$(iso $((now + 7800)))" --arg r7 "$(iso $((now + 302400)))" \
+	'{account: "default", config_dir: $dir, captured_at: $at, source: "claude-live", plan: "max",
+	  five_hour: {used_percent: 31.5, resets_at: $r5}, seven_day: {used_percent: 58, resets_at: $r7},
+	  limits: [{name: "Fable weekly", used_percent: 12, resets_at: $r7}]}' >"$home/.local/share/ccli/quota/default.json"
 
 lead=$(ccli sessions --json -n 200 | jq -r '.sessions[] | select(.title == "Audit payment retries across services") | .id')
 ahead=$(ccli diff default work --json | jq -r '[.[] | select(.state | test("ahead"))][0].session_id')
@@ -80,7 +87,7 @@ COLS=100 shot run log "${lead:0:8}" --run "${run:0:8}"
 cx=$(ccli sessions -a codex --json | jq -r '.sessions[] | select(.title | startswith("Add per-client")) | .id')
 COLS=100 shot codex log "${cx:0:8}" 3 --tools
 shot accounts accounts
-shot quota quota
+shot quota quota --offline
 shot diff diff default work --project web-dashboard --all
 shot copy copy "${ahead:0:8}" --from work --to default
 

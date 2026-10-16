@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/quota"
@@ -22,8 +26,31 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	var accts accountsFlag
 	fs := newFlags("quota", a, &c)
 	fs.Var(&accts, "a", "account (repeat or comma separate; default all)")
+	offline := fs.Bool("offline", false, "show the last saved figures instead of asking Claude Code and Codex now")
 	if _, err := parse(fs, args); err != nil {
 		return err
+	}
+	pick := func(all []account.Account) []account.Account {
+		var out []account.Account
+		for _, ac := range all {
+			if len(accts) == 0 || contains(accts, ac.Name) {
+				out = append(out, ac)
+			}
+		}
+		return out
+	}
+	// The live checks run while the index is brought up to date; stopping
+	// early (an unknown account, an index error) cancels them.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var checks chan map[string]liveCheck
+	if !*offline {
+		found, err := account.Discover()
+		if err != nil {
+			return err
+		}
+		checks = make(chan map[string]liveCheck, 1)
+		go func() { checks <- checkLive(ctx, pick(found), store.DataDir()) }()
 	}
 	svc, err := a.prepare(ctx, c, accts)
 	if err != nil {
@@ -34,16 +61,39 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	if err != nil {
 		return err
 	}
+	chosen := pick(a.accts)
+	var live map[string]liveCheck
+	if checks != nil {
+		// The tools take a few seconds to start and answer; say so on a
+		// terminal, and clear the line once they have.
+		f, ok := a.errw.(*os.File)
+		note := ok && !c.json && term.IsTerminal(int(f.Fd()))
+		if note {
+			fmt.Fprint(f, "Asking each account's tool for its current limits (--offline skips this)…")
+		}
+		live = <-checks
+		if note {
+			fmt.Fprint(f, "\r\x1b[K")
+		}
+	}
 	now := time.Now()
 	var rows []render.QuotaRow
-	for _, ac := range a.accts {
-		if len(accts) > 0 && !contains(accts, ac.Name) {
-			continue
-		}
-		r := render.QuotaRow{Account: ac.Name, Email: ac.Email, Tool: ac.Kind()}
+	for _, ac := range chosen {
+		r := render.QuotaRow{Account: ac.Name, Email: ac.Email, Tool: ac.Kind(), Offline: *offline}
 		var status, cc *quota.Snapshot
 		if s, ok := snaps[ac.Name]; ok {
-			status, r.Plan = &s, s.Plan
+			status = &s
+		}
+		if l, ok := live[ac.Name]; ok {
+			if l.err != nil {
+				r.LiveError = l.err.Error()
+			} else {
+				status, r.Live = &l.snap, true
+			}
+		}
+		if status != nil {
+			r.Plan, r.Limits, r.Extra = status.Plan, status.Limits, status.Extra
+			r.LimitsAt, r.LimitsFrom = status.CapturedAt, quota.SourceName(status.Source)
 		}
 		if ac.Kind() == account.Claude {
 			if s, ok := quota.CclineCache(ac.Dir); ok {
@@ -78,6 +128,40 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	}
 	a.term(c).Quota(rows)
 	return nil
+}
+
+// liveCheck is one account's answer to a live check.
+type liveCheck struct {
+	snap quota.Snapshot
+	err  error
+}
+
+// checkLive asks each account's tool for its limits at once, in parallel,
+// and saves each answer as the account's latest snapshot. The tools run in
+// an empty folder of ccli's own (see quota.Checker).
+func checkLive(ctx context.Context, accts []account.Account, dataDir string) map[string]liveCheck {
+	c := quota.Checker{WorkDir: filepath.Join(dataDir, "tool-runs"), Client: Version}
+	now := time.Now()
+	out := make(map[string]liveCheck, len(accts))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, ac := range accts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := c.Check(ctx, ac, now)
+			if err == nil {
+				// The figures are shown either way; a failed save only
+				// means --offline will not have them.
+				_ = quota.Save(dataDir, s)
+			}
+			mu.Lock()
+			out[ac.Name] = liveCheck{s, err}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 func contains(ss []string, s string) bool {

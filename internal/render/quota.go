@@ -20,6 +20,17 @@ type QuotaRow struct {
 	SevenDay *quota.Reading `json:"seven_day,omitempty"`
 	Use5h    WindowUse      `json:"use_five_hour"`
 	Use7d    WindowUse      `json:"use_seven_day"`
+	// Limits and Extra come from a live check: per-model weekly windows,
+	// windows of other lengths, and pay-as-you-go use past the plan.
+	Limits     []quota.Limit `json:"limits,omitempty"`
+	Extra      *quota.Extra  `json:"extra_usage,omitempty"`
+	LimitsAt   time.Time     `json:"-"` // when the snapshot holding Limits was taken
+	LimitsFrom string        `json:"-"` // and by what
+	// Live is true when the figures were checked just now; LiveError says
+	// why a check failed, and the figures are then the last saved ones.
+	Live      bool   `json:"live"`
+	LiveError string `json:"live_error,omitempty"`
+	Offline   bool   `json:"-"` // --offline: no check was made
 }
 
 // WindowUse is what this machine's transcripts used in a window.
@@ -32,8 +43,13 @@ type WindowUse struct {
 
 // Quota prints subscription limits per account.
 func (t Term) Quota(rows []QuotaRow) {
-	missing, claude, codex := false, false, false
+	missing, claude, codex, offline := false, false, false, false
 	for i, r := range rows {
+		offline = offline || r.Offline
+		lw := 9 // the label column: "5-hour", "weekly", or a longer limit's name
+		for _, l := range r.Limits {
+			lw = max(lw, width(l.Name)+1)
+		}
 		if i > 0 {
 			t.println()
 		}
@@ -53,31 +69,59 @@ func (t Term) Quota(rows []QuotaRow) {
 		} else {
 			claude = true
 		}
-		if r.FiveHour == nil && r.SevenDay == nil {
+		if r.LiveError != "" {
+			t.printf("  %s\n", t.warn("live check failed: "+r.LiveError))
+		}
+		if r.FiveHour == nil && r.SevenDay == nil && len(r.Limits) == 0 {
 			missing = missing || r.Tool != account.Codex
 			t.printf("  %s\n", t.dim("no limits recorded yet"))
 		}
-		t.window("5-hour", r.FiveHour, r.Use5h)
-		t.window("weekly", r.SevenDay, r.Use7d)
-		if src := sources(t, r.FiveHour, r.SevenDay); src != "" {
-			t.printf("  %s %s\n", pad("", 9, false), t.dim(src))
+		t.window("5-hour", r.FiveHour, r.Use5h, lw)
+		t.window("weekly", r.SevenDay, r.Use7d, lw)
+		var more *quota.Reading // the time and source of the extra windows
+		for _, l := range r.Limits {
+			t.window(l.Name, &quota.Reading{UsedPercent: l.UsedPercent, ResetsAt: l.ResetsAt}, WindowUse{}, lw)
+			more = &quota.Reading{At: r.LimitsAt, Source: r.LimitsFrom}
+		}
+		if e := r.Extra; e != nil {
+			text := pct(e.UsedPercent) + " of the monthly cap"
+			if e.Limit > 0 {
+				text = fmt.Sprintf("%s of %s this month (%s)", money(e.Used, e.Currency), money(e.Limit, e.Currency), pct(e.UsedPercent))
+			}
+			t.printf("  %s %s\n", t.dim(pad("extra use", lw, false)), text)
+		}
+		if src := sources(t, r.FiveHour, r.SevenDay, more); src != "" {
+			t.printf("  %s %s\n", pad("", lw, false), t.dim(src))
 		}
 	}
 	t.println()
-	if claude {
-		t.println(t.dim("Claude percentages are Anthropic's own figures, as Claude Code passes them to the status line (and ccline"))
-		t.println(t.dim("reads them from the usage API). Use on claude.ai or another machine counts too but shows up only in the next report."))
+	switch {
+	case offline:
+		t.println(t.dim("These are the last saved figures. Without --offline, ccli asks Claude Code and Codex for the current ones."))
+	default:
+		if claude {
+			t.println(t.dim("Claude figures come from Claude Code itself, with the same request /usage makes, so use on claude.ai and"))
+			t.println(t.dim("other machines counts. ccli starts it once per account with no prompt, hooks or MCP servers, and saves the result."))
+		}
+		if codex {
+			t.println(t.dim("Codex figures come from Codex's app server, started once per account; a failed check falls back to its logs."))
+		}
 	}
-	if codex {
-		t.println(t.dim("Codex percentages are OpenAI's own figures, which Codex writes to its session logs with each reply."))
-	}
-	if missing {
-		t.println(t.dim("To record limits, put \"ccli statusline --\" in front of your statusLine command (see ccli statusline -h)."))
+	if missing && offline {
+		t.println(t.dim("To record limits as you work, put \"ccli statusline --\" in front of your statusLine command (see ccli statusline -h)."))
 	}
 }
 
-func (t Term) window(name string, rd *quota.Reading, use WindowUse) {
-	label := t.dim(pad(name, 9, false))
+// money is an amount with its currency: "$12.34", or "12.34 EUR".
+func money(v float64, currency string) string {
+	if currency == "" || strings.EqualFold(currency, "USD") {
+		return fmt.Sprintf("$%.2f", v)
+	}
+	return fmt.Sprintf("%.2f %s", v, currency)
+}
+
+func (t Term) window(name string, rd *quota.Reading, use WindowUse, lw int) {
+	label := t.dim(pad(name, lw, false))
 	spent := usageText(t, use)
 	switch {
 	case rd == nil:
@@ -108,7 +152,7 @@ func (t Term) window(name string, rd *quota.Reading, use WindowUse) {
 	}
 	t.printf("  %s %s%s %s  %s\n", label, t.paint(color, b), t.dim(strings.Repeat("·", cells-width(b))), t.bold(fmt.Sprintf("%6s", pct(rd.UsedPercent))), reset)
 	if spent != "" {
-		t.printf("  %s %s\n", pad("", 9, false), t.dim(spent))
+		t.printf("  %s %s\n", pad("", lw, false), t.dim(spent))
 	}
 }
 
