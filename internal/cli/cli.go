@@ -124,7 +124,7 @@ func (a *app) close() {
 func (a *app) refresh(ctx context.Context, rebuild bool) (index.Stats, error) {
 	tty := isTTY(a.errw)
 	shown := false
-	opt := index.Options{Rebuild: rebuild}
+	opt := index.Options{Rebuild: rebuild, QuotaDir: store.DataDir()}
 	if tty {
 		opt.Progress = func(done, total int, bytes int64) {
 			if total < 20 && !shown {

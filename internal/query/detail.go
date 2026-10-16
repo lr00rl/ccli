@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lr00rl/ccli/internal/account"
 )
 
 // SessionDetail is everything ccli knows about one session.
@@ -92,10 +96,18 @@ type Link struct {
 
 // Resume is how to reopen the session in Claude Code.
 type Resume struct {
-	Account   string `json:"account"`
-	ConfigDir string `json:"config_dir"`
-	Cwd       string `json:"cwd"`
-	Command   string `json:"command"`
+	Account   string   `json:"account"`
+	ConfigDir string   `json:"config_dir"`
+	Cwd       string   `json:"cwd"`
+	Command   string   `json:"command"`
+	Program   string   `json:"program"` // claude or codex
+	Args      []string `json:"args"`
+	// Env names the variable that selects the account (CLAUDE_CONFIG_DIR,
+	// CODEX_HOME); EnvValue is what to set it to, empty for the default dir.
+	Env      string `json:"env"`
+	EnvValue string `json:"env_value,omitempty"`
+	// ForkArg resumes into a new session id; empty when the tool has none.
+	ForkArg   string `json:"fork_arg,omitempty"`
 	Available bool   `json:"available"`
 	Reason    string `json:"reason,omitempty"`
 }
@@ -423,9 +435,20 @@ func (d *DB) resume(det *SessionDetail) Resume {
 			r.ConfigDir = a.Dir
 		}
 	}
-	cmd := "claude --resume " + det.ID
-	if det.Account != "default" {
-		cmd = "CLAUDE_CONFIG_DIR=" + shellQuote(r.ConfigDir) + " " + cmd
+	if d.toolOf(det.Account) == account.Codex {
+		r.Program, r.Args, r.Env = "codex", []string{"resume", det.ID}, "CODEX_HOME"
+		if home, err := os.UserHomeDir(); err != nil || filepath.Clean(r.ConfigDir) != filepath.Join(home, ".codex") {
+			r.EnvValue = r.ConfigDir
+		}
+	} else {
+		r.Program, r.Args, r.Env, r.ForkArg = "claude", []string{"--resume", det.ID}, "CLAUDE_CONFIG_DIR", "--fork-session"
+		if det.Account != "default" {
+			r.EnvValue = r.ConfigDir
+		}
+	}
+	cmd := r.Program + " " + strings.Join(r.Args, " ")
+	if r.EnvValue != "" {
+		cmd = r.Env + "=" + shellQuote(r.EnvValue) + " " + cmd
 	}
 	if det.Cwd != "" {
 		cmd = "cd " + shellQuote(det.Cwd) + " && " + cmd
@@ -437,7 +460,7 @@ func (d *DB) resume(det *SessionDetail) Resume {
 	case det.Missing:
 		r.Reason = "the transcript is gone from disk"
 	case det.Live:
-		r.Reason = "a Claude Code process is running this session"
+		r.Reason = "a " + r.Program + " process is running this session"
 	default:
 		r.Available = true
 	}

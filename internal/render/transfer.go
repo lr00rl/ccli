@@ -171,7 +171,11 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
 		return
 	}
 	t.printf("fork %s from %s into %s as a new session %s\n", query.ShortID(p.SessionID), p.From, p.To, query.ShortID(p.NewSessionID))
-	t.println(t.dim(fmt.Sprintf("  writes a %s transcript and %s; the original is not touched", humanSize(p.Bytes), plural(p.Folders, "session folder"))))
+	writes := "a " + humanSize(p.Bytes) + " transcript"
+	if p.Folders > 0 {
+		writes += " and " + plural(p.Folders, "session folder")
+	}
+	t.println(t.dim("  writes " + writes + "; the original is not touched"))
 	t.println(t.dim("  usage already in the transcript stays with " + p.From + "; only new work counts toward " + p.To))
 	t.println(t.dim("Dry run. Add --apply to do it (a new id is drawn each time)."))
 }

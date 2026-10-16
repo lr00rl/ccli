@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/query"
 )
 
@@ -19,7 +20,11 @@ func (t Term) Accounts(rows []query.AccountSummary, days int) {
 	var cells [][]string
 	for _, a := range rows {
 		email := a.Email
-		if email == "" {
+		switch {
+		case email != "":
+		case a.Kind() == account.Codex:
+			email = t.dim("Codex") // Codex keeps the identity next to its credentials, which ccli does not read
+		default:
 			email = t.dim("(not signed in)")
 		}
 		live := ""
@@ -410,7 +415,7 @@ func (t Term) Overview(o *query.Overview, days int) {
 	if len(o.Filter.Accounts) > 0 {
 		accts = strings.Join(o.Filter.Accounts, ", ")
 	}
-	t.println(t.bold("Claude Code usage") + t.dim(" · "+accts+" · "+span))
+	t.println(t.bold("Usage") + t.dim(" · "+accts+" · "+span))
 	t.println()
 	tiles := [][2]string{
 		{"SESSIONS", fmt.Sprintf("%d", o.Sessions)},

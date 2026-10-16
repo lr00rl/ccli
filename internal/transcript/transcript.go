@@ -96,6 +96,10 @@ type State struct {
 	// for each parse; they are not carried over.
 	Base     int64
 	Imported []Range
+	// Carry is what a transcript format other than Claude Code's needs to
+	// continue an incremental parse (Codex: its running token totals). The
+	// store keeps it as given.
+	Carry string
 }
 
 // Turn is a prompt that starts a turn of the main conversation.
@@ -172,6 +176,24 @@ type Result struct {
 	// Processes holds Claude Code's own per-process totals (cost-state
 	// lines), the latest snapshot per process.
 	Processes []Process
+	// Limits is the latest subscription rate-limit reading in the lines read
+	// (Codex writes one with each token count).
+	Limits *Limits
+}
+
+// Limits is a subscription's rate-limit reading found in a log.
+type Limits struct {
+	At       int64  // unix ms of the line
+	Plan     string // the subscription plan, when the log names it
+	FiveHour *LimitWindow
+	Weekly   *LimitWindow
+}
+
+// LimitWindow is how much of one rate-limit window is used and when it
+// resets.
+type LimitWindow struct {
+	UsedPercent float64
+	ResetsAt    int64 // unix seconds
 }
 
 // Process is one Claude Code process's own accounting for a session, from
@@ -280,7 +302,22 @@ type parser struct {
 // Parse reads complete lines from r. kind decides what counts toward prompts
 // and active time; st continues an earlier parse of the same file.
 func Parse(r io.Reader, kind Kind, st State) (Result, error) {
-	res := Result{
+	res := NewResult(st)
+	p := &parser{kind: kind, res: &res, seen: map[string]int{}, blocks: map[string]bool{}, continued: map[string]bool{}}
+	if res.State.Prompts == nil {
+		res.State.Prompts = map[string]bool{}
+	}
+	err := res.EachLine(r, st.Base, func(off int64, ln []byte) {
+		p.offset = off
+		p.line(ln)
+	})
+	res.State.Base, res.State.Imported, res.State.Prompts = 0, nil, nil
+	return res, err
+}
+
+// NewResult is an empty result that continues from state st.
+func NewResult(st State) Result {
+	return Result{
 		Tools:     map[string]int{},
 		Skills:    map[string]int{},
 		Commands:  map[string]int{},
@@ -289,10 +326,14 @@ func Parse(r io.Reader, kind Kind, st State) (Result, error) {
 		Targets:   map[string]string{},
 		State:     st,
 	}
-	p := &parser{kind: kind, res: &res, seen: map[string]int{}, blocks: map[string]bool{}, continued: map[string]bool{}}
-	if res.State.Prompts == nil {
-		res.State.Prompts = map[string]bool{}
-	}
+}
+
+// EachLine calls fn with each complete line of r, trimmed, and the file
+// offset it starts at (base is the offset r starts at), and counts the bytes
+// and lines read in res. A line longer than MaxLine is counted as skipped and
+// not passed on. A partial last line is left for the next parse, so Consumed
+// covers complete lines only.
+func (res *Result) EachLine(r io.Reader, base int64, fn func(offset int64, line []byte)) error {
 	br := bufio.NewReaderSize(r, 1<<20)
 	var buf []byte     // a line longer than the reader's buffer, being assembled
 	var pending int64  // bytes of the current line read so far
@@ -311,13 +352,13 @@ func Parse(r io.Reader, kind Kind, st State) (Result, error) {
 			continue
 		}
 		if err == io.EOF {
-			break // a partial last line waits for the next parse
+			return nil // a partial last line waits for the next parse
 		}
 		if err != nil {
-			return res, err
+			return err
 		}
 		pending += int64(len(chunk))
-		p.offset = st.Base + res.Consumed
+		off := base + res.Consumed
 		res.Consumed += pending
 		res.Lines++
 		if oversized || pending > MaxLine {
@@ -328,12 +369,12 @@ func Parse(r io.Reader, kind Kind, st State) (Result, error) {
 				buf = append(buf, chunk...)
 				ln = buf
 			}
-			p.line(bytes.TrimSpace(ln))
+			if ln = bytes.TrimSpace(ln); len(ln) > 0 {
+				fn(off, ln)
+			}
 		}
 		buf, pending, oversized = buf[:0], 0, false
 	}
-	res.State.Base, res.State.Imported, res.State.Prompts = 0, nil, nil
-	return res, nil
 }
 
 func (p *parser) imported() bool {
@@ -345,14 +386,32 @@ func (p *parser) imported() bool {
 	return false
 }
 
-func (p *parser) stat() *TurnStat {
-	t := p.res.State.Turn
-	s := p.res.TurnStats[t]
+func (p *parser) stat() *TurnStat { return p.res.Stat() }
+
+// Stat returns the counters of the turn in progress.
+func (res *Result) Stat() *TurnStat {
+	t := res.State.Turn
+	s := res.TurnStats[t]
 	if s == nil {
 		s = &TurnStat{}
-		p.res.TurnStats[t] = s
+		res.TurnStats[t] = s
 	}
 	return s
+}
+
+// AddTurn starts the next turn of the main conversation with its prompt,
+// which begins at file offset off, and counts the prompt as typed or other
+// by its kind.
+func (res *Result) AddTurn(off, ts int64, promptID, kind, text string, images int) {
+	res.State.Turn++
+	t := Turn{Seq: res.State.Turn, Offset: off, PromptID: promptID, TS: ts, Kind: kind, Chars: utf8.RuneCountInString(text), Images: images}
+	t.Text = capText(text, MaxPromptText)
+	res.Turns = append(res.Turns, t)
+	if kind == PromptHuman {
+		res.TypedPrompts++
+	} else {
+		res.OtherPrompts++
+	}
 }
 
 func (p *parser) line(raw []byte) {
@@ -366,27 +425,7 @@ func (p *parser) line(raw []byte) {
 		return
 	}
 	ts := parseTS(l.Timestamp)
-	var gap int64 // active time this line adds
-	if ts > 0 {
-		if res.FirstTS == 0 || ts < res.FirstTS {
-			res.FirstTS = ts
-		}
-		if ts > res.LastTS {
-			res.LastTS = ts
-		}
-		if p.kind == Main {
-			if prev := res.State.PrevTS; prev > 0 && ts > prev {
-				if d := ts - prev; d < ActiveGap.Milliseconds() {
-					gap = d
-					res.ActiveMS += gap
-					res.Activity[ts-ts%3_600_000] += gap
-				}
-			}
-			if ts > res.State.PrevTS {
-				res.State.PrevTS = ts
-			}
-		}
-	}
+	gap := res.Tick(ts, p.kind == Main) // active time this line adds
 	if res.Cwd == "" && l.Cwd != "" {
 		res.Cwd = l.Cwd
 	}
@@ -604,15 +643,10 @@ func (p *parser) user(l line, ts int64) {
 		res.State.Prompts[l.PromptID] = true
 	}
 	res.State.Replay = false
-	res.State.Turn++
-	t := Turn{Seq: res.State.Turn, Offset: p.offset, PromptID: l.PromptID, TS: ts, Kind: kind, Chars: utf8.RuneCountInString(text), Images: images}
-	t.Text = capText(text, MaxPromptText)
-	res.Turns = append(res.Turns, t)
+	res.AddTurn(p.offset, ts, l.PromptID, kind, text, images)
 	if kind != PromptHuman {
-		res.OtherPrompts++
 		return
 	}
-	res.TypedPrompts++
 	if m := commandName.FindStringSubmatch(text); m != nil {
 		name := m[1]
 		if !strings.HasPrefix(name, "/") {
@@ -788,3 +822,41 @@ func capText(s string, n int) string {
 }
 
 var commandName = regexp.MustCompile(`<command-name>\s*([^<\s]+)\s*</command-name>`)
+
+// Tick records a line's time (unix ms; 0 when it has none): the first and
+// last times, and, when active is set, the active time since the previous
+// line, leaving out pauses of ActiveGap or longer. It returns the active
+// time the line added.
+func (res *Result) Tick(ts int64, active bool) int64 {
+	if ts <= 0 {
+		return 0
+	}
+	if res.FirstTS == 0 || ts < res.FirstTS {
+		res.FirstTS = ts
+	}
+	if ts > res.LastTS {
+		res.LastTS = ts
+	}
+	if !active {
+		return 0
+	}
+	var gap int64
+	if prev := res.State.PrevTS; prev > 0 && ts > prev {
+		if d := ts - prev; d < ActiveGap.Milliseconds() {
+			gap = d
+			res.ActiveMS += gap
+			res.Activity[ts-ts%3_600_000] += gap
+		}
+	}
+	if ts > res.State.PrevTS {
+		res.State.PrevTS = ts
+	}
+	return gap
+}
+
+// ParseTS reads an RFC 3339 time as unix milliseconds, 0 when it is empty or
+// malformed.
+func ParseTS(s string) int64 { return parseTS(s) }
+
+// Clean collapses whitespace and caps a title at 200 runes.
+func Clean(s string) string { return clean(s) }

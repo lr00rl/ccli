@@ -141,6 +141,7 @@ var columns = []struct{ table, name, def string }{
 	{"files", "parent_agent", "TEXT NOT NULL DEFAULT ''"},
 	{"files", "phase", "TEXT NOT NULL DEFAULT ''"},
 	{"files", "attribution", "TEXT NOT NULL DEFAULT ''"},
+	{"files", "carry", "TEXT NOT NULL DEFAULT ''"},
 	{"responses", "turn", "INTEGER NOT NULL DEFAULT 0"},
 	{"responses", "imported", "INTEGER NOT NULL DEFAULT 0"},
 	{"processes", "imported", "INTEGER NOT NULL DEFAULT 0"},
@@ -306,6 +307,7 @@ type File struct {
 	PrevTS     int64
 	Turn       int
 	Replay     bool
+	Carry      string // format-specific state the next parse continues from
 	Missing    bool
 }
 
@@ -323,7 +325,7 @@ type AgentMeta struct {
 
 // Files returns every known file by path.
 func (s *Store) Files() (map[string]File, error) {
-	rows, err := s.db.Query(`SELECT id, path, account, session_id, project_key, kind, agent_id, run_id, size, mtime, offset, head_hash, parser, prev_ts, turn, replay, missing FROM files`)
+	rows, err := s.db.Query(`SELECT id, path, account, session_id, project_key, kind, agent_id, run_id, size, mtime, offset, head_hash, parser, prev_ts, turn, replay, carry, missing FROM files`)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +334,7 @@ func (s *Store) Files() (map[string]File, error) {
 	for rows.Next() {
 		var f File
 		var missing int
-		if err := rows.Scan(&f.ID, &f.Path, &f.Account, &f.SessionID, &f.ProjectKey, &f.Kind, &f.AgentID, &f.RunID, &f.Size, &f.MTime, &f.Offset, &f.HeadHash, &f.Parser, &f.PrevTS, &f.Turn, &f.Replay, &missing); err != nil {
+		if err := rows.Scan(&f.ID, &f.Path, &f.Account, &f.SessionID, &f.ProjectKey, &f.Kind, &f.AgentID, &f.RunID, &f.Size, &f.MTime, &f.Offset, &f.HeadHash, &f.Parser, &f.PrevTS, &f.Turn, &f.Replay, &f.Carry, &missing); err != nil {
 			return nil, err
 		}
 		f.Missing = missing != 0
@@ -432,8 +434,8 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 		WHERE id = ? RETURNING born`, f.Born, f.Born, f.Born, f.ID).Scan(&f.Born); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE files SET turn = ?, replay = ?, attribution = CASE WHEN attribution = '' THEN ? ELSE attribution END WHERE id = ?`,
-		r.State.Turn, boolInt(r.State.Replay), r.Attribution, f.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE files SET turn = ?, replay = ?, carry = ?, attribution = CASE WHEN attribution = '' THEN ? ELSE attribution END WHERE id = ?`,
+		r.State.Turn, boolInt(r.State.Replay), r.State.Carry, r.Attribution, f.ID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE files SET size=?, mtime=?, offset=?, head_hash=?, parser=?, prev_ts=?, missing=0,

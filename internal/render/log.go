@@ -198,6 +198,10 @@ func joinWrap(parts []string, sep string, w int) string {
 // Conversation prints a turn's entries. agents label Agent calls with the
 // subagent they started.
 func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNode) {
+	assistant := "Claude"
+	if tr.Speaker != "" {
+		assistant = tr.Speaker
+	}
 	byTool := map[string]query.AgentNode{}
 	var walk func(ns []query.AgentNode)
 	walk = func(ns []query.AgentNode) {
@@ -268,20 +272,20 @@ func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNo
 			}
 			t.println(md(conv.PromptDisplay(e.Text)))
 		case conv.KindText:
-			if speaker == "Claude" && i > 0 && tr.Entries[i-1].Kind == conv.KindTool {
+			if speaker == assistant && i > 0 && tr.Entries[i-1].Kind == conv.KindTool {
 				t.println() // set the reply apart from the tool calls above it
 			}
-			say("Claude")
+			say(assistant)
 			t.println(md(e.Text))
 		case conv.KindThinking:
 			if !opt.Thinking {
 				continue
 			}
-			say("Claude")
+			say(assistant)
 			t.println(t.dim("  thinking"))
 			t.println(t.dim(indentLines(wrapPlain(strings.TrimSpace(e.Text), w-2), "    ")))
 		case conv.KindTool:
-			say("Claude")
+			say(assistant)
 			t.call(e.Call, opt, byTool, w)
 			// A long run of the same tool shows its first two calls and its last.
 			if opt.Tools {
@@ -359,6 +363,11 @@ func (t Term) call(c *conv.Call, opt LogOptions, byTool map[string]query.AgentNo
 func toolInput(c *conv.Call) string {
 	var in map[string]any
 	if json.Unmarshal(c.Input, &in) != nil {
+		// Codex passes some inputs as plain text: a patch, or code to run.
+		var s string
+		if json.Unmarshal(c.Input, &s) == nil {
+			return firstLines(s, 16)
+		}
 		return ""
 	}
 	str := func(k string) string { s, _ := in[k].(string); return s }
@@ -371,6 +380,17 @@ func toolInput(c *conv.Call) string {
 		return firstLines(str("content"), 10)
 	case "Workflow":
 		return firstLines(str("script"), 12)
+	case "exec_command", "shell": // Codex
+		if cmd := str("cmd"); cmd != "" {
+			return "$ " + firstLines(cmd, 20)
+		}
+		if words, ok := in["command"].([]any); ok {
+			parts := make([]string, 0, len(words))
+			for _, w := range words {
+				parts = append(parts, fmt.Sprint(w))
+			}
+			return "$ " + strings.Join(parts, " ")
+		}
 	}
 	b, err := json.MarshalIndent(in, "", "  ")
 	if err != nil {

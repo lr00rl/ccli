@@ -27,7 +27,15 @@ func init() {
 	commands["fork"] = cmdFork
 }
 
-func (a *app) account(name string) (account.Account, error) { return account.Find(a.accts, name) }
+// claudeAccount finds a Claude Code account by name: copying, moving, forking
+// and syncing work on Claude Code transcripts only.
+func (a *app) claudeAccount(name string) (account.Account, error) {
+	ac, err := account.Find(a.accts, name)
+	if err == nil && ac.Kind() != account.Claude {
+		err = fmt.Errorf("%s is a %s home; diff, copy, move, fork and resume -a work between Claude Code accounts", ac.Name, ac.Kind())
+	}
+	return ac, err
+}
 
 // sessionInfo maps account/session to its list row, for titles and activity.
 func sessionInfo(ctx context.Context, svc *query.DB, accts ...string) (map[string]query.SessionRow, error) {
@@ -59,8 +67,14 @@ func cmdDiff(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
-	acA, _ := a.account(pos[0])
-	acB, _ := a.account(pos[1])
+	acA, err := a.claudeAccount(pos[0])
+	if err != nil {
+		return err
+	}
+	acB, err := a.claudeAccount(pos[1])
+	if err != nil {
+		return err
+	}
 	entries, err := transfer.Compare(acA, acB)
 	if err != nil {
 		return err
@@ -121,7 +135,7 @@ func cmdTransfer(ctx context.Context, a *app, args []string, mode transfer.Mode)
 		return err
 	}
 	defer a.close()
-	target, err := a.account(*to)
+	target, err := a.claudeAccount(*to)
 	if err != nil {
 		return err
 	}
@@ -157,6 +171,9 @@ func cmdTransfer(ctx context.Context, a *app, args []string, mode transfer.Mode)
 				// The newest copy is already in the target; look for it elsewhere.
 				src = ""
 				for _, ac := range a.accts {
+					if ac.Kind() != account.Claude {
+						continue
+					}
 					if ac.Name == target.Name {
 						continue
 					}
@@ -171,7 +188,7 @@ func cmdTransfer(ctx context.Context, a *app, args []string, mode transfer.Mode)
 					return fmt.Errorf("%s is only in %s", query.ShortID(id), target.Name)
 				}
 			}
-			ac, err := a.account(src)
+			ac, err := a.claudeAccount(src)
 			if err != nil {
 				return err
 			}
@@ -181,7 +198,7 @@ func cmdTransfer(ctx context.Context, a *app, args []string, mode transfer.Mode)
 		if *from == "" {
 			return errors.New("name sessions, or give --from for a batch")
 		}
-		src, err := a.account(*from)
+		src, err := a.claudeAccount(*from)
 		if err != nil {
 			return err
 		}
@@ -302,16 +319,17 @@ func cmdTransfer(ctx context.Context, a *app, args []string, mode transfer.Mode)
 type ledger struct {
 	ctx                       context.Context
 	a                         *app
+	at                        time.Time // one time for the whole operation, so show groups its files
 	mode, id, newID, from, to string
 	done                      map[string]int64 // path -> end of the range recorded for it
 }
 
 func (a *app) ledger(ctx context.Context, mode, id, newID, from, to string) *ledger {
-	return &ledger{ctx: ctx, a: a, mode: mode, id: id, newID: newID, from: from, to: to, done: map[string]int64{}}
+	return &ledger{ctx: ctx, a: a, at: time.Now(), mode: mode, id: id, newID: newID, from: from, to: to, done: map[string]int64{}}
 }
 
 func (l *ledger) entry(im transfer.Import) store.Transfer {
-	return store.Transfer{At: time.Now(), Mode: l.mode, SessionID: l.id, NewSessionID: l.newID,
+	return store.Transfer{At: l.at, Mode: l.mode, SessionID: l.id, NewSessionID: l.newID,
 		FromAccount: l.from, ToAccount: l.to, Path: im.Path, From: im.From, To: im.To}
 }
 
@@ -372,11 +390,11 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 	if *from != "" {
 		acct = *from
 	}
-	src, err := a.account(acct)
+	src, err := a.claudeAccount(acct)
 	if err != nil {
 		return err
 	}
-	dst, err := a.account(*to)
+	dst, err := a.claudeAccount(*to)
 	if err != nil {
 		return err
 	}
@@ -423,7 +441,7 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 // it is resumed there. A copy that is behind (a prefix of a newer one) is
 // brought up to date when apply is set; diverged copies are never merged.
 func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
-	target, err := a.account(in)
+	target, err := a.claudeAccount(in)
 	if err != nil {
 		return err
 	}
@@ -434,6 +452,9 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 	var mine *cp
 	var others []cp
 	for _, ac := range a.accts {
+		if ac.Kind() != account.Claude {
+			continue
+		}
 		f, err := transfer.Locate(ac, id)
 		if err != nil {
 			if transfer.IsNotFound(err) {
