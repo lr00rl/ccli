@@ -1,18 +1,20 @@
 # ccli
 
-A terminal tool for every Claude Code session on your machine, across all of
-your accounts. It shows what each session used and what that would cost at API
-list price, turn by turn: every prompt you typed, what the model did with it,
-which subagents and workflow runs it started and what they cost. It also shows
-where your subscription limits stand, and it moves a session from one account
-to another and back without mixing up whose usage is whose.
+A terminal tool for every Claude Code and Codex session on your machine, across
+all of your accounts. It shows what each session used and what that would cost
+at API list price, turn by turn: every prompt you typed, what the model did
+with it, which subagents and workflow runs it started and what they cost. It
+also shows where your subscription limits stand, and it moves a Claude Code
+session from one account to another and back without mixing up whose usage is
+whose.
 
 ![ccli stats: totals, daily usage, projects, models, accounts, active hours, session shape and skills](docs/images/stats.png)
 
 An account is one Claude Code config dir: `~/.claude` (shown as `default`) or
 `~/.claude-<name>` (shown as `<name>`), the dir you select with
-`CLAUDE_CONFIG_DIR`. If you keep a personal and a work login side by side,
-ccli sees both and keeps their usage apart.
+`CLAUDE_CONFIG_DIR`. A Codex home is an account too: `~/.codex` (shown as
+`codex`) or `~/.codex-<name>`. If you keep a personal and a work login side by
+side, ccli sees both and keeps their usage apart.
 
 The [tutorial](docs/tutorial.md) walks through the common jobs step by step:
 reviewing your prompts, following agents, switching accounts and watching
@@ -72,9 +74,9 @@ session that is running now.
 To stop seeing sessions you are done with, hide them:
 
 ```sh
-ccli hide 9614539f 5bd7b5d9           # leave them out of lists
+ccli hide 3b3b57cb 21c4ab7e           # leave them out of lists
 ccli sessions --hidden                # list only hidden sessions
-ccli unhide 9614539f                  # bring one back
+ccli unhide 3b3b57cb                  # bring one back
 ```
 
 Hiding is a mark in ccli's own index: the transcripts stay where Claude Code
@@ -84,9 +86,9 @@ hidden sessions. A hidden session that is used again shows again by itself.
 ### One session
 
 ```sh
-ccli show 928fce20            # an id prefix is enough
-ccli show work:928fce20       # name the account when a session exists in two
-ccli resume 928fce20          # cd to its folder and run claude --resume in its account
+ccli show 7a93706c            # an id prefix is enough
+ccli show work:7a93706c       # name the account when a session exists in two
+ccli resume 7a93706c          # cd to its folder and run claude --resume in its account
 ```
 
 ![ccli show: models, the cost split between the main conversation, subagents and workflow runs, the agent tree, teammates, tools and the resume command](docs/images/show.png)
@@ -103,12 +105,12 @@ session under the right account.
 ### Turn by turn
 
 ```sh
-ccli log 928fce20             # every prompt you typed, with what its turn cost
-ccli log 928fce20 3           # one turn in full; 3-6 for a range, last for the latest
-ccli log 928fce20 3 --tools   # with tool inputs and outputs
-ccli log 928fce20 --sort cost # the costliest turns first
-ccli log 928fce20 --agent 55fe21fd   # a subagent's own transcript
-ccli log 928fce20 --run wf_b1a8      # a workflow run's agents and how each ended
+ccli log 7a93706c             # every prompt you typed, with what its turn cost
+ccli log 7a93706c 3           # one turn in full; 3-6 for a range, last for the latest
+ccli log 7a93706c 3 --tools   # with tool inputs and outputs
+ccli log 7a93706c --sort cost # the costliest turns first
+ccli log 7a93706c --agent a24cd2c9   # a subagent's own transcript
+ccli log 7a93706c --run wf_df79      # a workflow run's agents and how each ended
 ```
 
 ![ccli log: each turn with when it ran, how long it took, its cost, tool calls, agents and the prompt](docs/images/log.png)
@@ -130,7 +132,7 @@ Long output goes through your pager.
 
 ```sh
 ccli view                     # browse all sessions
-ccli view 928fce20            # start at one session's turns
+ccli view 7a93706c            # start at one session's turns
 ```
 
 ![ccli view: the turn list on the left and the selected turn on the right](docs/images/view.png)
@@ -177,8 +179,8 @@ ccli quota
 
 For each account: how much of the 5-hour and the weekly window is used, when
 each resets, and what this machine used inside each window, counted from the
-window's real start. The percentages are Anthropic's own figures. ccli takes
-them from two places, whichever reported last:
+window's real start. For Claude Code the percentages are Anthropic's own figures,
+and ccli takes them from two places, whichever reported last:
 
 - Claude Code passes `rate_limits` to your status line command after each
   reply. To let ccli record them, put `ccli statusline --` in front of your
@@ -202,7 +204,7 @@ last report, `quota` says so, and whether anything was used here since.
 
 ```sh
 ccli diff default work                    # which sessions are in one account, both, or ahead
-ccli copy dfaae500 --from work --to default
+ccli copy 746cbfa4 --from work --to default
 ccli move --from work --to default --project checkout --apply
 ```
 
@@ -222,9 +224,9 @@ project keys; all of them travel with the session.
 To keep working on one session from two accounts, switch with `resume`:
 
 ```sh
-ccli resume dfaae500 -a default --sync    # bring default's copy up to date, then resume there
+ccli resume 746cbfa4 -a default --sync    # bring default's copy up to date, then resume there
 # ... work in default, then later:
-ccli resume dfaae500 -a work --sync       # back to work, with what you did in default
+ccli resume 746cbfa4 -a work --sync       # back to work, with what you did in default
 ```
 
 Without `--sync`, `resume -a` tells you when that account's copy is behind
@@ -234,7 +236,7 @@ notes the other one. To continue the other copy here, fork it into a new
 session:
 
 ```sh
-ccli fork 60748107 --from work --to default --apply
+ccli fork d244741f --from work --to default --apply
 ```
 
 A fork copies the transcript and its folders under a new session id, so the
@@ -248,6 +250,19 @@ copied into. A forked session starts at $0 in its new account.
 Every command takes `--json` and prints the same structures, for scripts and
 for a web view that can be added later on top of the same query layer. The
 tutorial has [examples with jq](docs/tutorial.md#script-it).
+
+### Codex
+
+Codex sessions show up next to Claude Code's: in `sessions`, `show`, `log`,
+`view`, `prompts` and `stats`, priced at OpenAI's list prices. A thread that
+spawned agents shows them in its tree, under the turn that started each, and
+`resume` runs `codex resume` in the session's folder.
+
+![ccli log for a Codex turn: the prompt, the reasoning summary, the patch and the commands Codex ran, and its reply](docs/images/codex.png)
+
+Codex writes its rate limits to its own logs with each reply, so `quota`
+shows a Codex account's 5-hour and weekly windows without any setup. Copying
+and moving work between Claude Code accounts only.
 
 ## Commands
 
@@ -264,7 +279,7 @@ tutorial has [examples with jq](docs/tutorial.md#script-it).
 | `ccli diff <a> <b>` | sessions only in one account, in both, ahead or diverged |
 | `ccli copy\|move <id>... --to <acct>` | copy a session to another account; `move` archives the source |
 | `ccli fork <id> --to <acct>` | continue a session under a new id, in any account |
-| `ccli resume <id> [-a <acct> --sync]` | run `claude --resume` in the right account and folder |
+| `ccli resume <id> [-a <acct> --sync]` | run `claude --resume` (or `codex resume`) in the right account and folder |
 | `ccli hide\|unhide <id>...` | leave sessions out of lists, or bring them back; totals still count them |
 | `ccli statusline -- <cmd>` | status line wrapper that records the rate limits |
 | `ccli index [--rebuild]` | update the index (every other command does this first) |
@@ -297,11 +312,18 @@ of their own but are counted apart. When Claude Code writes part of a
 conversation again on resume, the repeat is recognised by its prompt ids and
 counted once.
 
+Codex logs a running total per process with each model call's own usage.
+ccli counts each call once: repeats and the count after a compaction add
+nothing, a resumed thread's restarted counter is a new stream, and a fork
+counts only what came after the history it copied.
+
 ## What it touches
 
 ccli reads transcripts and keeps its own index in
 `~/.local/share/ccli/ccli.db`. It never reads credentials or the Keychain,
-never writes `settings.json` or `.claude.json`, and never calls a model. Only
+never writes `settings.json` or `.claude.json`, and never calls a model. In a
+Codex home it reads only the session logs: never `auth.json`, `config.toml`
+or Codex's own databases. Only
 `copy`, `move`, `fork` and `resume --sync` write into an account, and only the
 files of the session involved. A transcript that cannot be read is reported
 and retried on the next run. [DESIGN.md](DESIGN.md) has the full contract, the

@@ -1,9 +1,12 @@
 # ccli design
 
-`ccli` reports on Claude Code sessions across several local accounts and moves
-sessions between them. An account is one Claude Code config dir: `~/.claude`
-(account `default`) or `~/.claude-<name>` (account `<name>`), selected with
-`CLAUDE_CONFIG_DIR`.
+`ccli` reports on Claude Code and Codex sessions across several local
+accounts, and moves Claude Code sessions between accounts. An account is one
+Claude Code config dir: `~/.claude` (account `default`) or `~/.claude-<name>`
+(account `<name>`), selected with `CLAUDE_CONFIG_DIR`; or one Codex home:
+`~/.codex` (account `codex`) or `~/.codex-<name>` (account `codex-<name>`),
+selected with `CODEX_HOME`. `CCLI_CONFIG_DIRS` and `CCLI_CODEX_DIRS` replace
+either search.
 
 ## Boundaries
 
@@ -17,6 +20,12 @@ ccli is a reader. The only things it writes are:
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
   its new id), and for `move`, an archive of the source under
   `$XDG_DATA_HOME/ccli/archive/` before the source files are removed.
+
+In a Codex home it reads only the rollout files under `sessions/` and
+`archived_sessions/`, and writes nothing. It never opens `auth.json` (which
+holds the credentials and the signed-in identity) or `config.toml`, and never
+opens Codex's SQLite databases: opening one read-only can still create a
+`-shm` file next to it.
 
 It never reads or writes credentials (Keychain, `.credentials.json`), never
 writes `.claude.json`, `settings*.json`, `sessions/` (the live-process
@@ -97,6 +106,61 @@ when there is no meta file. A workflow run's state file,
 `projects/<key>/<id>/workflows/<run>.json`, gives its `workflowName`,
 `status`, `summary`, `startTime`, `durationMs` and `agentCount`; it sits
 under whichever project folder the session was in when the run started.
+
+## Codex
+
+A Codex rollout is one thread: `sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`,
+one `{timestamp, type, payload}` object per line (files written by CLI 0.147
+and later also number their lines with `ordinal`). Line 0 is the thread's
+`session_meta`. The rules below were checked against 2,022 rollouts written by
+CLI 0.114 to 0.150.
+
+- **Sessions and agents**: a thread whose `session_meta.source` is
+  `{subagent: ...}` was started by another thread. It is indexed as a
+  subagent of the user's thread it descends from (`session_id`, or following
+  `parent_thread_id` in older files), nested under the agent that spawned it.
+  The index reads line 0 of a file once, when it first sees it.
+- **Turns**: a turn starts at `event_msg/task_started`. A person's prompt is
+  `event_msg/user_message` up to CLI 0.146, an `item_completed` item of type
+  `UserMessage` since, and in some exec versions only the `response_item`
+  user message. The first prompt in a turn opens it; a later one was sent
+  while the model worked. Text Codex injects (environment, AGENTS.md,
+  permissions, notifications) is recognised by its per-part kinds
+  (`content_item_kinds`, since 2026-08-27) or by its opening tag.
+- **Tokens**: `token_count` carries the running total of the process that
+  wrote it, and that call's own usage (`last_token_usage`). Cached input is
+  part of input and reasoning part of output. A count is new usage when it
+  moves one of the file's streams on by exactly its own usage; one equal to a
+  stream's total repeats an earlier count or follows a compaction (whose last
+  usage is a context estimate) and adds nothing; one that moves a stream on
+  by more, on every field, follows counts that were not written, and the
+  whole difference counts; anything else starts a stream (a resume restarts
+  the counter, and two processes can write one file). The streams' totals
+  carry over between incremental parses (`files.carry`). On real data the
+  usage counted equals Codex's own final total in every file with one
+  stream, and the sum of the streams' totals in every file with several.
+- **Forks**: a thread with `forked_from_id` copied its parent's history, and
+  none of the copy counts. Since CLI 0.147 the copied lines are those below
+  `subagent_history_start_ordinal`, or none when `history_base` is set.
+  Before that the copy is a burst of lines that all carry the time of the
+  fork (session_meta lines of the ancestors included); the fork's own first
+  turn is the last one started in that burst, and its counter continues from
+  the parent's total.
+- **Models**: from `turn_context.model`, and from `thread_settings_applied`,
+  `world_state` or the instructions' provenance before the first turn
+  context. Prices are OpenAI's list prices; models Codex runs through other
+  providers, and ones with no public price, are counted in tokens only.
+- **Limits**: each `token_count` also carries `rate_limits`. Windows are told
+  apart by `window_minutes` (300 for 5 hours, 10080 for the week): what Codex
+  calls primary was the 5-hour window until mid 2026 and is the weekly one
+  since. Only `limit_id` `codex` is read; per-model limits and prepaid
+  credits are left out. The latest reading per account is saved as that
+  account's quota snapshot.
+- **Not supported**: `diff`, `copy`, `move`, `fork` and `resume -a` work
+  between Claude Code accounts only, and Codex has no live-process registry,
+  so a running Codex session is not marked. `resume` runs
+  `codex resume <id>` in the session's folder, with `CODEX_HOME` set for a
+  home other than `~/.codex`.
 
 ## Relationships
 
@@ -225,9 +289,10 @@ sharing a process with a dirty one are reconciled with it.
 
 ## Pricing
 
-An embedded table of list prices per model (USD per million tokens: input,
-output, cache read, 5-minute and 1-hour cache writes, fast-mode input and
-output), with overrides from `~/.config/ccli/prices.json`. Model IDs are
+An embedded table of list prices per model, Anthropic's for Claude and
+OpenAI's for the models Codex runs (USD per million tokens: input, output,
+cache read, 5-minute and 1-hour cache writes, fast-mode input and output, and
+long-context rates above a prompt size), with overrides from `~/.config/ccli/prices.json`. Model IDs are
 normalized: a `[1m]` suffix and a date suffix are dropped. A server-side web
 search adds $0.01. Unknown models are
 counted in tokens and listed as unpriced; their cost is left out, never zero.
@@ -298,7 +363,7 @@ ccli copy <id>... --to acct        copy sessions (fast-forward only)
 ccli move <id>... --to acct        copy, then archive and remove the source
 ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N]   batch
 ccli fork <id> --to acct [--from acct]   copy under a new session id
-ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume with the right account and cwd
+ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
 ccli index [--rebuild]
 ```
@@ -391,6 +456,9 @@ credentials).
   never reads the token ccline used). For each window the most recent of the
   two sources wins; a reading without a reset time borrows the other
   source's when that is still ahead.
+- Codex writes its own limits to its rollouts (see Codex): the index saves
+  the latest reading per Codex account as that account's snapshot, marked
+  as coming from Codex's logs, with the plan it names.
 - `ccli quota [-a acct]` shows, per account, each window's percentage, reset
   time and source, and the tokens and list-price cost ccli counted since the
   window started (its reset time minus 5 hours or 7 days). A window whose

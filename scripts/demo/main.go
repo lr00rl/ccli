@@ -218,6 +218,7 @@ func (g *gen) run(livePID int) error {
 			"pid": livePID, "sessionId": running.id, "cwd": running.cwd, "status": "busy",
 		}))
 	}
+	g.codex()
 	fmt.Printf("wrote %d sessions under %s\n", len(all), g.home)
 	return nil
 }
@@ -231,6 +232,7 @@ type session struct {
 	continued                   string
 	shortfall                   float64
 	script                      []turnScript // played before the generic turns
+	seed                        uint64       // its own random source, see write
 }
 
 func (g *gen) session(p project, daysAgo int) *session {
@@ -248,6 +250,7 @@ func (g *gen) session(p project, daysAgo int) *session {
 		model: p.model,
 		start: start,
 		turns: 4 + g.rng.IntN(22),
+		seed:  g.rng.Uint64(),
 	}
 }
 
@@ -269,6 +272,12 @@ func (t totals) add(model string, in, out, read, write int64) {
 // main transcript's path. A session with a script plays it first; the rest
 // of its turns are generic.
 func (g *gen) write(s *session) string {
+	// A session draws from its own source while it is written: a session from
+	// today stops before now, so how much of it is written depends on the time
+	// of day, and must not change the ids of the sessions made after it.
+	outer := g.rng
+	g.rng = rand.New(rand.NewPCG(s.seed, 1))
+	defer func() { g.rng = outer }()
 	base := filepath.Join(g.dir(s.acct), "projects", key(s.cwd))
 	path := filepath.Join(base, s.id+".jsonl")
 	w := &writer{g: g, s: s, base: base, t: s.start, sum: totals{}, ctx: int64(18_000 + g.rng.IntN(8_000))}
