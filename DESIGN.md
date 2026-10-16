@@ -540,7 +540,9 @@ while the index is brought up to date:
   falls back to its saved readings. `--offline` makes no check.
 - For each window the newest reading among all sources wins (a live answer,
   the status line, ccline, Codex's logs); a reading without a reset time
-  borrows the newest other reading's that is still ahead of it.
+  borrows the newest other reading's that is still ahead of it. A live
+  answer lists every window the account has, so it supersedes older
+  readings: a window it leaves out is not filled from them.
 
 Passive sources, kept for `--offline` and as the fallback:
 
