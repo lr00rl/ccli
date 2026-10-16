@@ -363,5 +363,11 @@ go vet ./...
 go test -race ./...
 ```
 
-Tested on macOS. It builds for Linux, which uses `statx` for file creation
-times, but has not been run there yet.
+Every pull request and every push to `main` runs `gofmt`, `go vet` and
+`go test -race` on macOS and Linux ([ci.yml](.github/workflows/ci.yml)).
+On Linux, ccli reads file creation times with `statx`.
+
+## License
+
+ccli is free software under the
+[GNU Affero General Public License v3.0](LICENSE).
