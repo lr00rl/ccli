@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lr00rl/ccli/internal/transcript"
@@ -76,5 +77,76 @@ func TestApplyFromStaleOffsetIsSkipped(t *testing.T) {
 	}
 	if lines != 3 || calls != 2 {
 		t.Fatalf("lines %d calls %d, want 3 and 2", lines, calls)
+	}
+}
+
+// legacyTitles makes a database the way the short-lived `rename` left it:
+// a titles table beside tags, one name longer than a tag may be.
+func legacyTitles(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "ccli.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{
+		`CREATE TABLE titles(session_id TEXT PRIMARY KEY, title TEXT NOT NULL, at INTEGER NOT NULL)`,
+		`INSERT INTO titles VALUES('s1', 'payments audit', 1), ('s2', 'old name', 2), ('s3', '` + strings.Repeat("长", 50) + `', 3)`,
+		`INSERT INTO tags VALUES('s2', 'kept', 3)`,
+	} {
+		if _, err := s.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p
+}
+
+// Names an earlier ccli gave sessions with `rename` become tags, cut to
+// MaxTag, when the database is opened, and the old table goes. A tag set
+// since is kept.
+func TestTitlesBecomeTags(t *testing.T) {
+	s, err := Open(legacyTitles(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tags, err := s.Tags(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 3 || tags["s1"] != "payments audit" || tags["s2"] != "kept" || tags["s3"] != strings.Repeat("长", MaxTag) {
+		t.Fatalf("tags %v", tags)
+	}
+	var n int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'titles'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("titles table left behind: %v %d", err, n)
+	}
+}
+
+// Two ccli processes opening an old database at the same moment both
+// succeed: the second finds the titles already moved.
+func TestTitlesBecomeTagsOnceWhenOpenedTogether(t *testing.T) {
+	for round := 0; round < 5; round++ {
+		p := legacyTitles(t)
+		var wg sync.WaitGroup
+		errs := make([]error, 4)
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				s, err := Open(p)
+				if err == nil {
+					s.Close()
+				}
+				errs[i] = err
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d, open %d: %v", round, i, err)
+			}
+		}
 	}
 }

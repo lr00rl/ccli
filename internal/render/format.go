@@ -57,6 +57,7 @@ const (
 	cDim    = "38;5;245"
 	cBold   = "1"
 	cLive   = "38;5;203"
+	cTag    = "38;5;180"
 )
 
 func (t Term) paint(code, s string) string {
@@ -71,6 +72,7 @@ func (t Term) bold(s string) string   { return t.paint(cBold, s) }
 func (t Term) accent(s string) string { return t.paint(cAccent, s) }
 func (t Term) money(s string) string  { return t.paint(cMoney, s) }
 func (t Term) warn(s string) string   { return t.paint(cWarn, s) }
+func (t Term) tag(s string) string    { return t.paint(cTag, s) }
 
 func (t Term) printf(format string, a ...any) { fmt.Fprintf(t.W, format, a...) }
 func (t Term) println(a ...any)               { fmt.Fprintln(t.W, a...) }

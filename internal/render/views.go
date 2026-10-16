@@ -57,8 +57,17 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 	if showAccount {
 		cols = append(cols, column{title: "ACCOUNT"})
 	}
+	// A TAG column after ID, only when some session has a tag.
+	tagged := false
+	for _, s := range p.Sessions {
+		tagged = tagged || s.Tag != ""
+	}
+	cols = append(cols, column{title: "ID"})
+	if tagged {
+		cols = append(cols, column{title: "TAG", flex: true, min: 6})
+	}
 	cols = append(cols,
-		column{title: "ID"}, column{title: "PROJECT", flex: true, min: 8}, column{title: "TITLE", flex: true, min: 16},
+		column{title: "PROJECT", flex: true, min: 8}, column{title: "TITLE", flex: true, min: 16},
 		column{title: "MODEL", flex: true, min: 8}, column{title: "ACTIVE", right: true},
 		column{title: "TOKENS", right: true}, column{title: "CACHED", right: true}, column{title: "COST", right: true},
 	)
@@ -85,7 +94,11 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 		if n := s.Subagents; n > 0 {
 			ttl += t.dim(fmt.Sprintf(" +%d agents", n))
 		}
-		r = append(r, id, s.Project, ttl, shortModels(s.Models), Dur(s.ActiveMS),
+		r = append(r, id)
+		if tagged {
+			r = append(r, t.tag(s.Tag))
+		}
+		r = append(r, s.Project, ttl, shortModels(s.Models), Dur(s.ActiveMS),
 			Num(s.Tokens.InOut()), Num(s.Tokens.CacheRead), t.money(costText(s.Cost)))
 		rows = append(rows, r)
 	}
@@ -156,13 +169,6 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 		ttl = "(untitled)"
 	}
 	t.println(t.bold(ttl))
-	if d.TitleSource == "ccli" {
-		own := d.ToolTitle
-		if own == "" {
-			own = "(untitled)"
-		}
-		t.println(t.dim("renamed in ccli; its own title: " + own))
-	}
 	state := ""
 	switch {
 	case d.Live:
@@ -176,6 +182,9 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	t.println(t.dim(d.ID+" · "+d.Account) + state)
 	t.println()
 	kv := func(k, v string) { t.printf("  %-11s %s\n", t.dim(k), v) }
+	if d.Tag != "" {
+		kv("tag", t.tag(d.Tag))
+	}
 	kv("project", shortHome(d.Cwd))
 	switch d.GitBranch {
 	case "":
@@ -238,6 +247,9 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 			extra := ""
 			if l.Detail != "" && l.Kind == "teammate" {
 				extra = t.dim(" [" + l.Detail + "]")
+			}
+			if l.Tag != "" {
+				extra += " " + t.tag(l.Tag)
 			}
 			t.printf("  %-15s %s %s%s %s\n", t.dim(label), l.SessionID[:min(8, len(l.SessionID))], t.dim(l.Account), extra, fit(l.Title, max(20, t.Width-40)))
 		}

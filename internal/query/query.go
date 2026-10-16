@@ -124,8 +124,8 @@ type SessionRow struct {
 	Tool         account.Tool `json:"tool"`
 	ID           string       `json:"id"`
 	Title        string       `json:"title"`
-	TitleSource  string       `json:"title_source"`         // ccli, custom, ai, summary, prompt, none
-	ToolTitle    string       `json:"tool_title,omitempty"` // the tool's own title, when the session was renamed in ccli
+	TitleSource  string       `json:"title_source"`  // custom, ai, summary, prompt, none
+	Tag          string       `json:"tag,omitempty"` // a label given in ccli (see Tag)
 	Cwd          string       `json:"cwd"`
 	Project      string       `json:"project"`
 	ProjectKey   string       `json:"project_key"`

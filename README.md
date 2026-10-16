@@ -83,20 +83,20 @@ Hiding is a mark in ccli's own index: the transcripts stay where Claude Code
 put them, `resume` still works, and totals in `stats` and `quota` still count
 hidden sessions. A hidden session that is used again shows again by itself.
 
-To give a session a title that says what it was:
+To label sessions so you can tell them apart:
 
 ```sh
-ccli rename 3b3b57cb "Dedupe invoice events by event id"
-ccli rename 3b3b57cb --clear          # back to its own title
+ccli tag 3b3b57cb dedupe fix
+ccli tag 3b3b57cb --clear             # remove the tag
 ```
 
-The name is kept in ccli's index too, so nothing is written to the
-transcript and the session keeps its place in the list. It names the
-session's copies in other accounts, works for Codex sessions, and shows
-instead of the session's own title while it is set; `show` gives both, and
-search finds the session by either. Claude Code's own resume picker does not
-see it. A title set with `/rename` inside Claude Code still works, and ccli
-reads it.
+A tag shows in its own column next to the session's title, which never
+changes. Lists add the TAG column only when some session on them has a tag,
+`show` prints it, and search finds a session by its tag as well as its title.
+The tag is kept in ccli's index too, so nothing is written to the transcript
+and the session keeps its place in the list. It labels the session's copies
+in other accounts and works for Codex sessions. To change the title Claude
+Code itself shows, use `/rename` inside Claude Code; ccli reads that title.
 
 ### One session
 
@@ -159,8 +159,8 @@ agents. The preview follows the selection. `/` filters by what the prompt
 says, `s` sorts by cost, `y` copies the prompt to the clipboard, and `t`, `T`
 and `c` toggle tool details, thinking and added context. In the sessions
 list, `m` marks sessions and `x` hides the marked ones (or the selected one)
-after asking; `H` lists hidden sessions, where `u` brings them back; `R`
-renames the selected session in a line at the bottom. The mouse
+after asking; `H` lists hidden sessions, where `u` brings them back; `#`
+tags the selected session in a line at the bottom. The mouse
 wheel scrolls the pane under the pointer; `?` lists every key.
 
 ```sh
@@ -298,7 +298,7 @@ and moving work between Claude Code accounts only.
 | `ccli fork <id> --to <acct>` | continue a session under a new id, in any account |
 | `ccli resume <id> [-a <acct> --sync]` | run `claude --resume` (or `codex resume`) in the right account and folder |
 | `ccli hide\|unhide <id>...` | leave sessions out of lists, or bring them back; totals still count them |
-| `ccli rename <id> <title>` | name a session in ccli; `--clear` brings back its own title |
+| `ccli tag <id> <tag>` | label a session, shown next to its title; `--clear` removes the tag |
 | `ccli statusline -- <cmd>` | status line wrapper that records the rate limits |
 | `ccli index [--rebuild]` | update the index (every other command does this first) |
 
@@ -343,7 +343,7 @@ never writes `settings.json` or `.claude.json`, and never calls a model. In a
 Codex home it reads only the session logs: never `auth.json`, `config.toml`
 or Codex's own databases. Only
 `copy`, `move`, `fork` and `resume --sync` write into an account, and only the
-files of the session involved. `hide` and `rename` write only to ccli's own
+files of the session involved. `hide` and `tag` write only to ccli's own
 index. A transcript that cannot be read is reported
 and retried on the next run. [DESIGN.md](DESIGN.md) has the full contract, the
 transcript fields used and the store schema.

@@ -34,8 +34,8 @@ func (fakeSrc) Hide(context.Context, []string, time.Time) ([]query.HideResult, e
 	return nil, errBusy
 }
 func (fakeSrc) Unhide(context.Context, []string) ([]query.HideResult, error) { return nil, errBusy }
-func (fakeSrc) Rename(context.Context, string, string, time.Time) (query.RenameResult, error) {
-	return query.RenameResult{}, errBusy
+func (fakeSrc) Tag(context.Context, string, string, time.Time) (query.TagResult, error) {
+	return query.TagResult{}, errBusy
 }
 
 func newTestViewer(s *screen) *viewer {
@@ -245,34 +245,32 @@ func TestGroupByProject(t *testing.T) {
 }
 
 // sessionSrc serves a fixed set of sessions and keeps what was hidden and
-// what was renamed.
+// what was tagged.
 type sessionSrc struct {
 	fakeSrc
 	rows   []query.SessionRow
 	hidden map[string]bool
-	names  map[string]string
+	tags   map[string]string
 }
 
-func (s *sessionSrc) Rename(_ context.Context, ref, name string, _ time.Time) (query.RenameResult, error) {
+func (s *sessionSrc) Tag(_ context.Context, ref, tag string, _ time.Time) (query.TagResult, error) {
 	id := ref[strings.IndexByte(ref, ':')+1:]
-	if s.names == nil {
-		s.names = map[string]string{}
+	if s.tags == nil {
+		s.tags = map[string]string{}
 	}
-	if name == "" {
-		delete(s.names, id)
+	if tag == "" {
+		delete(s.tags, id)
 	} else {
-		s.names[id] = name
+		s.tags[id] = tag
 	}
-	return query.RenameResult{ID: id, Title: name, Cleared: name == ""}, nil
+	return query.TagResult{ID: id, Tag: tag, Cleared: tag == ""}, nil
 }
 
 func (s *sessionSrc) Sessions(_ context.Context, f query.Filter) (query.SessionPage, error) {
 	var p query.SessionPage
 	for _, r := range s.rows {
 		r.Hidden = s.hidden[r.ID]
-		if n, ok := s.names[r.ID]; ok {
-			r.ToolTitle, r.Title = r.Title, n
-		}
+		r.Tag = s.tags[r.ID]
 		switch {
 		case (f.Show == query.HiddenOnly) == r.Hidden:
 			p.Sessions = append(p.Sessions, r)
@@ -410,11 +408,13 @@ func TestOneLoadAtATime(t *testing.T) {
 	}
 }
 
-// R puts the selected session's title in the footer; typing edits it, Enter
-// saves it off the update loop, Esc leaves it, and an empty name removes it.
-func TestRenameFromTheSessionsList(t *testing.T) {
+// # puts the selected session's tag in the footer; typing edits it, Enter
+// saves it off the update loop, Esc leaves it, and an empty tag removes it.
+// The row shows the tag in its own column and keeps the session's title.
+func TestTagFromTheSessionsList(t *testing.T) {
 	src := &sessionSrc{hidden: map[string]bool{}, rows: []query.SessionRow{
 		{Account: "default", ID: "a1", Cwd: "/w/a", Project: "a", Title: "first"},
+		{Account: "work", ID: "b2", Cwd: "/w/a", Project: "a", Title: "second"},
 	}}
 	v := &viewer{ctx: context.Background(), src: src, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
 	s, err := v.sessionsScreen()
@@ -423,37 +423,119 @@ func TestRenameFromTheSessionsList(t *testing.T) {
 	}
 	v.stack = []*screen{s}
 	v.resize()
-	title := func() string { return s.list.all[s.list.selected()].title }
+	sel := func() item { return s.list.all[s.list.selected()] }
+	row := func(i int) string { return ansi.Strip(s.list.all[i].row(120)) }
+	col := func(line, sub string) int { return ansi.StringWidth(line[:max(0, strings.Index(line, sub))]) }
 
-	v.key(key("R"))
-	if v.edit == nil || v.edit.text != "first" || !strings.Contains(ansi.Strip(v.footer()), "rename: first") {
-		t.Fatalf("R opened %+v, footer %q", v.edit, v.footer())
+	v.key(key("#"))
+	if v.edit == nil || v.edit.text != "" || !strings.Contains(ansi.Strip(v.footer()), "tag:") {
+		t.Fatalf("# opened %+v, footer %q", v.edit, v.footer())
 	}
 	v.key(key("x")) // typed, not a hide
-	if v.confirm != nil || v.edit.text != "firstx" {
+	if v.confirm != nil || v.edit.text != "x" {
 		t.Fatalf("typing x gave %+v, confirm %+v", v.edit, v.confirm)
 	}
 	v.key(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if v.edit != nil || len(src.names) != 0 {
-		t.Fatalf("esc saved %v", src.names)
+	if v.edit != nil || len(src.tags) != 0 {
+		t.Fatalf("esc saved %v", src.tags)
 	}
 
-	v.key(key("R"))
-	v.key(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	v.key(key("#"))
 	v.Update(tea.PasteMsg{Content: "payments\naudit"})
 	cmd := v.key(key("enter"))
-	if len(src.names) != 0 || v.status != "renaming…" {
-		t.Fatalf("enter renamed %v itself, status %q", src.names, v.status)
+	if len(src.tags) != 0 || v.status != "tagging…" {
+		t.Fatalf("enter tagged %v itself, status %q", src.tags, v.status)
 	}
 	run(v, cmd)
-	if src.names["a1"] != "payments audit" || title() != "payments audit" || !strings.HasPrefix(v.status, "renamed a1") {
-		t.Fatalf("names %v, title %q, status %q", src.names, title(), v.status)
+	if src.tags["a1"] != "payments audit" || sel().tag != "payments audit" || !strings.HasPrefix(v.status, "tagged a1") {
+		t.Fatalf("tags %v, tag %q, status %q", src.tags, sel().tag, v.status)
+	}
+	// The tag sits in a column of its own, cut to maxTagCells, before the
+	// unchanged title, and the untagged row keeps the titles lined up.
+	a, b := row(s.list.selected()), ""
+	for i, it := range s.list.all {
+		if it.id == "work:b2" {
+			b = row(i)
+		}
+	}
+	if !strings.Contains(a, "payments au… first") || col(a, "first") != col(b, "second") {
+		t.Fatalf("rows not aligned:\n%q\n%q", a, b)
 	}
 
-	v.key(key("R"))
+	v.key(key("#"))
+	if v.edit.text != "payments audit" {
+		t.Fatalf("# offered %q to edit", v.edit.text)
+	}
 	v.key(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	run(v, v.key(key("enter")))
-	if len(src.names) != 0 || title() != "first" {
-		t.Fatalf("an empty name left %v, title %q", src.names, title())
+	if len(src.tags) != 0 || sel().tag != "" || strings.Contains(row(s.list.selected()), "payments") {
+		t.Fatalf("an empty tag left %v, row %q", src.tags, row(s.list.selected()))
+	}
+}
+
+// In a narrow list pane the title keeps its room: the tag column shrinks
+// first and goes when too little is left for it, while the preview still
+// shows the tag.
+func TestTagGivesWayToTheTitle(t *testing.T) {
+	rows := []query.SessionRow{
+		{Account: "default", ID: "a1", Title: "Fix tooltip overflow on narrow screens", Tag: "payments-audit"},
+		{Account: "work", ID: "b2", Title: "Second session"},
+	}
+	cols := measureSessions(rows)
+	v := &viewer{loc: time.UTC}
+	row := func(w int) string { return ansi.Strip(v.sessionItem(rows[0], cols).row(w)) }
+	if r := row(44); strings.Contains(r, "payments") || !strings.Contains(r, "Fix tooltip") {
+		t.Fatalf("44 cells: %q", r)
+	}
+	if r := row(60); !strings.Contains(r, "payments") || !strings.Contains(r, "Fix tooltip") {
+		t.Fatalf("60 cells: %q", r)
+	}
+	if r := row(120); !strings.Contains(r, "payments-au… Fix tooltip overflow") {
+		t.Fatalf("120 cells: %q", r)
+	}
+}
+
+// Columns are measured in cells, so wide characters line up and a tag is
+// cut to fit with an ellipsis.
+func TestPadCells(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		w    int
+		want string
+	}{
+		{"ab", 4, "ab  "},
+		{"支付审计", 8, "支付审计"},
+		{"支付审计", 6, "支付… "},
+		{"payments-audit", 12, "payments-au…"},
+	} {
+		if got := padCells(c.in, c.w); got != c.want || ansi.StringWidth(got) != c.w {
+			t.Errorf("padCells(%q, %d) = %q", c.in, c.w, got)
+		}
+	}
+	if c := measureSessions([]query.SessionRow{{Account: "work", Tag: "支付审计"}, {Account: "codex-work"}}); c.account != 10 || c.tag != 8 {
+		t.Errorf("measured %+v", c)
+	}
+}
+
+// The tag editor stops at MaxTag characters, typed or pasted, so a save
+// never fails on length after the line has closed.
+func TestTagEditorStopsAtTheLimit(t *testing.T) {
+	src := &sessionSrc{hidden: map[string]bool{}, rows: []query.SessionRow{{Account: "default", ID: "a1", Cwd: "/w/a", Title: "first"}}}
+	v := &viewer{ctx: context.Background(), src: src, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
+	s, err := v.sessionsScreen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.stack = []*screen{s}
+	v.resize()
+	v.key(key("#"))
+	v.Update(tea.PasteMsg{Content: strings.Repeat("长", query.MaxTag+5)})
+	v.key(key("x"))
+	if n := len([]rune(v.edit.text)); n != query.MaxTag {
+		t.Fatalf("editor holds %d characters", n)
+	}
+	run(v, v.key(key("enter")))
+	if src.tags["a1"] != strings.Repeat("长", query.MaxTag) {
+		t.Fatalf("saved %q, status %q", src.tags["a1"], v.status)
 	}
 }

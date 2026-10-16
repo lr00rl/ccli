@@ -91,6 +91,7 @@ type Link struct {
 	Account   string `json:"account"`
 	SessionID string `json:"session_id"`
 	Title     string `json:"title,omitempty"`
+	Tag       string `json:"tag,omitempty"`
 	Detail    string `json:"detail,omitempty"`
 }
 
@@ -415,17 +416,14 @@ func (d *DB) fillLinks(ctx context.Context, det *SessionDetail) error {
 	if err := q(`SELECT DISTINCT 'copy', account, session_id, '' FROM files WHERE session_id = ? AND account <> ? AND kind = 'main'`, det.ID, det.Account); err != nil {
 		return err
 	}
-	// Titles for the linked sessions, a name given in ccli first.
-	names, err := d.st.Titles(ctx)
+	// Titles and tags for the linked sessions.
+	tags, err := d.st.Tags(ctx)
 	if err != nil {
 		return err
 	}
 	for i := range det.Links {
 		l := &det.Links[i]
-		if name, ok := names[l.SessionID]; ok {
-			l.Title = name
-			continue
-		}
+		l.Tag = tags[l.SessionID]
 		var custom, ai, summary, prompt string
 		err := d.sql().QueryRowContext(ctx, `SELECT custom_title, ai_title, summary, first_prompt FROM files WHERE account = ? AND session_id = ? AND kind = 'main' LIMIT 1`,
 			l.Account, l.SessionID).Scan(&custom, &ai, &summary, &prompt)
