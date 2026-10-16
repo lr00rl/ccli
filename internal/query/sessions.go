@@ -2,13 +2,16 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 )
 
 // sessionSQL aggregates files and responses per session. Totals cover the
-// whole session; the range filter selects sessions active in it.
+// whole session; the range filter (?1, ?2) selects sessions active in it.
+// Each %[1]s takes a WHERE clause that limits both aggregates to one session
+// (?3, ?4), or nothing for every session.
 const sessionSQL = `
 WITH f AS (
   SELECT account, session_id,
@@ -24,7 +27,7 @@ WITH f AS (
     MAX(project_key) AS project_key,
     MAX(team_name) AS team,
     MAX(agent_name) AS agent_name
-  FROM files GROUP BY account, session_id
+  FROM files %[1]s GROUP BY account, session_id
 ),
 r AS (
   SELECT account, session_id,
@@ -33,7 +36,7 @@ r AS (
     SUM(cost IS NULL AND kind <> 'adjustment') AS unpriced,
     SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END) AS unlogged,
     SUM(kind = 'main') AS replies
-  FROM responses GROUP BY account, session_id
+  FROM responses %[1]s GROUP BY account, session_id
 )
 SELECT f.account, f.session_id, COALESCE(m.cwd, ''), COALESCE(m.custom_title, ''), COALESCE(m.ai_title, ''),
   COALESCE(m.summary, ''), COALESCE(m.first_prompt, ''), COALESCE(f.started, 0), COALESCE(f.last, 0), f.active,
@@ -44,14 +47,25 @@ SELECT f.account, f.session_id, COALESCE(m.cwd, ''), COALESCE(m.custom_title, ''
 FROM f
 LEFT JOIN files m ON m.id = f.main_id
 LEFT JOIN r ON r.account = f.account AND r.session_id = f.session_id
-WHERE COALESCE(f.last, 0) >= ? AND COALESCE(f.started, 0) <= ?`
+WHERE COALESCE(f.last, 0) >= ?1 AND COALESCE(f.started, 0) <= ?2`
 
 func (d *DB) loadSessions(ctx context.Context, f Filter) ([]SessionRow, error) {
-	models, err := d.sessionModels(ctx)
+	return d.querySessions(ctx, f, nil)
+}
+
+// querySessions loads the sessions the filter selects, or with only set,
+// just that one, reading only its rows.
+func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]SessionRow, error) {
+	models, err := d.sessionModels(ctx, only)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.sql().QueryContext(ctx, sessionSQL, f.sinceMS(), f.untilMS())
+	q, args := fmt.Sprintf(sessionSQL, ""), []any{f.sinceMS(), f.untilMS()}
+	if only != nil {
+		q = fmt.Sprintf(sessionSQL, "WHERE account = ?3 AND session_id = ?4")
+		args = append(args, only.account, only.id)
+	}
+	rows, err := d.sql().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -227,9 +241,15 @@ func RangeDays(n int, loc *time.Location) (time.Time, time.Time) {
 }
 
 // sessionModels lists each session's models, costliest first.
-func (d *DB) sessionModels(ctx context.Context) (map[skey][]string, error) {
-	rows, err := d.sql().QueryContext(ctx, `SELECT account, session_id, model FROM responses
-		GROUP BY account, session_id, model ORDER BY account, session_id, SUM(COALESCE(cost, 0)) DESC`)
+func (d *DB) sessionModels(ctx context.Context, only *skey) (map[skey][]string, error) {
+	const q = `SELECT account, session_id, model FROM responses %s
+		GROUP BY account, session_id, model ORDER BY account, session_id, SUM(COALESCE(cost, 0)) DESC`
+	var args []any
+	where := ""
+	if only != nil {
+		where, args = "WHERE account = ? AND session_id = ?", []any{only.account, only.id}
+	}
+	rows, err := d.sql().QueryContext(ctx, fmt.Sprintf(q, where), args...)
 	if err != nil {
 		return nil, err
 	}

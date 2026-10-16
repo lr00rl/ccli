@@ -94,11 +94,11 @@ func TestRebuildDropsStalePreviews(t *testing.T) {
 	staleGen := s.gen
 	order = []string{"B", "A"}
 	v.refresh(s)
-	v.Update(previewMsg{scr: s, gen: staleGen, idx: 0, data: "A"})
+	_, cmd := v.Update(previewMsg{scr: s, gen: staleGen, idx: 0, data: "A"})
 	if _, ok := s.data[0]; ok {
 		t.Fatal("a load made before the rebuild was stored")
 	}
-	run(v, v.sync())
+	run(v, cmd)
 	if idx := s.list.selected(); s.list.all[idx].id != "A" {
 		t.Fatalf("selection moved to %q, want A kept", s.list.all[idx].id)
 	}
@@ -318,7 +318,11 @@ func TestHideFromTheSessionsList(t *testing.T) {
 		t.Fatal("answering no hid something")
 	}
 	v.key(key("x"))
-	v.key(key("y"))
+	cmd := v.key(key("y"))
+	if len(src.hidden) != 0 || v.status != "hiding…" {
+		t.Fatalf("the key hid %v itself, status %q; the store belongs off the update loop", src.hidden, v.status)
+	}
+	run(v, cmd)
 	if !src.hidden["a1"] || !src.hidden["a2"] || src.hidden["b1"] {
 		t.Fatalf("hidden %v", src.hidden)
 	}
@@ -329,7 +333,7 @@ func TestHideFromTheSessionsList(t *testing.T) {
 		t.Fatalf("marks %v, status %q, hint %q", s.list.marked, v.status, s.hint)
 	}
 
-	v.key(key("H"))
+	run(v, v.key(key("H")))
 	if got := listed(); got != "default:a1 default:a2" || s.title != "hidden sessions" {
 		t.Fatalf("hidden list %q titled %q", got, s.title)
 	}
@@ -341,12 +345,45 @@ func TestHideFromTheSessionsList(t *testing.T) {
 	if v.confirm == nil || !strings.Contains(v.confirm.question, "this session") {
 		t.Fatalf("u asked %+v", v.confirm)
 	}
-	v.key(key("enter"))
+	run(v, v.key(key("enter")))
 	if src.hidden["a1"] || !src.hidden["a2"] {
 		t.Fatalf("after bringing a1 back: %v", src.hidden)
 	}
-	v.key(key("H"))
+	run(v, v.key(key("H")))
 	if got := listed(); got != "default:a1 work:b1" {
 		t.Fatalf("back in the full list %q", got)
+	}
+}
+
+// Moving through many rows starts one preview load, not one per row: the
+// store has one connection, so loads for rows already left would queue ahead
+// of everything else. When the load lands, the row selected then loads.
+func TestOneLoadAtATime(t *testing.T) {
+	s := newScreen("test", agentsRole)
+	var loads []string
+	var items []item
+	for _, n := range []string{"A", "B", "C", "D", "E"} {
+		it := textItem(n)
+		it.load = func() (any, error) { loads = append(loads, n); return n, nil }
+		items = append(items, it)
+	}
+	s.list.set(items)
+	v := newTestViewer(s)
+	first := v.sync()
+	var later []tea.Cmd
+	for range 4 {
+		if cmd := v.key(key("j")); cmd != nil {
+			later = append(later, cmd)
+		}
+	}
+	if len(later) != 0 {
+		t.Fatalf("moving started %d more loads while one ran", len(later))
+	}
+	run(v, first)
+	if strings.Join(loads, " ") != "A E" {
+		t.Fatalf("loaded %q, want A, then only E where the cursor rests", loads)
+	}
+	if got := s.vp.GetContent(); !strings.Contains(got, "PREVIEW E") {
+		t.Fatalf("preview %q, want E", got)
 	}
 }
