@@ -26,9 +26,19 @@ type Window struct {
 	ResetsAt    time.Time `json:"resets_at"`
 }
 
-// Expired reports whether the window has reset since the snapshot.
+// Expired reports whether the window has reset since the snapshot; never when
+// the reset time is unknown.
 func (w Window) Expired(now time.Time) bool {
-	return !now.Before(w.ResetsAt)
+	return !w.ResetsAt.IsZero() && !now.Before(w.ResetsAt)
+}
+
+// Unix is the time of a reset given in unix seconds; zero, for unknown, when
+// the source left it out.
+func Unix(sec int64) time.Time {
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
 }
 
 // Snapshot is the rate-limit state saved for one account.
@@ -69,7 +79,7 @@ type rateWindow struct {
 func (r rateWindow) window() Window {
 	return Window{
 		UsedPercent: r.UsedPercentage,
-		ResetsAt:    time.Unix(r.ResetsAt, 0).UTC(),
+		ResetsAt:    Unix(r.ResetsAt),
 	}
 }
 

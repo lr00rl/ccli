@@ -385,8 +385,10 @@ A Codex thread that spawned agents lists them under the turn that started
 each, the same as Claude Code's subagents, and `ccli log <id> --agent <a>`
 reads one. Costs are OpenAI's list prices; models Codex ran through another
 provider, or with no public price, are counted in tokens and marked `+`.
-`ccli resume` runs `codex resume` in the session's folder. Copying, moving
-and forking work between Claude Code accounts only.
+`ccli resume` runs `codex resume` in the session's folder. `codex resume`
+does not find a thread Codex has archived, so for one of those ccli prints
+the `codex unarchive <id>` command to run first, and leaves running it to
+you. Copying, moving and forking work between Claude Code accounts only.
 
 ## Watch your limits
 

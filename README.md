@@ -256,7 +256,8 @@ tutorial has [examples with jq](docs/tutorial.md#script-it).
 Codex sessions show up next to Claude Code's: in `sessions`, `show`, `log`,
 `view`, `prompts` and `stats`, priced at OpenAI's list prices. A thread that
 spawned agents shows them in its tree, under the turn that started each, and
-`resume` runs `codex resume` in the session's folder.
+`resume` runs `codex resume` in the session's folder (for a thread Codex has
+archived, it prints the `codex unarchive` command to run first).
 
 ![ccli log for a Codex turn: the prompt, the reasoning summary, the patch and the commands Codex ran, and its reply](docs/images/codex.png)
 

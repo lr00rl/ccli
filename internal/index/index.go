@@ -85,13 +85,23 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	for _, a := range accts {
 		var found []discovered
 		var rs []store.Run
+		var moves []moved
 		if a.Kind() == account.Codex {
-			found, err = scanCodex(a, known)
+			found, moves, err = scanCodex(a, known)
 		} else {
 			found, rs, err = scan(a, knownRuns, opt.Rebuild)
 		}
 		if err != nil {
 			return stats, err
+		}
+		for _, m := range moves {
+			if err := st.MovePath(ctx, m.ID, m.To); err != nil {
+				return stats, err
+			}
+			f := known[m.From]
+			delete(known, m.From)
+			f.Path = m.To
+			known[m.To] = f
 		}
 		runs = append(runs, rs...)
 		for _, d := range found {

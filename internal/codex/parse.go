@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 
 	"github.com/lr00rl/ccli/internal/transcript"
@@ -20,12 +21,19 @@ type carry struct {
 	// moves one of them on by exactly its own last usage.
 	Heads []usage `json:"heads,omitempty"`
 	Model string  `json:"model,omitempty"`
+	// Unmodelled is set when a parse stored counts before any line named a
+	// model; the parse that sees the first one has the index give it to them.
+	Unmodelled bool `json:"unmodelled,omitempty"`
 
 	// The turn in progress, from its task_started line: where it starts and
 	// whether a person's prompt has opened it yet.
 	TurnOpen   bool  `json:"turn_open,omitempty"`
 	TurnOffset int64 `json:"turn_offset,omitempty"`
 	Prompted   bool  `json:"prompted,omitempty"`
+	// The last prompt taken, by text hash and time: outside a turn, Codex can
+	// write one prompt both as an event and as a message.
+	LastPrompt   uint64 `json:"last_prompt,omitempty"`
+	LastPromptTS int64  `json:"last_prompt_ts,omitempty"`
 
 	// Fork state. A fork copies the history of the thread it came from;
 	// none of the copy counts here. Forks since CLI 0.147 copy the lines
@@ -68,6 +76,9 @@ func Parse(r io.Reader, kind transcript.Kind, thread string, st transcript.State
 	// A parse that ends inside a fork's copied burst leaves it open: the next
 	// parse goes on from there.
 	err := res.EachLine(r, st.Base, p.line)
+	if c.Model == "" && len(res.Responses) > 0 {
+		c.Unmodelled = true
+	}
 	b, merr := json.Marshal(c)
 	if merr != nil {
 		return res, nil, merr
@@ -218,19 +229,22 @@ func (p *parser) endBurst() {
 }
 
 // setModel records the model the next token counts are for. Counts written
-// before any line named a model are given the first one named.
+// before any line named a model are given the first one named: in this parse
+// directly, and through FillModel for those an earlier parse stored.
 func (p *parser) setModel(m string) {
 	if m == "" {
 		return
 	}
-	if p.c.Model == "" {
+	c := p.c
+	if c.Model == "" {
 		for i := range p.res.Responses {
-			if p.res.Responses[i].Model == "" {
-				p.res.Responses[i].Model = m
-			}
+			p.res.Responses[i].Model = m
+		}
+		if c.Unmodelled {
+			p.res.FillModel, c.Unmodelled = m, false
 		}
 	}
-	p.c.Model = m
+	c.Model = m
 }
 
 func (p *parser) turnContext(raw json.RawMessage) {
@@ -352,8 +366,9 @@ func (p *parser) event(off, ts int64, raw json.RawMessage) {
 
 // prompt handles what a person typed, on the line at off. The first prompt
 // of a turn opens it at its task_started line; a later one was sent while
-// the model worked. A prompt outside any turn opens one where it stands. A
-// subagent's first prompt is the task its parent gave it.
+// the model worked. A prompt outside any turn opens one where it stands,
+// unless it repeats the prompt just taken. A subagent's first prompt is the
+// task its parent gave it.
 func (p *parser) prompt(off, ts int64, text string, images int) {
 	c, res := p.c, p.res
 	if p.kind != transcript.Main {
@@ -362,13 +377,18 @@ func (p *parser) prompt(off, ts int64, text string, images int) {
 		}
 		return
 	}
+	h := fnv.New64a()
+	h.Write([]byte(text))
+	sum := h.Sum64()
 	if c.TurnOpen {
 		if c.Prompted {
 			return
 		}
 		off = c.TurnOffset
+	} else if sum == c.LastPrompt && ts-c.LastPromptTS < 2000 {
+		return
 	}
-	c.Prompted = true
+	c.Prompted, c.LastPrompt, c.LastPromptTS = true, sum, ts
 	res.AddTurn(off, ts, "", transcript.PromptHuman, text, images)
 	if res.FirstPrompt == "" {
 		res.FirstPrompt = transcript.Clean(text)
@@ -454,10 +474,14 @@ func (c *carry) dropSpawn(id string) bool {
 //     compaction (its last usage is then a context estimate): nothing new.
 //   - A count that moves a stream on by exactly its last usage is the next
 //     step of that stream.
+//   - A count whose total is its own last usage starts a stream: a resumed
+//     thread restarts its counter, and two processes can write one file.
 //   - A count that moves a stream on by more, on every field, follows counts
 //     Codex did not write: the whole difference is new.
-//   - Any other count starts a stream with its last usage: a resumed thread
-//     restarts its counter, and two processes can write one file.
+//   - Any other count starts a stream with its last usage.
+//
+// When more than maxStreams streams are open, the one idle longest is
+// dropped.
 func (c *carry) advance(total, last usage) (usage, bool) {
 	for _, h := range c.Heads {
 		if total == h {
@@ -466,26 +490,34 @@ func (c *carry) advance(total, last usage) (usage, bool) {
 	}
 	for i, h := range c.Heads {
 		if total.minus(h) == last {
-			c.Heads[i] = total
+			c.move(i, total)
 			return last, true
 		}
 	}
-	best := -1
-	for i, h := range c.Heads {
-		if total.covers(h) && (best < 0 || h.Total > c.Heads[best].Total) {
-			best = i
+	if total != last {
+		best := -1
+		for i, h := range c.Heads {
+			if total.covers(h) && (best < 0 || h.Total > c.Heads[best].Total) {
+				best = i
+			}
 		}
-	}
-	if best >= 0 {
-		d := total.minus(c.Heads[best])
-		c.Heads[best] = total
-		return d, true
+		if best >= 0 {
+			d := total.minus(c.Heads[best])
+			c.move(best, total)
+			return d, true
+		}
 	}
 	c.Heads = append(c.Heads, total)
 	if len(c.Heads) > maxStreams {
 		c.Heads = c.Heads[1:]
 	}
 	return last, true
+}
+
+// move sets stream i's total and puts it last, so Heads runs from the stream
+// idle longest to the one moved most recently.
+func (c *carry) move(i int, total usage) {
+	c.Heads = append(append(c.Heads[:i:i], c.Heads[i+1:]...), total)
 }
 
 func (p *parser) tokenCount(ts int64, raw json.RawMessage) {
@@ -505,7 +537,7 @@ func (p *parser) tokenCount(ts int64, raw json.RawMessage) {
 		return
 	}
 	total := tc.Info.Total
-	res.Responses = append(res.Responses, transcript.Response{
+	r := transcript.Response{
 		// The thread and its running total name one count, in this file and
 		// on every later parse of it.
 		Key:   fmt.Sprintf("codex:%s:%d:%d:%d:%d", p.thread, total.Input, total.Cached, total.Output, total.Reasoning),
@@ -513,7 +545,8 @@ func (p *parser) tokenCount(ts int64, raw json.RawMessage) {
 		Model: c.Model,
 		Usage: transcript.Usage{Input: last.Input - last.Cached, CacheRead: last.Cached, Output: last.Output},
 		Turn:  res.State.Turn,
-	})
+	}
+	res.Responses = append(res.Responses, r)
 }
 
 // limits keeps the latest reading of the main Codex limit. Its windows are

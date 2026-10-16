@@ -446,25 +446,43 @@ func (d *DB) resume(det *SessionDetail) Resume {
 			r.EnvValue = r.ConfigDir
 		}
 	}
-	cmd := r.Program + " " + strings.Join(r.Args, " ")
-	if r.EnvValue != "" {
-		cmd = r.Env + "=" + shellQuote(r.EnvValue) + " " + cmd
+	line := func(args ...string) string {
+		cmd := r.Program + " " + strings.Join(args, " ")
+		if r.EnvValue != "" {
+			cmd = r.Env + "=" + shellQuote(r.EnvValue) + " " + cmd
+		}
+		return cmd
 	}
+	r.Command = line(r.Args...)
 	if det.Cwd != "" {
-		cmd = "cd " + shellQuote(det.Cwd) + " && " + cmd
+		r.Command = "cd " + shellQuote(det.Cwd) + " && " + r.Command
 	}
-	r.Command = cmd
 	switch {
 	case r.ConfigDir == "":
 		r.Reason = "account " + det.Account + " was not found on this machine"
 	case det.Missing:
 		r.Reason = "the transcript is gone from disk"
+	case r.Program == "codex" && archived(det, r.ConfigDir):
+		// codex resume looks only among the threads that are not archived.
+		r.Reason = "Codex has archived this thread; to resume it, first run: " + line("unarchive", det.ID)
 	case det.Live:
 		r.Reason = "a " + r.Program + " process is running this session"
 	default:
 		r.Available = true
 	}
 	return r
+}
+
+// archived reports whether a Codex session's own rollout is in the home's
+// archived_sessions folder.
+func archived(det *SessionDetail, home string) bool {
+	dir := filepath.Join(home, "archived_sessions") + string(filepath.Separator)
+	for _, f := range det.Files {
+		if f.Kind == "main" && !f.Missing {
+			return strings.HasPrefix(f.Path, dir)
+		}
+	}
+	return false
 }
 
 func shellQuote(s string) string {

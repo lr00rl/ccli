@@ -496,6 +496,11 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 			return err
 		}
 	}
+	if r.FillModel != "" {
+		if err := fillModel(ctx, tx, f.ID, r.FillModel, cost); err != nil {
+			return err
+		}
+	}
 	if u.Reset {
 		// This file now holds, as a copy, responses no other file holds: their
 		// own file lost them to this one before the copy was recorded and has
@@ -614,6 +619,44 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// fillModel gives a file's responses stored with no model the one a later
+// line named, and prices them.
+func fillModel(ctx context.Context, tx *sql.Tx, file int64, model string, cost CostFunc) error {
+	rows, err := tx.QueryContext(ctx, `SELECT key, speed, input, output, cache_read, cache_5m, cache_1h, web_search FROM responses
+		WHERE file_id = ? AND model = '' AND kind <> 'adjustment'`, file)
+	if err != nil {
+		return err
+	}
+	type upd struct {
+		key string
+		c   sql.NullFloat64
+	}
+	var ups []upd
+	for rows.Next() {
+		var key, speed string
+		var u transcript.Usage
+		if err := rows.Scan(&key, &speed, &u.Input, &u.Output, &u.CacheRead, &u.Cache5m, &u.Cache1h, &u.WebSearch); err != nil {
+			rows.Close()
+			return err
+		}
+		var c sql.NullFloat64
+		if v, ok := cost(model, speed, u); ok {
+			c = sql.NullFloat64{Float64: v, Valid: true}
+		}
+		ups = append(ups, upd{key, c})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range ups {
+		if _, err := tx.ExecContext(ctx, "UPDATE responses SET model = ?, cost = ? WHERE key = ?", model, u.c, u.key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MarkMissing flags files that are gone from disk (or back again).
 func (s *Store) MarkMissing(ctx context.Context, ids []int64, missing bool) error {
 	if len(ids) == 0 {
@@ -630,6 +673,13 @@ func (s *Store) MarkMissing(ctx context.Context, ids []int64, missing bool) erro
 		}
 	}
 	return tx.Commit()
+}
+
+// MovePath gives a file's row the path its tool moved the file to (Codex
+// moves a thread it archives), so what the index read of it stays with it.
+func (s *Store) MovePath(ctx context.Context, id int64, path string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE files SET path = ? WHERE id = ?", path, id)
+	return err
 }
 
 // Run is a workflow run: counts from its journal, and what its state file

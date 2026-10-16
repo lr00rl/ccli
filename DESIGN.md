@@ -112,8 +112,10 @@ under whichever project folder the session was in when the run started.
 A Codex rollout is one thread: `sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`,
 one `{timestamp, type, payload}` object per line (files written by CLI 0.147
 and later also number their lines with `ordinal`). Line 0 is the thread's
-`session_meta`. The rules below were checked against 2,022 rollouts written by
-CLI 0.114 to 0.150.
+`session_meta`. Codex archives a thread by moving its rollout to
+`archived_sessions/`, and unarchives it by moving it back; the index moves
+the file's row with it, so nothing is read or counted twice. The rules below
+were checked against 2,022 rollouts written by CLI 0.114 to 0.150.
 
 - **Sessions and agents**: a thread whose `session_meta.source` is
   `{subagent: ...}` was started by another thread. It is indexed as a
@@ -124,7 +126,9 @@ CLI 0.114 to 0.150.
   `event_msg/user_message` up to CLI 0.146, an `item_completed` item of type
   `UserMessage` since, and in some exec versions only the `response_item`
   user message. The first prompt in a turn opens it; a later one was sent
-  while the model worked. Text Codex injects (environment, AGENTS.md,
+  while the model worked. A prompt outside any turn opens one where it
+  stands, unless it repeats the prompt just taken (Codex can write one
+  prompt both as an event and as a message). Text Codex injects (environment, AGENTS.md,
   permissions, notifications) is recognised by its per-part kinds
   (`content_item_kinds`, since 2026-08-27) or by its opening tag.
 - **Tokens**: `token_count` carries the running total of the process that
@@ -134,8 +138,10 @@ CLI 0.114 to 0.150.
   stream's total repeats an earlier count or follows a compaction (whose last
   usage is a context estimate) and adds nothing; one that moves a stream on
   by more, on every field, follows counts that were not written, and the
-  whole difference counts; anything else starts a stream (a resume restarts
-  the counter, and two processes can write one file). The streams' totals
+  whole difference counts. A count whose total is its own usage starts a
+  stream (a resume restarts the counter, and two processes can write one
+  file), and so does any other count. Up to eight streams are kept per
+  file; past that, the one idle longest is dropped. The streams' totals
   carry over between incremental parses (`files.carry`). On real data the
   usage counted equals Codex's own final total in every file with one
   stream, and the sum of the streams' totals in every file with several.
@@ -148,7 +154,9 @@ CLI 0.114 to 0.150.
   the parent's total.
 - **Models**: from `turn_context.model`, and from `thread_settings_applied`,
   `world_state` or the instructions' provenance before the first turn
-  context. Prices are OpenAI's list prices; models Codex runs through other
+  context. A count written before any line named a model is given the
+  first one named, also when an earlier run already stored it; the counts of
+  a file that names none are kept in tokens only. Prices are OpenAI's list prices; models Codex runs through other
   providers, and ones with no public price, are counted in tokens only.
 - **Limits**: each `token_count` also carries `rate_limits`. Windows are told
   apart by `window_minutes` (300 for 5 hours, 10080 for the week): what Codex
@@ -160,7 +168,9 @@ CLI 0.114 to 0.150.
   between Claude Code accounts only, and Codex has no live-process registry,
   so a running Codex session is not marked. `resume` runs
   `codex resume <id>` in the session's folder, with `CODEX_HOME` set for a
-  home other than `~/.codex`.
+  home other than `~/.codex`. `codex resume` finds only threads that are not
+  archived, so for an archived one ccli prints the `codex unarchive <id>`
+  command instead, and does not run it.
 
 ## Relationships
 

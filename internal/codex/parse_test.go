@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,7 @@ func TestPrompts(t *testing.T) {
 	r.task().add("event_msg", map[string]any{"type": "item_completed", "item": map[string]any{"type": "UserMessage",
 		"content": []map[string]any{{"type": "text", "text": "second question"}}}}).done()
 	r.task().userMsg("third, only as a message").done()
+	r.userMsg("fourth, outside a turn").userEvent("fourth, outside a turn") // one prompt, written twice
 	r.task().add("response_item", map[string]any{"type": "message", "role": "developer",
 		"content": []map[string]any{{"type": "input_text", "text": "<permissions instructions>"}}}).done()
 	res := parse(t, r.bytes(), transcript.Main)
@@ -151,7 +153,7 @@ func TestPrompts(t *testing.T) {
 	for _, tr := range res.Turns {
 		got = append(got, tr.Text)
 	}
-	if strings.Join(got, "|") != "first question|second question|third, only as a message" || res.TypedPrompts != 3 {
+	if strings.Join(got, "|") != "first question|second question|third, only as a message|fourth, outside a turn" || res.TypedPrompts != 4 {
 		t.Fatalf("turns %q, typed %d", got, res.TypedPrompts)
 	}
 	if res.FirstPrompt != "first question" {
@@ -231,16 +233,68 @@ func TestLimits(t *testing.T) {
 	}
 }
 
-// Counts written before any line named a model get the first one named.
+// Counts written before any line named a model get the first one named,
+// also when it is named after their turn ended.
 func TestModelBackfill(t *testing.T) {
 	r := &rollout{at: t0}
 	r.meta(nil).task().userEvent("go")
 	r.tokens(u(100, 50, 10), u(100, 50, 10))
-	r.context("gpt-5.5")
+	r.context("gpt-5.5").done()
 	res := parse(t, r.bytes(), transcript.Main)
 	if len(res.Responses) != 1 || res.Responses[0].Model != "gpt-5.5" {
 		t.Fatalf("responses %+v", res.Responses)
 	}
+	splitEqual(t, r)
+
+	r = &rollout{at: t0}
+	r.meta(nil).task().userEvent("go")
+	r.tokens(u(100, 50, 10), u(100, 50, 10)).done()
+	r.task().context("gpt-5.5").userEvent("again")
+	r.tokens(u(300, 150, 30), u(200, 100, 20)).done()
+	res = parse(t, r.bytes(), transcript.Main)
+	if len(res.Responses) != 2 || res.Responses[0].Model != "gpt-5.5" || res.Responses[1].Model != "gpt-5.5" {
+		t.Fatalf("responses %+v", res.Responses)
+	}
+	splitEqual(t, r)
+}
+
+// A resumed thread's counter restarts; its first count is new usage even
+// when it is larger than an earlier stream's total.
+func TestRestartLargerThanEarlierStream(t *testing.T) {
+	r := &rollout{at: t0}
+	r.meta(nil).task().context("gpt-5.4").userEvent("go")
+	r.tokens(u(100, 50, 10), u(100, 50, 10)).done()
+	r.wait(48 * time.Hour)
+	r.task().userEvent("back again")
+	r.tokens(u(300, 250, 30), u(300, 250, 30)).done()
+	res := parse(t, r.bytes(), transcript.Main)
+	if in, cached, out := sum(res.Responses); in+cached != 400 || out != 40 {
+		t.Fatalf("counted %d+%d in, %d out; want 400 and 40", in, cached, out)
+	}
+	splitEqual(t, r)
+}
+
+// With more streams than are tracked, the one idle longest is dropped, and
+// a stream still being written keeps its place.
+func TestStreamEviction(t *testing.T) {
+	r := &rollout{at: t0}
+	r.meta(nil).task().context("gpt-5.4").userEvent("go")
+	r.tokens(u(1000, 0, 100), u(1000, 0, 100)) // the busy stream
+	for i := int64(1); i <= maxStreams; i++ {
+		r.tokens(u(i, 0, 1), u(i, 0, 1))                // a stream that writes once
+		r.tokens(u(1000+10*i, 0, 100+2*i), u(10, 0, 2)) // the busy stream goes on
+	}
+	r.done()
+	res := parse(t, r.bytes(), transcript.Main)
+	in, _, out := sum(res.Responses)
+	wantIn, wantOut := int64(1000+10*maxStreams), int64(100+2*maxStreams+maxStreams)
+	for i := int64(1); i <= maxStreams; i++ {
+		wantIn += i
+	}
+	if in != wantIn || out != wantOut {
+		t.Fatalf("counted %d in, %d out; want %d and %d", in, out, wantIn, wantOut)
+	}
+	splitEqual(t, r)
 }
 
 // An incremental parse in two pieces finds the same as one parse.
@@ -255,6 +309,16 @@ func TestSplitParse(t *testing.T) {
 	r.tokens(u(1300, 1000, 130), u(300, 200, 30)).done()
 	r.task().userEvent("next")
 	r.tokens(u(1500, 1100, 150), u(200, 100, 20)).done()
+	r.userMsg("outside a turn").userEvent("outside a turn")
+	splitEqual(t, r)
+}
+
+// splitEqual checks that parsing r's lines in two pieces, cut after every
+// line, finds the same responses and turns as one parse. The second piece's
+// FillModel goes to the first piece's responses with no model, as the store
+// does.
+func splitEqual(t *testing.T, r *rollout) {
+	t.Helper()
 	data := r.bytes()
 	whole := parse(t, data, transcript.Main)
 	for cut := 1; cut < len(r.lines); cut++ {
@@ -269,15 +333,23 @@ func TestSplitParse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(a.Responses)+len(b.Responses) != len(whole.Responses) || len(a.Turns)+len(b.Turns) != len(whole.Turns) {
-			t.Fatalf("cut after line %d: %d+%d responses, %d+%d turns; whole %d, %d", cut,
-				len(a.Responses), len(b.Responses), len(a.Turns), len(b.Turns), len(whole.Responses), len(whole.Turns))
+		if a.FillModel != "" {
+			t.Fatalf("cut after line %d: the first piece fills model %q", cut, a.FillModel)
+		}
+		for i := range a.Responses {
+			if a.Responses[i].Model == "" && b.FillModel != "" {
+				a.Responses[i].Model = b.FillModel
+			}
+		}
+		rs := append(append([]transcript.Response{}, a.Responses...), b.Responses...)
+		ts := append(append([]transcript.Turn{}, a.Turns...), b.Turns...)
+		if !reflect.DeepEqual(rs, whole.Responses) || !reflect.DeepEqual(ts, whole.Turns) {
+			t.Fatalf("cut after line %d:\n responses %+v\n turns %+v\nwhole:\n responses %+v\n turns %+v",
+				cut, rs, ts, whole.Responses, whole.Turns)
 		}
 	}
 }
 
-// The reader shows a turn's prompt, reasoning, tool calls with their
-// output, and reply; a fork's turn 0 is one notice.
 func TestReadTurn(t *testing.T) {
 	r := &rollout{at: t0}
 	r.meta(nil)

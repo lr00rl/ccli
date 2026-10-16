@@ -74,6 +74,11 @@ func TestWindowExpired(t *testing.T) {
 	if !w.Expired(reset.Add(time.Second)) {
 		t.Fatal("open after reset")
 	}
+	// A source that leaves the reset time out leaves it unknown, never 1970.
+	s, _, ok, err := Parse([]byte(`{"rate_limits":{"five_hour":{"used_percentage":12}}}`), reset)
+	if err != nil || !ok || !s.FiveHour.ResetsAt.IsZero() || s.FiveHour.Expired(reset) {
+		t.Fatalf("no reset time: %+v, ok %v, err %v", s.FiveHour, ok, err)
+	}
 }
 
 func TestAccountFor(t *testing.T) {

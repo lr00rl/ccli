@@ -179,6 +179,9 @@ type Result struct {
 	// Limits is the latest subscription rate-limit reading in the lines read
 	// (Codex writes one with each token count).
 	Limits *Limits
+	// FillModel is the model for this file's responses an earlier parse
+	// stored with none, once a line names it.
+	FillModel string
 }
 
 // Limits is a subscription's rate-limit reading found in a log.
