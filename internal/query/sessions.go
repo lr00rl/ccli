@@ -60,6 +60,10 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err != nil {
 		return nil, err
 	}
+	names, err := d.st.Titles(ctx)
+	if err != nil {
+		return nil, err
+	}
 	q, args := fmt.Sprintf(sessionSQL, ""), []any{f.sinceMS(), f.untilMS()}
 	if only != nil {
 		q = fmt.Sprintf(sessionSQL, "WHERE account = ?3 AND session_id = ?4")
@@ -88,6 +92,9 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 		}
 		s.Tool = d.toolOf(s.Account)
 		s.Title, s.TitleSource = title(custom, ai, summary, prompt)
+		if name, ok := names[s.ID]; ok {
+			s.ToolTitle, s.Title, s.TitleSource = s.Title, name, "ccli"
+		}
 		s.Started, s.Last = ms(started), ms(last)
 		s.Missing = missing != 0
 		s.Project = projectName(s.Cwd, s.ProjectKey)
@@ -119,7 +126,8 @@ func matches(s SessionRow, f Filter) bool {
 			return false
 		}
 	}
-	if f.Search != "" && !containsFold(s.Title, f.Search) && !strings.HasPrefix(s.ID, f.Search) && !containsFold(s.Cwd, f.Search) {
+	if f.Search != "" && !containsFold(s.Title, f.Search) && !containsFold(s.ToolTitle, f.Search) &&
+		!strings.HasPrefix(s.ID, f.Search) && !containsFold(s.Cwd, f.Search) {
 		return false
 	}
 	return true

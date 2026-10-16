@@ -30,6 +30,7 @@ type Source interface {
 	RunAgents(ctx context.Context, ref, runID string) (*query.RunInfo, []query.AgentNode, map[string]string, error)
 	Hide(ctx context.Context, refs []string, now time.Time) ([]query.HideResult, error)
 	Unhide(ctx context.Context, refs []string) ([]query.HideResult, error)
+	Rename(ctx context.Context, ref, name string, now time.Time) (query.RenameResult, error)
 }
 
 // role is what a screen lists; its keys and footer follow from it.
@@ -90,6 +91,7 @@ type viewer struct {
 
 	showHidden bool          // the sessions screen lists only hidden sessions
 	confirm    *confirmation // a question in the footer, answered by the next key
+	edit       *editLine     // a line typed in the footer, such as a new title
 }
 
 type previewMsg struct {
@@ -268,6 +270,10 @@ func (v *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, v.sync()
 	case tea.PasteMsg:
+		if v.edit != nil {
+			v.edit.text += strings.Join(strings.Fields(msg.Content), " ")
+			return v, nil
+		}
 		if v.filter {
 			v.query += strings.Join(strings.Fields(msg.Content), " ")
 			s := v.cur()
@@ -304,6 +310,9 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		v.status = "left as it was"
 		return nil
+	}
+	if e := v.edit; e != nil {
+		return v.editKey(e, msg)
 	}
 	if v.filter {
 		switch k {
@@ -571,7 +580,7 @@ func (v *viewer) click(m tea.Mouse) tea.Cmd {
 		return nil
 	}
 	s.pending = -1
-	if v.filter || m.Button != tea.MouseLeft || s.full || m.Y < 1 || m.Y > v.bodyHeight() {
+	if v.filter || v.edit != nil || m.Button != tea.MouseLeft || s.full || m.Y < 1 || m.Y > v.bodyHeight() {
 		return nil
 	}
 	if v.wide() && m.X > v.listWidth() {
@@ -688,6 +697,9 @@ func (v *viewer) footer() string {
 	if c := v.confirm; c != nil {
 		return fitLine(warn(" "+c.question)+dim("  y yes · any other key no"), v.w)
 	}
+	if e := v.edit; e != nil {
+		return v.editFooter(e)
+	}
 	if v.status != "" {
 		return fitLine(warn(v.status), v.w)
 	}
@@ -703,7 +715,7 @@ func (v *viewer) footer() string {
 			if v.showHidden {
 				keys = append(keys, "m mark", "u bring back", "H all sessions")
 			} else {
-				keys = append(keys, "m mark", "x hide", "H hidden")
+				keys = append(keys, "m mark", "x hide", "R rename", "H hidden")
 			}
 		case turnsRole:
 			keys = append(keys, "s sort", "a all turns", "o agents", "y copy prompt", "t tools")
@@ -732,6 +744,7 @@ func (v *viewer) helpLines(n int) []string {
 		"  m              mark the session, to hide several at once (/ then m to pick from a filter)",
 		"  x              hide the marked sessions, or the selected one: lists leave them out",
 		"  H              list only hidden sessions, where u brings them back",
+		"  R              rename the session in ccli; an empty name brings back its own title",
 		"",
 		bold("  Turns"),
 		"  /              filter the list by what the prompt says",

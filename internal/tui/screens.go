@@ -139,8 +139,9 @@ func (v *viewer) sessionItem(row query.SessionRow) item {
 			}
 			return dim(when) + " " + money(cost) + " " + live + " " + dim(row.Account) + " " + title
 		},
-		search: strings.ToLower(title + " " + row.ID + " " + row.Cwd + " " + row.Account),
+		search: strings.ToLower(title + " " + row.ToolTitle + " " + row.ID + " " + row.Cwd + " " + row.Account),
 		id:     ref,
+		title:  row.Title,
 		load: func() (any, error) {
 			d, err := v.src.Session(v.ctx, ref)
 			if err != nil {

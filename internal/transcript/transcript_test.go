@@ -226,6 +226,19 @@ func TestBadJSONAndLinks(t *testing.T) {
 	}
 }
 
+// Claude Code's /rename writes an agent-name entry with the new name. It
+// names the session, so it does not make the session a teammate.
+func TestRenameIsNotATeammate(t *testing.T) {
+	res := parse(t, Main,
+		`{"type":"user","message":{"role":"user","content":"hello"}}`,
+		`{"type":"agent-name","agentName":"payments audit","sessionId":"s"}`,
+		`{"type":"custom-title","customTitle":"payments audit","sessionId":"s"}`,
+	)
+	if res.AgentName != "" || res.TeamName != "" {
+		t.Fatalf("a renamed session reads as teammate %q of team %q", res.AgentName, res.TeamName)
+	}
+}
+
 func TestCostStateProcesses(t *testing.T) {
 	cs := func(start int64, cost float64, out int64) string {
 		return fmt.Sprintf(`{"type":"cost-state","startTime":%d,"totalCostUSD":%v,"modelUsage":{"claude-opus-5-5":{"inputTokens":1,"outputTokens":%d,"cacheReadInputTokens":3,"cacheCreationInputTokens":4,"webSearchRequests":0,"costUSD":%v},"claude-haiku-5-5":{"inputTokens":9,"outputTokens":9,"costUSD":0.01}}}`, start, cost, out, cost)

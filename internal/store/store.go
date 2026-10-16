@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS transfers(
 CREATE INDEX IF NOT EXISTS transfers_path ON transfers(path);
 CREATE INDEX IF NOT EXISTS transfers_session ON transfers(session_id);
 CREATE TABLE IF NOT EXISTS hidden(session_id TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS titles(session_id TEXT PRIMARY KEY, title TEXT NOT NULL, at INTEGER NOT NULL);
 `
 
 // columns are added to tables created by earlier versions. The schema only

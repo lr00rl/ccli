@@ -156,6 +156,13 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 		ttl = "(untitled)"
 	}
 	t.println(t.bold(ttl))
+	if d.TitleSource == "ccli" {
+		own := d.ToolTitle
+		if own == "" {
+			own = "(untitled)"
+		}
+		t.println(t.dim("renamed in ccli; its own title: " + own))
+	}
 	state := ""
 	switch {
 	case d.Live:

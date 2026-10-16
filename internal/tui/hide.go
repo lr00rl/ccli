@@ -45,6 +45,9 @@ func (v *viewer) sessionKey(s *screen, k string) (cmd tea.Cmd, ok bool) {
 		return nil, true
 	case "H":
 		return v.reloadSessions(s, !v.showHidden, nil), true
+	case "R":
+		v.askName(s)
+		return nil, true
 	}
 	return nil, false
 }

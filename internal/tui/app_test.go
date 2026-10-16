@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lr00rl/ccli/internal/query"
 )
@@ -33,6 +34,9 @@ func (fakeSrc) Hide(context.Context, []string, time.Time) ([]query.HideResult, e
 	return nil, errBusy
 }
 func (fakeSrc) Unhide(context.Context, []string) ([]query.HideResult, error) { return nil, errBusy }
+func (fakeSrc) Rename(context.Context, string, string, time.Time) (query.RenameResult, error) {
+	return query.RenameResult{}, errBusy
+}
 
 func newTestViewer(s *screen) *viewer {
 	v := &viewer{ctx: context.Background(), src: fakeSrc{}, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
@@ -240,17 +244,35 @@ func TestGroupByProject(t *testing.T) {
 	}
 }
 
-// sessionSrc serves a fixed set of sessions and keeps what was hidden.
+// sessionSrc serves a fixed set of sessions and keeps what was hidden and
+// what was renamed.
 type sessionSrc struct {
 	fakeSrc
 	rows   []query.SessionRow
 	hidden map[string]bool
+	names  map[string]string
+}
+
+func (s *sessionSrc) Rename(_ context.Context, ref, name string, _ time.Time) (query.RenameResult, error) {
+	id := ref[strings.IndexByte(ref, ':')+1:]
+	if s.names == nil {
+		s.names = map[string]string{}
+	}
+	if name == "" {
+		delete(s.names, id)
+	} else {
+		s.names[id] = name
+	}
+	return query.RenameResult{ID: id, Title: name, Cleared: name == ""}, nil
 }
 
 func (s *sessionSrc) Sessions(_ context.Context, f query.Filter) (query.SessionPage, error) {
 	var p query.SessionPage
 	for _, r := range s.rows {
 		r.Hidden = s.hidden[r.ID]
+		if n, ok := s.names[r.ID]; ok {
+			r.ToolTitle, r.Title = r.Title, n
+		}
 		switch {
 		case (f.Show == query.HiddenOnly) == r.Hidden:
 			p.Sessions = append(p.Sessions, r)
@@ -385,5 +407,53 @@ func TestOneLoadAtATime(t *testing.T) {
 	}
 	if got := s.vp.GetContent(); !strings.Contains(got, "PREVIEW E") {
 		t.Fatalf("preview %q, want E", got)
+	}
+}
+
+// R puts the selected session's title in the footer; typing edits it, Enter
+// saves it off the update loop, Esc leaves it, and an empty name removes it.
+func TestRenameFromTheSessionsList(t *testing.T) {
+	src := &sessionSrc{hidden: map[string]bool{}, rows: []query.SessionRow{
+		{Account: "default", ID: "a1", Cwd: "/w/a", Project: "a", Title: "first"},
+	}}
+	v := &viewer{ctx: context.Background(), src: src, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
+	s, err := v.sessionsScreen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.stack = []*screen{s}
+	v.resize()
+	title := func() string { return s.list.all[s.list.selected()].title }
+
+	v.key(key("R"))
+	if v.edit == nil || v.edit.text != "first" || !strings.Contains(ansi.Strip(v.footer()), "rename: first") {
+		t.Fatalf("R opened %+v, footer %q", v.edit, v.footer())
+	}
+	v.key(key("x")) // typed, not a hide
+	if v.confirm != nil || v.edit.text != "firstx" {
+		t.Fatalf("typing x gave %+v, confirm %+v", v.edit, v.confirm)
+	}
+	v.key(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if v.edit != nil || len(src.names) != 0 {
+		t.Fatalf("esc saved %v", src.names)
+	}
+
+	v.key(key("R"))
+	v.key(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	v.Update(tea.PasteMsg{Content: "payments\naudit"})
+	cmd := v.key(key("enter"))
+	if len(src.names) != 0 || v.status != "renaming…" {
+		t.Fatalf("enter renamed %v itself, status %q", src.names, v.status)
+	}
+	run(v, cmd)
+	if src.names["a1"] != "payments audit" || title() != "payments audit" || !strings.HasPrefix(v.status, "renamed a1") {
+		t.Fatalf("names %v, title %q, status %q", src.names, title(), v.status)
+	}
+
+	v.key(key("R"))
+	v.key(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	run(v, v.key(key("enter")))
+	if len(src.names) != 0 || title() != "first" {
+		t.Fatalf("an empty name left %v, title %q", src.names, title())
 	}
 }

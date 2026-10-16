@@ -14,6 +14,7 @@ sessions, ids and costs; only the times move with the day you generate it.
 - [Follow the agents](#follow-the-agents)
 - [Browse interactively](#browse-interactively)
 - [Set sessions aside](#set-sessions-aside)
+- [Give a session a better title](#give-a-session-a-better-title)
 - [Work with two accounts](#work-with-two-accounts)
 - [Codex sessions](#codex-sessions)
 - [Watch your limits](#watch-your-limits)
@@ -239,6 +240,7 @@ ccli view 7a93706c      # start at one session's turns
 | `m` | in the sessions list, mark a session (to hide several at once) |
 | `x` | hide the marked sessions, or the selected one, after asking |
 | `H` | list only hidden sessions; `u` there brings them back |
+| `R` | rename the selected session; an empty name brings back its own title |
 | `?` | list every key |
 | `q` | quit |
 
@@ -269,6 +271,35 @@ To see what you hid, use `ccli sessions --hidden` or `H` in `view`. Bring a
 session back with `ccli unhide <id>` or `u` in that list. A hidden session
 that you resume and use again shows again by itself. A session that is running
 cannot be hidden: hide it once it has ended.
+
+## Give a session a better title
+
+A session's title is its own `/rename`, the title Claude Code generated, or
+its first prompt, and the first prompt often says little about what the
+session became. Name it in ccli:
+
+```sh
+ccli rename 3b3b57cb "Dedupe invoice events by event id"
+```
+
+```
+✓ 3b3b57cb renamed to Dedupe invoice events by event id
+  its own title: Investigate duplicate invoice events
+```
+
+The name shows in `sessions`, `show`, `log`, `prompts` and `view`, and search
+finds the session by the new title or the old one. `ccli show` prints both.
+In `ccli view`, `R` opens the title in a line at the bottom: edit it and press
+`enter` to save, or `esc` to leave it.
+
+The name lives in ccli's index, like a hide mark. Nothing is written to the
+transcript, no Claude Code process starts, and the session keeps its place in
+the list because its last activity does not change. It names the session's
+copies in every account, and Codex sessions too. The one thing it cannot do
+is reach Claude Code's own resume picker; for that, use `/rename` inside
+Claude Code, and ccli picks that title up as well. While a ccli name is set it
+wins; `ccli rename 3b3b57cb --clear`, or an empty name after `R`, brings back
+the session's own title.
 
 ## Work with two accounts
 
