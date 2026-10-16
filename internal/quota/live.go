@@ -389,6 +389,8 @@ type proc struct {
 	in     io.WriteCloser
 	out    *bufio.Scanner
 	stderr *tailBuffer
+	once   sync.Once
+	done   chan struct{} // closed once Wait has returned
 }
 
 func start(ctx context.Context, dir string, env []string, name string, args ...string) (*proc, error) {
@@ -443,6 +445,9 @@ func (p *proc) await(match func(map[string]json.RawMessage) bool) ([]byte, error
 
 // fail turns a broken exchange into an error that says what the tool said.
 func (p *proc) fail(err error) error {
+	// exec copies stderr from its own goroutine and is done only when Wait
+	// returns, so wait for the tool before reading what it said.
+	p.wait(2 * time.Second)
 	if msg := strings.TrimSpace(p.stderr.String()); msg != "" {
 		return fmt.Errorf("%s stopped: %s", p.name, msg)
 	}
@@ -452,17 +457,23 @@ func (p *proc) fail(err error) error {
 	return fmt.Errorf("%s: %w", p.name, err)
 }
 
-// stop closes stdin, which ends both tools, and waits; the context and
-// WaitDelay bound the wait.
-func (p *proc) stop() {
-	p.in.Close()
-	done := make(chan struct{})
-	go func() { p.cmd.Wait(); close(done) }()
+// stop ends the exchange: it closes stdin, which ends both tools, and waits.
+func (p *proc) stop() { p.wait(3 * time.Second) }
+
+// wait closes stdin and waits for the tool to exit, killing it after d. It
+// is called only once reading stdout is over, as exec requires, and any
+// number of times.
+func (p *proc) wait(d time.Duration) {
+	p.once.Do(func() {
+		p.in.Close()
+		p.done = make(chan struct{})
+		go func() { p.cmd.Wait(); close(p.done) }()
+	})
 	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-p.done:
+	case <-time.After(d):
 		p.cmd.Process.Kill()
-		<-done
+		<-p.done
 	}
 }
 
