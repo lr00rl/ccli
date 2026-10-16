@@ -409,7 +409,11 @@ is a separate field (`tag` in JSON) shown in its own column.
 - Lists add a TAG column only when a session on the page has a tag. The
   viewer pads the account and tag columns to the widest value on the page,
   so titles line up, and cuts a tag longer than 12 cells there; `show`
-  prints it whole. A tag is at most 40 characters.
+  prints it whole. In a narrow list pane the tag column shrinks so the
+  title keeps 16 cells, and is left out when fewer than 4 remain.
+- A tag is at most 40 characters (the viewer's editor stops there).
+  Control characters are dropped and runs of whitespace become one space,
+  so a pasted escape sequence cannot color or misalign a table.
 - Search (`-q`, `/` in `view`) matches the tag as well as the title.
 - It is per session id, so it labels the session's copies in other accounts,
   and it works the same for Codex sessions and running sessions.
@@ -425,6 +429,13 @@ last activity, which reorders lists and brings a hidden session back. A
 title set with `/rename` in Claude Code (a `custom-title` line) is read as
 before. `/rename` also writes an `agent-name` line; `agentName` counts as a
 teammate's name only on lines that also carry `teamName`.
+
+A `titles` table is moved into `tags` inside one transaction that checks
+for the table after taking the write lock, so two processes opening the
+database at once do not both try. Moved names are cut to 40 characters, and
+a session that already has a tag keeps it. Going back to a build that still
+has `rename` recreates an empty `titles` table; names given there are moved
+on the next open, except for sessions tagged in the meantime.
 
 ## Copy and move
 

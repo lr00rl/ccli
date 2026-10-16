@@ -128,6 +128,26 @@ func projectHeader(g *projectGroup) item {
 // is cut short there and shown whole in the preview.
 const maxTagCells = 12
 
+// The tag column gives way to the title: it shrinks so the title keeps at
+// least minTitleCells, and is left out when fewer than minTagCells remain.
+const (
+	minTitleCells = 16
+	minTagCells   = 4
+)
+
+// rowPrefixCells is the width of the when, cost and live columns with the
+// spaces after them.
+const rowPrefixCells = 10 + 1 + 8 + 1 + 1 + 1
+
+// tagCells is how wide the tag column is in a row w cells wide.
+func (c sessionCols) tagCells(w int) int {
+	room := w - rowPrefixCells - c.account - 1 - 1 - minTitleCells
+	if n := min(c.tag, room); n >= minTagCells {
+		return n
+	}
+	return 0
+}
+
 // sessionCols are the widths of the padded columns in session rows, so
 // tags and titles line up down the list.
 type sessionCols struct{ account, tag int }
@@ -164,8 +184,8 @@ func (v *viewer) sessionItem(row query.SessionRow, cols sessionCols) item {
 				live = paint("38;5;203", "●")
 			}
 			line := dim(when) + " " + money(cost) + " " + live + " " + dim(padCells(row.Account, cols.account)) + " "
-			if cols.tag > 0 {
-				line += tagged(padCells(row.Tag, cols.tag)) + " "
+			if n := cols.tagCells(w); n > 0 {
+				line += tagged(padCells(row.Tag, n)) + " "
 			}
 			return line + title
 		},

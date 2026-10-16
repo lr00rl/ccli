@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -15,6 +16,7 @@ import (
 type editLine struct {
 	prompt string
 	text   string
+	limit  int // the most characters it takes; 0 for no limit
 	submit func(text string) tea.Cmd
 }
 
@@ -36,9 +38,21 @@ func (v *viewer) editKey(e *editLine, msg tea.KeyPressMsg) tea.Cmd {
 	case "ctrl+c":
 		return tea.Quit
 	default:
-		e.text += msg.Text
+		e.add(msg.Text)
 	}
 	return nil
+}
+
+// add types s at the end of the line, up to its limit.
+func (e *editLine) add(s string) {
+	if e.limit > 0 {
+		if room := e.limit - utf8.RuneCountInString(e.text); room <= 0 {
+			return
+		} else if r := []rune(s); len(r) > room {
+			s = string(r[:room])
+		}
+	}
+	e.text += s
 }
 
 // editFooter shows the edit line, keeping the end of a long text in view.
@@ -61,7 +75,7 @@ func (v *viewer) askTag(s *screen) {
 	it := s.list.all[idx]
 	ref, current := it.id, it.tag
 	src, ctx := v.src, v.ctx
-	v.edit = &editLine{prompt: "tag:", text: current, submit: func(text string) tea.Cmd {
+	v.edit = &editLine{prompt: "tag:", text: current, limit: query.MaxTag, submit: func(text string) tea.Cmd {
 		text = strings.Join(strings.Fields(text), " ")
 		if text == current {
 			v.status = "left as it was"

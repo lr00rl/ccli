@@ -472,3 +472,70 @@ func TestTagFromTheSessionsList(t *testing.T) {
 		t.Fatalf("an empty tag left %v, row %q", src.tags, row(s.list.selected()))
 	}
 }
+
+// In a narrow list pane the title keeps its room: the tag column shrinks
+// first and goes when too little is left for it, while the preview still
+// shows the tag.
+func TestTagGivesWayToTheTitle(t *testing.T) {
+	rows := []query.SessionRow{
+		{Account: "default", ID: "a1", Title: "Fix tooltip overflow on narrow screens", Tag: "payments-audit"},
+		{Account: "work", ID: "b2", Title: "Second session"},
+	}
+	cols := measureSessions(rows)
+	v := &viewer{loc: time.UTC}
+	row := func(w int) string { return ansi.Strip(v.sessionItem(rows[0], cols).row(w)) }
+	if r := row(44); strings.Contains(r, "payments") || !strings.Contains(r, "Fix tooltip") {
+		t.Fatalf("44 cells: %q", r)
+	}
+	if r := row(60); !strings.Contains(r, "payments") || !strings.Contains(r, "Fix tooltip") {
+		t.Fatalf("60 cells: %q", r)
+	}
+	if r := row(120); !strings.Contains(r, "payments-au… Fix tooltip overflow") {
+		t.Fatalf("120 cells: %q", r)
+	}
+}
+
+// Columns are measured in cells, so wide characters line up and a tag is
+// cut to fit with an ellipsis.
+func TestPadCells(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		w    int
+		want string
+	}{
+		{"ab", 4, "ab  "},
+		{"支付审计", 8, "支付审计"},
+		{"支付审计", 6, "支付… "},
+		{"payments-audit", 12, "payments-au…"},
+	} {
+		if got := padCells(c.in, c.w); got != c.want || ansi.StringWidth(got) != c.w {
+			t.Errorf("padCells(%q, %d) = %q", c.in, c.w, got)
+		}
+	}
+	if c := measureSessions([]query.SessionRow{{Account: "work", Tag: "支付审计"}, {Account: "codex-work"}}); c.account != 10 || c.tag != 8 {
+		t.Errorf("measured %+v", c)
+	}
+}
+
+// The tag editor stops at MaxTag characters, typed or pasted, so a save
+// never fails on length after the line has closed.
+func TestTagEditorStopsAtTheLimit(t *testing.T) {
+	src := &sessionSrc{hidden: map[string]bool{}, rows: []query.SessionRow{{Account: "default", ID: "a1", Cwd: "/w/a", Title: "first"}}}
+	v := &viewer{ctx: context.Background(), src: src, loc: time.UTC, rendered: map[string]string{}, w: 120, h: 30}
+	s, err := v.sessionsScreen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.stack = []*screen{s}
+	v.resize()
+	v.key(key("#"))
+	v.Update(tea.PasteMsg{Content: strings.Repeat("长", query.MaxTag+5)})
+	v.key(key("x"))
+	if n := len([]rune(v.edit.text)); n != query.MaxTag {
+		t.Fatalf("editor holds %d characters", n)
+	}
+	run(v, v.key(key("enter")))
+	if src.tags["a1"] != strings.Repeat("长", query.MaxTag) {
+		t.Fatalf("saved %q, status %q", src.tags["a1"], v.status)
+	}
+}

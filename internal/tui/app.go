@@ -271,7 +271,7 @@ func (v *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, v.sync()
 	case tea.PasteMsg:
 		if v.edit != nil {
-			v.edit.text += strings.Join(strings.Fields(msg.Content), " ")
+			v.edit.add(strings.Join(strings.Fields(msg.Content), " "))
 			return v, nil
 		}
 		if v.filter {
@@ -713,7 +713,7 @@ func (v *viewer) footer() string {
 		switch s.role {
 		case sessionsRole:
 			if v.showHidden {
-				keys = append(keys, "m mark", "u bring back", "H all sessions")
+				keys = append(keys, "m mark", "u bring back", "# tag", "H all sessions")
 			} else {
 				keys = append(keys, "m mark", "x hide", "# tag", "H hidden")
 			}

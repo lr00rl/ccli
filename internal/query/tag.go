@@ -5,12 +5,29 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
+
+	"github.com/lr00rl/ccli/internal/store"
 )
 
-// MaxTag is the longest tag Tag accepts, in characters. A tag is a label
-// shown in a column next to the title, not a second title.
-const MaxTag = 40
+// MaxTag is the longest tag Tag accepts, in characters.
+const MaxTag = store.MaxTag
+
+// CleanTag is the tag as stored: control characters dropped, runs of
+// whitespace (newlines and tabs included) made one space, ends trimmed.
+func CleanTag(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
 
 // TagResult is what Tag did.
 type TagResult struct {
@@ -27,7 +44,7 @@ type TagResult struct {
 // does not move. It is kept by session id, so it labels the session's copies
 // in other accounts too.
 func (d *DB) Tag(ctx context.Context, ref, tag string, now time.Time) (TagResult, error) {
-	tag = strings.Join(strings.Fields(tag), " ")
+	tag = CleanTag(tag)
 	if n := utf8.RuneCountInString(tag); n > MaxTag {
 		return TagResult{}, fmt.Errorf("a tag is at most %d characters; this one has %d", MaxTag, n)
 	}

@@ -88,3 +88,18 @@ func TestTag(t *testing.T) {
 		}
 	}
 }
+
+// A tag keeps no control characters: an escape sequence typed or pasted
+// into one would otherwise color and misalign every table it is shown in.
+func TestCleanTag(t *testing.T) {
+	for in, want := range map[string]string{
+		"  payments\n\taudit ": "payments audit",
+		"a\x1b[31mred":         "a[31mred",
+		"支付 审计":                "支付 审计",
+		"\x07\x00":             "",
+	} {
+		if got := query.CleanTag(in); got != want {
+			t.Errorf("CleanTag(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -42,19 +42,26 @@ func (s *Store) Tags(ctx context.Context) (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// MaxTag is the longest tag, in characters. A tag is a label shown in a
+// column next to the title, not a second title.
+const MaxTag = 40
+
 // titlesToTags moves the names an earlier ccli gave sessions with `rename`
-// into tags, once, and drops the old table.
+// into tags, once, cut to MaxTag, and drops the old table. The check runs
+// inside the transaction, which holds the write lock from BEGIN, so when two
+// processes open the database at once only the first moves anything.
 func titlesToTags(db *sql.DB) error {
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'titles'`).Scan(&n); err != nil || n == 0 {
-		return err
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO tags(session_id, tag, at) SELECT session_id, title, at FROM titles`); err != nil {
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'titles'`).Scan(&n); err != nil || n == 0 {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO tags(session_id, tag, at)
+		SELECT session_id, rtrim(substr(title, 1, ?)), at FROM titles`, MaxTag); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DROP TABLE titles`); err != nil {
