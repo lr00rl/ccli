@@ -388,3 +388,19 @@ func TestLiveAnswerSurvivesAStatusLineWrite(t *testing.T) {
 		t.Fatalf("latest %+v", five)
 	}
 }
+
+// A live answer supersedes older readings: a window it leaves out (a free
+// plan has no weekly window) is not filled from an older log reading, while
+// a reading taken after the answer still wins.
+func TestLiveAnswerSupersedesOlderReadings(t *testing.T) {
+	at := time.Date(2026, 10, 16, 10, 0, 0, 0, time.UTC)
+	logs := &Snapshot{CapturedAt: at.Add(-1000 * time.Hour), Source: FromCodexLog, FiveHour: &Window{UsedPercent: 5}, SevenDay: &Window{UsedPercent: 24}}
+	live := &Snapshot{CapturedAt: at, Source: FromCodexLive, Limits: []Limit{{Name: "30-day"}}}
+	if five, seven := Latest(logs, live); five != nil || seven != nil {
+		t.Fatalf("filled from older logs: %+v %+v", five, seven)
+	}
+	later := &Snapshot{CapturedAt: at.Add(time.Minute), FiveHour: &Window{UsedPercent: 31}}
+	if five, _ := Latest(logs, live, later); five == nil || five.UsedPercent != 31 || five.Source != "status line" {
+		t.Fatalf("newer status line reading: %+v", five)
+	}
+}

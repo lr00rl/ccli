@@ -425,9 +425,25 @@ func SourceName(source string) string {
 }
 
 // Latest picks, for each window, the most recent reading among the
-// snapshots given (nil ones are skipped). A reading without a reset time
-// borrows the newest other reading's when that is still ahead of it.
+// snapshots given (nil ones are skipped). A live check's answer lists every
+// window the account has, so snapshots older than the newest live answer are
+// dropped first: a window the answer leaves out is not filled from them. A
+// reading without a reset time borrows the newest other reading's when that
+// is still ahead of it.
 func Latest(snaps ...*Snapshot) (five, seven *Reading) {
+	var live time.Time
+	for _, s := range snaps {
+		if s != nil && (s.Source == FromClaudeLive || s.Source == FromCodexLive) && s.CapturedAt.After(live) {
+			live = s.CapturedAt
+		}
+	}
+	var kept []*Snapshot
+	for _, s := range snaps {
+		if s != nil && !s.CapturedAt.Before(live) {
+			kept = append(kept, s)
+		}
+	}
+	snaps = kept
 	pick := func(get func(*Snapshot) *Window) *Reading {
 		var all []*Reading
 		for _, s := range snaps {
