@@ -15,13 +15,31 @@ import (
 	"syscall"
 )
 
-// Account is one Claude Code config dir.
+// Tool is the coding agent whose sessions an account holds.
+type Tool string
+
+const (
+	Claude Tool = "claude" // a Claude Code config dir: projects/<key>/<session>.jsonl
+	Codex  Tool = "codex"  // a Codex home: sessions/YYYY/MM/DD/rollout-*.jsonl
+)
+
+// Account is one Claude Code config dir or one Codex home.
 type Account struct {
 	Name    string `json:"name"`
+	Tool    Tool   `json:"tool"`
 	Dir     string `json:"dir"`
 	Email   string `json:"email,omitempty"`
 	Org     string `json:"org,omitempty"`
 	Billing string `json:"billing,omitempty"`
+}
+
+// Kind is the account's tool; an account made without one is a Claude Code
+// config dir.
+func (a Account) Kind() Tool {
+	if a.Tool == "" {
+		return Claude
+	}
+	return a.Tool
 }
 
 // Live is a running Claude Code process, from <dir>/sessions/<pid>.json.
@@ -45,9 +63,10 @@ func NameOf(dir string) string {
 	return b
 }
 
-// Discover lists the accounts. CCLI_CONFIG_DIRS (a list separated by the OS
-// path list separator) replaces the default search of ~/.claude and
-// ~/.claude-*. A dir counts only if it has a projects/ folder.
+// Discover lists the accounts: Claude Code config dirs (~/.claude and
+// ~/.claude-*, with a projects/ folder) and Codex homes (~/.codex and
+// ~/.codex-*, with a sessions/ folder). CCLI_CONFIG_DIRS and CCLI_CODEX_DIRS
+// (lists separated by the OS path list separator) replace either search.
 func Discover() ([]Account, error) { return discover(true) }
 
 // DiscoverDirs is Discover without reading identities, for hot paths such as
@@ -59,38 +78,65 @@ func discover(withIdentity bool) ([]Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	var dirs []string
-	if v := os.Getenv("CCLI_CONFIG_DIRS"); v != "" {
-		dirs = filepath.SplitList(v)
-	} else {
-		dirs = append(dirs, filepath.Join(home, ".claude"))
-		more, _ := filepath.Glob(filepath.Join(home, ".claude-*"))
-		dirs = append(dirs, more...)
-	}
-	seen := map[string]bool{}
 	var out []Account
-	for _, d := range dirs {
-		d = filepath.Clean(d)
-		if seen[d] {
-			continue
+	names := map[string]bool{}
+	add := func(a Account) {
+		// Names identify accounts on the command line, so they must be unique.
+		if names[a.Name] {
+			a.Name += "-" + string(a.Tool)
 		}
-		seen[d] = true
-		if st, err := os.Stat(filepath.Join(d, "projects")); err != nil || !st.IsDir() {
-			continue
-		}
-		a := Account{Name: NameOf(d), Dir: d}
+		names[a.Name] = true
+		out = append(out, a)
+	}
+	for _, d := range dirsOf("CCLI_CONFIG_DIRS", filepath.Join(home, ".claude"), "projects") {
+		a := Account{Name: NameOf(d), Tool: Claude, Dir: d}
 		if withIdentity {
 			a.Email, a.Org, a.Billing = identity(d, home)
 		}
-		out = append(out, a)
+		add(a)
+	}
+	// Codex keeps the signed-in identity only in auth.json, next to its
+	// credentials, so a Codex account has no email here.
+	for _, d := range dirsOf("CCLI_CODEX_DIRS", filepath.Join(home, ".codex"), "sessions") {
+		add(Account{Name: strings.TrimPrefix(filepath.Base(d), "."), Tool: Codex, Dir: d})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Tool != out[j].Tool {
+			return out[i].Tool == Claude
+		}
 		if (out[i].Name == "default") != (out[j].Name == "default") {
 			return out[i].Name == "default"
 		}
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// dirsOf lists the dirs named in the environment variable env (separated by
+// the OS path list separator), or else base and its siblings base-*, keeping
+// those that hold the folder need.
+func dirsOf(env, base, need string) []string {
+	var dirs []string
+	if v := os.Getenv(env); v != "" {
+		dirs = filepath.SplitList(v)
+	} else {
+		dirs = append(dirs, base)
+		more, _ := filepath.Glob(base + "-*")
+		dirs = append(dirs, more...)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range dirs {
+		d = filepath.Clean(d)
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		if st, err := os.Stat(filepath.Join(d, need)); err == nil && st.IsDir() {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // Find returns the account with this name.
@@ -140,6 +186,9 @@ func identity(dir, home string) (email, org, billing string) {
 func LiveSessions(accts []Account) []Live {
 	var out []Live
 	for _, a := range accts {
+		if a.Kind() != Claude {
+			continue
+		}
 		files, _ := filepath.Glob(filepath.Join(a.Dir, "sessions", "*.json"))
 		for _, f := range files {
 			pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json"))

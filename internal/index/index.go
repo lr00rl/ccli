@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/codex"
 	"github.com/lr00rl/ccli/internal/pricing"
 	"github.com/lr00rl/ccli/internal/store"
 	"github.com/lr00rl/ccli/internal/transcript"
@@ -33,6 +34,9 @@ type Options struct {
 	Rebuild  bool                               // re-read every file from the start
 	Workers  int                                // parse goroutines (default: CPUs)
 	Progress func(done, total int, bytes int64) // called from the writer goroutine
+	// QuotaDir is where rate-limit readings found in logs (Codex writes them)
+	// are saved as quota snapshots; empty saves none.
+	QuotaDir string
 }
 
 // Stats describe a run.
@@ -53,7 +57,8 @@ type job struct {
 	reset    bool
 	from     int64
 	state    transcript.State
-	meta     string             // path of the subagent's .meta.json, if any
+	meta     string // path of the subagent's .meta.json, if any
+	tool     account.Tool
 	imported []transcript.Range // byte ranges ccli copied in from another account
 	ledger   int64              // the newest ledger entry when imported was read
 }
@@ -78,9 +83,25 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	var runs []store.Run
 	seen := map[string]bool{}
 	for _, a := range accts {
-		found, rs, err := scan(a, knownRuns, opt.Rebuild)
+		var found []discovered
+		var rs []store.Run
+		var moves []moved
+		if a.Kind() == account.Codex {
+			found, moves, err = scanCodex(a, known)
+		} else {
+			found, rs, err = scan(a, knownRuns, opt.Rebuild)
+		}
 		if err != nil {
 			return stats, err
+		}
+		for _, m := range moves {
+			if err := st.MovePath(ctx, m.ID, m.To); err != nil {
+				return stats, err
+			}
+			f := known[m.From]
+			delete(known, m.From)
+			f.Path = m.To
+			known[m.To] = f
 		}
 		runs = append(runs, rs...)
 		for _, d := range found {
@@ -122,8 +143,12 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	}
 	// Each applied update marks its session in the same transaction, so if
 	// this stops here the next run reconciles what this one changed.
-	if err := parseAll(ctx, st, jobs, prices, opt, &stats); err != nil {
+	limits := map[string]*transcript.Limits{}
+	if err := parseAll(ctx, st, jobs, prices, opt, &stats, limits); err != nil {
 		return stats, err
+	}
+	if opt.QuotaDir != "" {
+		saveLimits(opt.QuotaDir, accts, limits)
 	}
 	if h := prices.Hash(); h != mustMeta(st, "prices") {
 		if err := st.Reprice(ctx, prices.Cost, h); err != nil {
@@ -147,6 +172,7 @@ func mustMeta(st *store.Store, k string) string {
 type discovered struct {
 	file store.File
 	meta string
+	tool account.Tool
 }
 
 // scan lists an account's transcript files, and reads the workflow journals
@@ -338,7 +364,7 @@ func journal(path string, r *store.Run) {
 // plan decides what to read from a file.
 func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	f := d.file
-	j := job{file: f, meta: d.meta}
+	j := job{file: f, meta: d.meta, tool: d.tool}
 	if old.ID == 0 {
 		return j, true
 	}
@@ -349,7 +375,7 @@ func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	}
 	if f.Size == old.Offset {
 		if old.Missing {
-			j.from, j.state = old.Offset, transcript.State{PrevTS: old.PrevTS, Turn: old.Turn, Replay: old.Replay}
+			j.from, j.state = old.Offset, continueFrom(old)
 			return j, true // reappeared unchanged: clear the missing flag
 		}
 		return j, false
@@ -361,8 +387,13 @@ func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 			return j, true
 		}
 	}
-	j.from, j.state = old.Offset, transcript.State{PrevTS: old.PrevTS, Turn: old.Turn, Replay: old.Replay}
+	j.from, j.state = old.Offset, continueFrom(old)
 	return j, true
+}
+
+// continueFrom is the parse state an incremental parse of a file starts with.
+func continueFrom(old store.File) transcript.State {
+	return transcript.State{PrevTS: old.PrevTS, Turn: old.Turn, Replay: old.Replay, Carry: old.Carry}
 }
 
 // headHash hashes the first headBytes of a file, or fewer when only that many
@@ -390,7 +421,9 @@ type parsed struct {
 	err   error
 }
 
-func parseAll(ctx context.Context, st *store.Store, jobs []job, prices *pricing.Table, opt Options, stats *Stats) error {
+// parseAll parses the jobs and applies the results; limits receives the
+// latest rate-limit reading found per account.
+func parseAll(ctx context.Context, st *store.Store, jobs []job, prices *pricing.Table, opt Options, stats *Stats, limits map[string]*transcript.Limits) error {
 	if len(jobs) == 0 {
 		return nil
 	}
@@ -451,6 +484,11 @@ func parseAll(ctx context.Context, st *store.Store, jobs []job, prices *pricing.
 		}
 		stats.Parsed++
 		stats.Bytes += p.bytes
+		if l := p.up.Result.Limits; l != nil {
+			if cur := limits[p.up.File.Account]; cur == nil || l.At > cur.At {
+				limits[p.up.File.Account] = l
+			}
+		}
 		batch = append(batch, p.up)
 		batchBytes += p.bytes
 		if len(batch) >= 64 || batchBytes >= 64<<20 {
@@ -493,11 +531,24 @@ func parseOne(j job) parsed {
 		kind = transcript.Workflow
 	}
 	j.state.Base, j.state.Imported = from, j.imported
-	res, err := transcript.Parse(f, kind, j.state)
+	var res transcript.Result
+	var agent *store.AgentMeta
+	if j.tool == account.Codex {
+		thread := j.file.SessionID
+		if kind == transcript.Subagent {
+			thread = j.file.AgentID
+		}
+		var meta *codex.Meta
+		if res, meta, err = codex.Parse(f, kind, thread, j.state); err == nil && meta != nil && kind == transcript.Subagent {
+			agent = codexAgent(meta, j.file.SessionID)
+		}
+	} else {
+		res, err = transcript.Parse(f, kind, j.state)
+	}
 	if err != nil {
 		return parsed{err: err}
 	}
-	up := store.Update{File: j.file, Reset: j.reset, From: from, Result: res, Ledger: j.ledger}
+	up := store.Update{File: j.file, Reset: j.reset, From: from, Result: res, Ledger: j.ledger, Agent: agent}
 	up.File.Offset = from + res.Consumed
 	up.File.Parser = ParserVersion
 	if up.File.Offset > 0 {

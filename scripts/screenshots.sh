@@ -76,6 +76,9 @@ agent=$(ccli show "${lead:0:8}" --json | jq -r '[.. | objects | select(.descript
 run=$(ccli show "${lead:0:8}" --json | jq -r '.workflow_runs[0].id')
 COLS=100 shot agent log "${lead:0:8}" --agent "${agent:0:8}"
 COLS=100 shot run log "${lead:0:8}" --run "${run:0:8}"
+# A Codex turn, from the demo's Codex home.
+cx=$(ccli sessions -a codex --json | jq -r '.sessions[] | select(.title | startswith("Add per-client")) | .id')
+COLS=100 shot codex log "${cx:0:8}" 3 --tools
 shot accounts accounts
 shot quota quota
 shot diff diff default work --project web-dashboard --all

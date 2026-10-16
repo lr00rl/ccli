@@ -63,7 +63,7 @@ func TestHaikuLongTier(t *testing.T) {
 
 func TestUnknownAndOverride(t *testing.T) {
 	tb, _ := Load("")
-	if _, ok := tb.Cost("gpt-5.4", "standard", transcript.Usage{Input: 10}); ok {
+	if _, ok := tb.Cost("example-local-model", "standard", transcript.Usage{Input: 10}); ok {
 		t.Fatal("unknown model priced")
 	}
 	before := tb.Hash()
@@ -85,5 +85,22 @@ func TestUnknownAndOverride(t *testing.T) {
 	os.WriteFile(p, []byte(`{bad`), 0o644)
 	if _, err := Load(p); err == nil {
 		t.Fatal("bad overrides accepted")
+	}
+}
+
+// OpenAI models price uncached input, cached input and output, and switch
+// to long-context rates above 272K input tokens.
+func TestOpenAIPrices(t *testing.T) {
+	tb, _ := Load("")
+	u := transcript.Usage{Input: 100_000, CacheRead: 100_000, Output: 10_000}
+	if got, ok := tb.Cost("gpt-5.4", "standard", u); !ok || !near(got, 0.1*2.50+0.1*0.25+0.01*15) {
+		t.Fatalf("gpt-5.4 = %v %v", got, ok)
+	}
+	long := transcript.Usage{Input: 200_000, CacheRead: 100_000, Output: 10_000}
+	if got, _ := tb.Cost("gpt-5.4", "standard", long); !near(got, 0.2*5+0.1*0.50+0.01*22.50) {
+		t.Fatalf("gpt-5.4 long = %v", got)
+	}
+	if got, _ := tb.Cost("gpt-5.3-codex", "fast", u); !near(got, 0.1*3.50+0.1*0.35+0.01*28) {
+		t.Fatalf("gpt-5.3-codex fast = %v", got)
 	}
 }

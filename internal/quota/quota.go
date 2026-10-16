@@ -26,9 +26,19 @@ type Window struct {
 	ResetsAt    time.Time `json:"resets_at"`
 }
 
-// Expired reports whether the window has reset since the snapshot.
+// Expired reports whether the window has reset since the snapshot; never when
+// the reset time is unknown.
 func (w Window) Expired(now time.Time) bool {
-	return !now.Before(w.ResetsAt)
+	return !w.ResetsAt.IsZero() && !now.Before(w.ResetsAt)
+}
+
+// Unix is the time of a reset given in unix seconds; zero, for unknown, when
+// the source left it out.
+func Unix(sec int64) time.Time {
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
 }
 
 // Snapshot is the rate-limit state saved for one account.
@@ -40,7 +50,14 @@ type Snapshot struct {
 	CapturedAt time.Time `json:"captured_at"`
 	FiveHour   *Window   `json:"five_hour,omitempty"`
 	SevenDay   *Window   `json:"seven_day,omitempty"`
+	// Source is where the reading came from: empty for the status line
+	// wrapper, FromCodexLog for the rate limits Codex writes to its logs.
+	Source string `json:"source,omitempty"`
+	Plan   string `json:"plan,omitempty"` // the subscription plan, when the source names it
 }
+
+// FromCodexLog marks a snapshot read from Codex's session logs.
+const FromCodexLog = "codex-log"
 
 type statusLine struct {
 	SessionID      string `json:"session_id"`
@@ -62,7 +79,7 @@ type rateWindow struct {
 func (r rateWindow) window() Window {
 	return Window{
 		UsedPercent: r.UsedPercentage,
-		ResetsAt:    time.Unix(r.ResetsAt, 0).UTC(),
+		ResetsAt:    Unix(r.ResetsAt),
 	}
 }
 
@@ -334,7 +351,7 @@ type Reading struct {
 	UsedPercent float64   `json:"used_percent"`
 	ResetsAt    time.Time `json:"resets_at,omitempty"` // zero when the source did not say
 	At          time.Time `json:"reported_at"`
-	Source      string    `json:"source"` // "status line" or "ccline"
+	Source      string    `json:"source"` // "status line", "ccline" or "Codex's logs"
 }
 
 // Expired reports whether the window has reset since the reading.
@@ -386,7 +403,11 @@ func Latest(status, ccline *Snapshot) (five, seven *Reading) {
 			if w == nil {
 				continue
 			}
-			r := &Reading{UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt, At: src.s.CapturedAt, Source: src.name}
+			name := src.name
+			if src.s.Source == FromCodexLog {
+				name = "Codex's logs"
+			}
+			r := &Reading{UsedPercent: w.UsedPercent, ResetsAt: w.ResetsAt, At: src.s.CapturedAt, Source: name}
 			if out == nil || r.At.After(out.At) {
 				out, other = r, out
 			} else {

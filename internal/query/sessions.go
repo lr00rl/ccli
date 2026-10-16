@@ -72,6 +72,7 @@ func (d *DB) loadSessions(ctx context.Context, f Filter) ([]SessionRow, error) {
 		if !f.wantsAccount(s.Account) {
 			continue
 		}
+		s.Tool = d.toolOf(s.Account)
 		s.Title, s.TitleSource = title(custom, ai, summary, prompt)
 		s.Started, s.Last = ms(started), ms(last)
 		s.Missing = missing != 0

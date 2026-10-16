@@ -40,13 +40,15 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 		if len(accts) > 0 && !contains(accts, ac.Name) {
 			continue
 		}
-		r := render.QuotaRow{Account: ac.Name, Email: ac.Email}
+		r := render.QuotaRow{Account: ac.Name, Email: ac.Email, Tool: ac.Kind()}
 		var status, cc *quota.Snapshot
 		if s, ok := snaps[ac.Name]; ok {
-			status = &s
+			status, r.Plan = &s, s.Plan
 		}
-		if s, ok := quota.CclineCache(ac.Dir); ok {
-			cc = &s
+		if ac.Kind() == account.Claude {
+			if s, ok := quota.CclineCache(ac.Dir); ok {
+				cc = &s
+			}
 		}
 		r.FiveHour, r.SevenDay = quota.Latest(status, cc)
 		// Usage is counted from the start of each window as the server

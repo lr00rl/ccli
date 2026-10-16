@@ -70,6 +70,8 @@ type Turn struct {
 	Kind    string  `json:"kind,omitempty"`
 	Offset  int64   `json:"offset"`
 	Entries []Entry `json:"entries"`
+	// Speaker names the model's side of the conversation; empty means Claude.
+	Speaker string `json:"speaker,omitempty"`
 }
 
 // Prompt returns the turn's prompt entry, if it has one.

@@ -120,33 +120,34 @@ type AccountSummary struct {
 
 // SessionRow is one session in a list.
 type SessionRow struct {
-	Account      string    `json:"account"`
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	TitleSource  string    `json:"title_source"` // custom, ai, summary, prompt, none
-	Cwd          string    `json:"cwd"`
-	Project      string    `json:"project"`
-	ProjectKey   string    `json:"project_key"`
-	Started      time.Time `json:"started"`
-	Last         time.Time `json:"last"`
-	ActiveMS     int64     `json:"active_ms"`
-	Prompts      int       `json:"prompts"`
-	OtherPrompts int       `json:"other_prompts"`
-	Replies      int       `json:"replies"`
-	ToolCalls    int       `json:"tool_calls"`
-	Models       []string  `json:"models"`
-	Tokens       Tokens    `json:"tokens"`
-	Cost         Cost      `json:"cost"`
-	Subagents    int       `json:"subagents"`
-	Runs         int       `json:"workflow_runs"`
-	Team         string    `json:"team,omitempty"`
-	AgentName    string    `json:"agent_name,omitempty"`
-	Live         bool      `json:"live"`
-	Hidden       bool      `json:"hidden,omitempty"` // set aside with `ccli hide`; counted in totals, left out of lists
-	Missing      bool      `json:"transcript_missing"`
-	GitBranch    string    `json:"git_branch,omitempty"`
-	Entrypoint   string    `json:"entrypoint,omitempty"`
-	Version      string    `json:"version,omitempty"`
+	Account      string       `json:"account"`
+	Tool         account.Tool `json:"tool"`
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	TitleSource  string       `json:"title_source"` // custom, ai, summary, prompt, none
+	Cwd          string       `json:"cwd"`
+	Project      string       `json:"project"`
+	ProjectKey   string       `json:"project_key"`
+	Started      time.Time    `json:"started"`
+	Last         time.Time    `json:"last"`
+	ActiveMS     int64        `json:"active_ms"`
+	Prompts      int          `json:"prompts"`
+	OtherPrompts int          `json:"other_prompts"`
+	Replies      int          `json:"replies"`
+	ToolCalls    int          `json:"tool_calls"`
+	Models       []string     `json:"models"`
+	Tokens       Tokens       `json:"tokens"`
+	Cost         Cost         `json:"cost"`
+	Subagents    int          `json:"subagents"`
+	Runs         int          `json:"workflow_runs"`
+	Team         string       `json:"team,omitempty"`
+	AgentName    string       `json:"agent_name,omitempty"`
+	Live         bool         `json:"live"`
+	Hidden       bool         `json:"hidden,omitempty"` // set aside with `ccli hide`; counted in totals, left out of lists
+	Missing      bool         `json:"transcript_missing"`
+	GitBranch    string       `json:"git_branch,omitempty"`
+	Entrypoint   string       `json:"entrypoint,omitempty"`
+	Version      string       `json:"version,omitempty"`
 }
 
 // SessionPage is a filtered, sorted list of sessions.
@@ -230,4 +231,14 @@ func ShortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// toolOf is the tool whose sessions account acct holds.
+func (d *DB) toolOf(acct string) account.Tool {
+	for _, a := range d.accts {
+		if a.Name == acct {
+			return a.Kind()
+		}
+	}
+	return account.Claude
 }

@@ -15,6 +15,7 @@ sessions, ids and costs; only the times move with the day you generate it.
 - [Browse interactively](#browse-interactively)
 - [Set sessions aside](#set-sessions-aside)
 - [Work with two accounts](#work-with-two-accounts)
+- [Codex sessions](#codex-sessions)
 - [Watch your limits](#watch-your-limits)
 - [Script it](#script-it)
 - [Keep your history](#keep-your-history)
@@ -28,8 +29,9 @@ Install with Go 1.26 or later:
 go install github.com/lr00rl/ccli@latest
 ```
 
-ccli finds your accounts on its own: `~/.claude` is shown as `default` and
-each `~/.claude-<name>` as `<name>`. Every command first brings its index up
+ccli finds your accounts on its own: `~/.claude` is shown as `default`, each
+`~/.claude-<name>` as `<name>`, and a Codex home, `~/.codex`, as `codex`.
+Every command first brings its index up
 to date. The first run reads every transcript (about 10 seconds for 4 GB on
 an M-series Mac); after that only new lines are read. The index lives in
 `~/.local/share/ccli/ccli.db` and is the only thing ccli writes unless you
@@ -62,11 +64,11 @@ ccli sessions --project checkout -q payment        # by folder and by title
 ccli sessions --since 2026-10-01 --model sonnet
 ```
 
-Any command that takes a session accepts an id prefix, such as `928fce20`.
+Any command that takes a session accepts an id prefix, such as `7a93706c`.
 When the same session exists in two accounts, ccli picks the copy with the
-latest activity; name the account to choose: `work:928fce20`.
+latest activity; name the account to choose: `work:7a93706c`.
 
-`ccli show 928fce20` prints one session: its models, how its cost splits
+`ccli show 7a93706c` prints one session: its models, how its cost splits
 between the main conversation, its subagents and its workflow runs, the tree
 of agents with the turn that started each, the tools and commands used, and
 the command that resumes it in the right account and folder.
@@ -79,7 +81,7 @@ A turn is one prompt and everything that happened until the next prompt.
 `ccli log` lists a session's turns:
 
 ```sh
-ccli log 928fce20
+ccli log 7a93706c
 ```
 
 ![ccli log](images/log.png)
@@ -93,9 +95,9 @@ hidden; `--all` shows them.
 Name a turn to read it in full, or a range, or `last`:
 
 ```sh
-ccli log 928fce20 6          # turn 6
-ccli log 928fce20 3-6        # turns 3 to 6
-ccli log 928fce20 last       # the latest turn
+ccli log 7a93706c 6          # turn 6
+ccli log 7a93706c 3-6        # turns 3 to 6
+ccli log 7a93706c last       # the latest turn
 ```
 
 ![ccli log for one turn](images/turn.png)
@@ -105,8 +107,8 @@ per tool call, the prompt given to each subagent, and the agents and workflow
 runs the turn started. The header says where the cost went:
 
 ```
-Turn 6  928fce20 · work · Audit payment retries across services
-2026-10-15 16:23 · took 1m · $0.41 ($0.19 here, $0.22 in agents) · 3 model calls · 2 tool calls
+Turn 6  7a93706c · work · Audit payment retries across services
+2026-10-15 18:07 · took 1m · $0.38 ($0.15 here, $0.22 in agents) · 3 model calls · 2 tool calls
 prompt 103 chars
 ```
 
@@ -151,14 +153,14 @@ how often you needed it:
 ```
 $ ccli prompts -q "simpler approach" --days 0 -n 6
 WHEN         TURN         PROJECT           TOOK   COST  TOOLS  PROMPT
-10-15 19:52  928fce20:38  checkout-service    3m  $0.52      5  Try the simpler approach first.
-10-15 19:38  928fce20:35  checkout-service    3m  $0.49      5  Try the simpler approach first.
-10-15 19:26  928fce20:32  checkout-service    2m  $0.38      4  Try the simpler approach first.
-10-15 18:54  928fce20:25  checkout-service    1m  $0.32      4  Try the simpler approach first.
-10-15 18:42  928fce20:22  checkout-service    1m  $0.21      3  Try the simpler approach first.
-10-15 18:36  928fce20:21  checkout-service    3m  $0.37      5  Try the simpler approach first.
+10-15 21:52  7a93706c:44  checkout-service    3m  $0.41      4  Try the simpler approach first.
+10-15 20:23  7a93706c:29  checkout-service    1m  $0.23      3  Try the simpler approach first.
+10-15 20:06  7a93706c:25  checkout-service   25s  $0.07      1  Try the simpler approach first.
+10-15 19:58  7a93706c:23  checkout-service    3m  $0.41      5  Try the simpler approach first.
+10-15 19:41  7a93706c:20  checkout-service    1m  $0.23      3  Try the simpler approach first.
+10-15 19:05  7a93706c:16  checkout-service    1m  $0.19      3  Try the simpler approach first.
 
-6 of 87 prompts · $2.30 shown · ccli log <id> <turn> prints one in full
+6 of 84 prompts · $1.53 shown · ccli log <id> <turn> prints one in full
 ```
 
 To find every prompt you repeat, count them with `jq`:
@@ -189,8 +191,8 @@ rework.
 subagents, with the turn that started each. `ccli log` reads them:
 
 ```sh
-ccli log 928fce20 --agent 55fe21fd     # one subagent's transcript
-ccli log 928fce20 --run wf_b1a8        # a workflow run's agents and how each ended
+ccli log 7a93706c --agent a24cd2c9     # one subagent's transcript
+ccli log 7a93706c --run wf_df79        # a workflow run's agents and how each ended
 ```
 
 ![ccli log --agent: a subagent's task, what it did and its reply](images/agent.png)
@@ -215,7 +217,7 @@ terminal the preview opens full screen.
 
 ```sh
 ccli view               # all sessions
-ccli view 928fce20      # start at one session's turns
+ccli view 7a93706c      # start at one session's turns
 ```
 
 ![ccli view](images/view.png)
@@ -250,7 +252,7 @@ One-off questions and abandoned attempts pile up and push the sessions you
 still care about down the list. Hide them:
 
 ```sh
-ccli hide 9614539f 5bd7b5d9
+ccli hide 3b3b57cb 21c4ab7e
 ```
 
 Hidden sessions leave `ccli sessions`, `ccli prompts` and the sessions list of
@@ -279,13 +281,10 @@ account's usage with that account.
 ```
 $ ccli diff default work --project mobile-app
 ID        LAST        PROJECT     TITLE                             STATE          SIZE default/work
-024af562  21h ago     mobile-app  Review the login flow for token…  only in work             - / 53K
-35ffbd93  2026-09-17  mobile-app  Review the login flow for token…  only in work             - / 51K
-4b3950d9  10d ago     mobile-app  Review the login flow for token…  only in work             - / 67K
-5211b24f  9d ago      mobile-app  Review the login flow for token…  only in work             - / 25K
-914f28e6  2026-09-20  mobile-app  Add offline sync to the mobile …  only in work             - / 24K
-dfaae500  9d ago      mobile-app  Add offline sync to the mobile …  work is ahead          28K / 41K
-0 only in default · 5 only in work · 0 default ahead · 1 work ahead · 0 diverged
+487c3c16  2026-09-27  mobile-app  Add offline sync to the mobile …  only in work             - / 49K
+746cbfa4  7h ago      mobile-app  Why does the nightly export tak…  work is ahead          65K / 97K
+b9c85738  13d ago     mobile-app  Add offline sync to the mobile …  only in work             - / 18K
+0 only in default · 2 only in work · 0 default ahead · 1 work ahead · 0 diverged
 To bring work's sessions into default: ccli copy --from work --to default  (prints the plan; add --apply)
 ```
 
@@ -294,12 +293,12 @@ session went on in work after default last saw it.
 
 ### Continue a session in the other account, and come back
 
-Say `dfaae500` went on in work, and now you want to continue it in default.
+Say `746cbfa4` went on in work, and now you want to continue it in default.
 `resume -a` checks first:
 
 ```
-$ ccli resume dfaae500 -a default
-ccli: default has an older copy of dfaae500 than work. Add --sync to bring it up to date first, or resume it in work
+$ ccli resume 746cbfa4 -a default
+ccli: default has an older copy of 746cbfa4 than work. Add --sync to bring it up to date first, or resume it in work
 ```
 
 With `--sync`, ccli extends default's copy with what work added (a
@@ -307,21 +306,21 @@ fast-forward), then runs `claude --resume` in the session's folder under
 default:
 
 ```
-$ ccli resume dfaae500 -a default --sync
-ccli: brought dfaae500 up to date in default from work (fast-forward)
+$ ccli resume 746cbfa4 -a default --sync
+ccli: brought 746cbfa4 up to date in default from work (fast-forward)
 ```
 
 When you go back to work later, do the same the other way:
 
 ```sh
-ccli resume dfaae500 -a work --sync
+ccli resume 746cbfa4 -a work --sync
 ```
 
 Each sync appears in `ccli show` under "Copies between accounts":
 
 ```
 Copies between accounts
-  2026-10-15 22:32  copy work → default  13K in 1 file
+  2026-10-16 00:28  copy work → default  41K in 2 files
 ```
 
 Usage stays where it was made. The turns you ran in work count toward work
@@ -342,10 +341,10 @@ account's own copy and tells you about the other one. To continue the other
 copy here as well, fork it into a new session:
 
 ```
-$ ccli fork 60748107 --from work --to default
-Why does the nightly export take forty minutes now?
-fork 60748107 from work into default as a new session a4c1beb0
-  writes a 72K transcript and 1 session folder; the original is not touched
+$ ccli fork d244741f --from work --to default
+Fix flaky cart total test around daylight saving
+fork d244741f from work into default as a new session 77ad76f7
+  writes a 74K transcript; the original is not touched
   usage already in the transcript stays with work; only new work counts toward default
 Dry run. Add --apply to do it (a new id is drawn each time).
 ```
@@ -355,7 +354,7 @@ Dry run. Add --apply to do it (a new id is drawn each time).
 `copy` and `move` take session ids or, with `--from`, a batch:
 
 ```sh
-ccli copy dfaae500 --to default                   # one session
+ccli copy 746cbfa4 --to default                   # one session
 ccli copy --from work --to default --project mobile-app
 ccli move --from work --to default --days 30 --apply
 ```
@@ -368,6 +367,28 @@ diverged. `move` checks every copied file byte for byte, then archives the
 source under `~/.local/share/ccli/archive/` instead of deleting it.
 
 ![ccli copy dry run](images/copy.png)
+
+## Codex sessions
+
+If you also use Codex, its homes are accounts like any other: your
+sessions, prompts and turns appear next to Claude Code's, and every command
+above works on them. The demo home has one, `codex`:
+
+```sh
+ccli sessions -a codex
+ccli log 01a4547a 3 --tools
+```
+
+![ccli log for a Codex turn](images/codex.png)
+
+A Codex thread that spawned agents lists them under the turn that started
+each, the same as Claude Code's subagents, and `ccli log <id> --agent <a>`
+reads one. Costs are OpenAI's list prices; models Codex ran through another
+provider, or with no public price, are counted in tokens and marked `+`.
+`ccli resume` runs `codex resume` in the session's folder. `codex resume`
+does not find a thread Codex has archived, so for one of those ccli prints
+the `codex unarchive <id>` command to run first, and leaves running it to
+you. Copying, moving and forking work between Claude Code accounts only.
 
 ## Watch your limits
 
@@ -395,6 +416,9 @@ reads the percentages from its cache, which is often fresher for an account
 you have not used for a while. Each reading says where it came from and how
 old it is. Use on claude.ai, the desktop app or another machine counts toward
 the same limits but shows up only in the next reading.
+
+Codex needs none of this: it writes its own limits to its session logs with
+each reply, and the index picks up the latest reading for each Codex account.
 
 ## Script it
 
@@ -444,7 +468,7 @@ your status line command.
 read.
 
 **The wrong copy opens**: a session in two accounts resolves to the copy with
-the latest activity. Name the account, as in `work:928fce20`.
+the latest activity. Name the account, as in `work:7a93706c`.
 
 **"ccli view needs a terminal"**: `view` cannot run with its output piped.
 `ccli log` prints the same turns.

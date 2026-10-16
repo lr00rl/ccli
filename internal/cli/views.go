@@ -274,9 +274,12 @@ func cmdResume(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	r := d.Resume
+	if *fork && r.ForkArg == "" {
+		return fmt.Errorf("%s has no way to resume a session under a new id", r.Program)
+	}
 	cmdline := r.Command
 	if *fork {
-		cmdline += " --fork-session"
+		cmdline += " " + r.ForkArg
 	}
 	if *printOnly || c.json {
 		if c.json {
@@ -301,18 +304,17 @@ func cmdResume(ctx context.Context, a *app, args []string) error {
 		fmt.Fprintf(a.errw, "ccli: %s is also in %s; resuming the copy in %s (latest activity); use <account>:<id> for another\n",
 			query.ShortID(d.ID), strings.Join(others, ", "), d.Account)
 	}
-	bin, err := exec.LookPath("claude")
+	bin, err := exec.LookPath(r.Program)
 	if err != nil {
-		return errors.New("claude is not on PATH")
+		return fmt.Errorf("%s is not on PATH", r.Program)
 	}
-	argv := []string{"claude", "--resume", d.ID}
+	argv := append([]string{r.Program}, r.Args...)
 	if *fork {
-		argv = append(argv, "--fork-session")
+		argv = append(argv, r.ForkArg)
 	}
-	env := os.Environ()
-	env = withoutVar(env, "CLAUDE_CONFIG_DIR")
-	if d.Account != "default" {
-		env = append(env, "CLAUDE_CONFIG_DIR="+r.ConfigDir)
+	env := withoutVar(os.Environ(), r.Env)
+	if r.EnvValue != "" {
+		env = append(env, r.Env+"="+r.EnvValue)
 	}
 	if r.Cwd != "" {
 		if err := os.Chdir(r.Cwd); err != nil {

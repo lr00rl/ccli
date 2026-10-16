@@ -32,9 +32,10 @@ type Price struct {
 	LongOutput    float64 `json:"long_output,omitempty"`
 }
 
-// Builtin holds Anthropic's first-party list prices (Claude API reference,
-// model table cached 2026-10-06). Cache reads are the stated exceptions to the
-// 0.1x rule; fast mode is listed only where its price is published.
+// Builtin holds first-party list prices: Anthropic's for Claude (Claude API
+// reference, model table cached 2026-10-06) and OpenAI's for the models
+// Codex runs. Cache reads are the stated exceptions to the 0.1x rule; fast
+// mode is listed only where its price is published.
 var Builtin = map[string]Price{
 	"claude-fable-5-1":  {Input: 10, Output: 50, CacheRead: 0.25},
 	"claude-mythos-5-1": {Input: 10, Output: 50, CacheRead: 0.25},
@@ -50,6 +51,34 @@ var Builtin = map[string]Price{
 	"claude-sonnet-4-6": {Input: 3, Output: 15},
 	"claude-haiku-5-5":  {Input: 0.10, Output: 0.50, LongThreshold: 100_000, LongInput: 0.50, LongOutput: 2.50},
 	"claude-haiku-4-5":  {Input: 1, Output: 5},
+
+	// OpenAI's list prices for the models Codex runs (API pricing page and
+	// model pages, read 2026-10-16), standard tier. Input is uncached input;
+	// CacheRead is cached input. "Fast" is the tier OpenAI renamed from
+	// Priority. Long context starts above 272K input tokens. The pro models
+	// list no cached price, so cached input costs full input.
+	"gpt-5.6-sol":        {Input: 4, Output: 20, CacheRead: 0.40, FastInput: 8, FastOutput: 40, LongThreshold: 272_000, LongInput: 8, LongOutput: 30},
+	"gpt-5.6-terra":      {Input: 2, Output: 12, CacheRead: 0.20, FastInput: 4, FastOutput: 24, LongThreshold: 272_000, LongInput: 4, LongOutput: 18},
+	"gpt-5.6-luna":       {Input: 0.20, Output: 1.20, CacheRead: 0.02, FastInput: 0.40, FastOutput: 2.40, LongThreshold: 272_000, LongInput: 0.40, LongOutput: 1.80},
+	"gpt-5.5":            {Input: 5, Output: 30, CacheRead: 0.50, FastInput: 12.50, FastOutput: 75, LongThreshold: 272_000, LongInput: 10, LongOutput: 45},
+	"gpt-5.5-pro":        {Input: 30, Output: 180, CacheRead: 30, LongThreshold: 272_000, LongInput: 60, LongOutput: 270},
+	"gpt-5.4":            {Input: 2.50, Output: 15, CacheRead: 0.25, FastInput: 5, FastOutput: 30, LongThreshold: 272_000, LongInput: 5, LongOutput: 22.50},
+	"gpt-5.4-mini":       {Input: 0.75, Output: 4.50, CacheRead: 0.075, FastInput: 1.50, FastOutput: 9},
+	"gpt-5.4-nano":       {Input: 0.20, Output: 1.25, CacheRead: 0.02},
+	"gpt-5.4-pro":        {Input: 30, Output: 180, CacheRead: 30, LongThreshold: 272_000, LongInput: 60, LongOutput: 270},
+	"gpt-5.3-codex":      {Input: 1.75, Output: 14, CacheRead: 0.175, FastInput: 3.50, FastOutput: 28},
+	"gpt-5.2":            {Input: 1.75, Output: 14, CacheRead: 0.175, FastInput: 3.50, FastOutput: 28},
+	"gpt-5.2-codex":      {Input: 1.75, Output: 14, CacheRead: 0.175},
+	"gpt-5.2-pro":        {Input: 21, Output: 168, CacheRead: 21},
+	"gpt-5.1":            {Input: 1.25, Output: 10, CacheRead: 0.125, FastInput: 2.50, FastOutput: 20},
+	"gpt-5.1-codex":      {Input: 1.25, Output: 10, CacheRead: 0.125},
+	"gpt-5.1-codex-max":  {Input: 1.25, Output: 10, CacheRead: 0.125},
+	"gpt-5.1-codex-mini": {Input: 0.25, Output: 2, CacheRead: 0.025},
+	"gpt-5":              {Input: 1.25, Output: 10, CacheRead: 0.125, FastInput: 2.50, FastOutput: 20},
+	"gpt-5-codex":        {Input: 1.25, Output: 10, CacheRead: 0.125},
+	"gpt-5-mini":         {Input: 0.25, Output: 2, CacheRead: 0.025, FastInput: 0.45, FastOutput: 3.60},
+	"gpt-5-nano":         {Input: 0.05, Output: 0.40, CacheRead: 0.005},
+	"gpt-5-pro":          {Input: 15, Output: 120, CacheRead: 15},
 }
 
 // Table is the effective price table.

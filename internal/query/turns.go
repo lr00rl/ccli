@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/codex"
 	"github.com/lr00rl/ccli/internal/conv"
 )
 
@@ -388,7 +390,7 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 		if row.Seq == 0 {
 			start = 0
 		}
-		tr, err := conv.ReadTurn(g.main.Path, start, row.Next, row.Seq)
+		tr, err := d.readTurn(g.det.Account, g.main.Path, start, row.Next, row.Seq)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				gone = ErrNoTranscript
@@ -501,7 +503,7 @@ func (d *DB) Agent(ctx context.Context, ref, agentID string) (*AgentLog, error) 
 	if f.Missing {
 		return log, ErrNoTranscript
 	}
-	turns, err := conv.ReadRange(f.Path, 0, 0, 1, true)
+	turns, err := d.readAgent(g.det.Account, f.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return log, ErrNoTranscript
@@ -721,4 +723,21 @@ func sortPrompts(ps []PromptRow, by string) {
 func likeEscape(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)
+}
+
+// readTurn reads one turn of a session's main transcript, in the format of
+// the account's tool.
+func (d *DB) readTurn(acct, path string, from, to int64, seq int) (*conv.Turn, error) {
+	if d.toolOf(acct) == account.Codex {
+		return codex.ReadTurn(path, from, to, seq)
+	}
+	return conv.ReadTurn(path, from, to, seq)
+}
+
+// readAgent reads a subagent's whole transcript.
+func (d *DB) readAgent(acct, path string) ([]conv.Turn, error) {
+	if d.toolOf(acct) == account.Codex {
+		return codex.ReadRange(path)
+	}
+	return conv.ReadRange(path, 0, 0, 1, true)
 }

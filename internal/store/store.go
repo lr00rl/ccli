@@ -141,6 +141,7 @@ var columns = []struct{ table, name, def string }{
 	{"files", "parent_agent", "TEXT NOT NULL DEFAULT ''"},
 	{"files", "phase", "TEXT NOT NULL DEFAULT ''"},
 	{"files", "attribution", "TEXT NOT NULL DEFAULT ''"},
+	{"files", "carry", "TEXT NOT NULL DEFAULT ''"},
 	{"responses", "turn", "INTEGER NOT NULL DEFAULT 0"},
 	{"responses", "imported", "INTEGER NOT NULL DEFAULT 0"},
 	{"processes", "imported", "INTEGER NOT NULL DEFAULT 0"},
@@ -306,6 +307,7 @@ type File struct {
 	PrevTS     int64
 	Turn       int
 	Replay     bool
+	Carry      string // format-specific state the next parse continues from
 	Missing    bool
 }
 
@@ -323,7 +325,7 @@ type AgentMeta struct {
 
 // Files returns every known file by path.
 func (s *Store) Files() (map[string]File, error) {
-	rows, err := s.db.Query(`SELECT id, path, account, session_id, project_key, kind, agent_id, run_id, size, mtime, offset, head_hash, parser, prev_ts, turn, replay, missing FROM files`)
+	rows, err := s.db.Query(`SELECT id, path, account, session_id, project_key, kind, agent_id, run_id, size, mtime, offset, head_hash, parser, prev_ts, turn, replay, carry, missing FROM files`)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +334,7 @@ func (s *Store) Files() (map[string]File, error) {
 	for rows.Next() {
 		var f File
 		var missing int
-		if err := rows.Scan(&f.ID, &f.Path, &f.Account, &f.SessionID, &f.ProjectKey, &f.Kind, &f.AgentID, &f.RunID, &f.Size, &f.MTime, &f.Offset, &f.HeadHash, &f.Parser, &f.PrevTS, &f.Turn, &f.Replay, &missing); err != nil {
+		if err := rows.Scan(&f.ID, &f.Path, &f.Account, &f.SessionID, &f.ProjectKey, &f.Kind, &f.AgentID, &f.RunID, &f.Size, &f.MTime, &f.Offset, &f.HeadHash, &f.Parser, &f.PrevTS, &f.Turn, &f.Replay, &f.Carry, &missing); err != nil {
 			return nil, err
 		}
 		f.Missing = missing != 0
@@ -432,8 +434,8 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 		WHERE id = ? RETURNING born`, f.Born, f.Born, f.Born, f.ID).Scan(&f.Born); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE files SET turn = ?, replay = ?, attribution = CASE WHEN attribution = '' THEN ? ELSE attribution END WHERE id = ?`,
-		r.State.Turn, boolInt(r.State.Replay), r.Attribution, f.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE files SET turn = ?, replay = ?, carry = ?, attribution = CASE WHEN attribution = '' THEN ? ELSE attribution END WHERE id = ?`,
+		r.State.Turn, boolInt(r.State.Replay), r.State.Carry, r.Attribution, f.ID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE files SET size=?, mtime=?, offset=?, head_hash=?, parser=?, prev_ts=?, missing=0,
@@ -491,6 +493,11 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 			  OR (excluded.imported = responses.imported AND excluded.born > 0 AND (responses.born = 0 OR excluded.born < responses.born))`,
 			resp.Key, f.ID, f.Account, f.SessionID, f.Kind, resp.TS, resp.Model, resp.Speed,
 			us.Input, us.Output, us.CacheRead, us.Cache5m, us.Cache1h, us.WebSearch, c, f.Born, resp.Turn, boolInt(resp.Imported), resp.Replay); err != nil {
+			return err
+		}
+	}
+	if r.FillModel != "" {
+		if err := fillModel(ctx, tx, f.ID, r.FillModel, cost); err != nil {
 			return err
 		}
 	}
@@ -612,6 +619,44 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// fillModel gives a file's responses stored with no model the one a later
+// line named, and prices them.
+func fillModel(ctx context.Context, tx *sql.Tx, file int64, model string, cost CostFunc) error {
+	rows, err := tx.QueryContext(ctx, `SELECT key, speed, input, output, cache_read, cache_5m, cache_1h, web_search FROM responses
+		WHERE file_id = ? AND model = '' AND kind <> 'adjustment'`, file)
+	if err != nil {
+		return err
+	}
+	type upd struct {
+		key string
+		c   sql.NullFloat64
+	}
+	var ups []upd
+	for rows.Next() {
+		var key, speed string
+		var u transcript.Usage
+		if err := rows.Scan(&key, &speed, &u.Input, &u.Output, &u.CacheRead, &u.Cache5m, &u.Cache1h, &u.WebSearch); err != nil {
+			rows.Close()
+			return err
+		}
+		var c sql.NullFloat64
+		if v, ok := cost(model, speed, u); ok {
+			c = sql.NullFloat64{Float64: v, Valid: true}
+		}
+		ups = append(ups, upd{key, c})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range ups {
+		if _, err := tx.ExecContext(ctx, "UPDATE responses SET model = ?, cost = ? WHERE key = ?", model, u.c, u.key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MarkMissing flags files that are gone from disk (or back again).
 func (s *Store) MarkMissing(ctx context.Context, ids []int64, missing bool) error {
 	if len(ids) == 0 {
@@ -628,6 +673,13 @@ func (s *Store) MarkMissing(ctx context.Context, ids []int64, missing bool) erro
 		}
 	}
 	return tx.Commit()
+}
+
+// MovePath gives a file's row the path its tool moved the file to (Codex
+// moves a thread it archives), so what the index read of it stays with it.
+func (s *Store) MovePath(ctx context.Context, id int64, path string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE files SET path = ? WHERE id = ?", path, id)
+	return err
 }
 
 // Run is a workflow run: counts from its journal, and what its state file
