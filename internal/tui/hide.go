@@ -71,6 +71,9 @@ func (v *viewer) ask(s *screen, hide bool) {
 	if len(refs) > 1 {
 		what = fmt.Sprintf("%d sessions", len(refs))
 	}
+	if n := s.list.offScreen(); n > 0 {
+		what += fmt.Sprintf(" (%d not in the current filter)", n)
+	}
 	q := fmt.Sprintf("Hide %s? Lists leave them out; totals still count them.", what)
 	if !hide {
 		q = fmt.Sprintf("Bring back %s?", what)

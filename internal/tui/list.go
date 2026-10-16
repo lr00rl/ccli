@@ -235,3 +235,18 @@ func (l *list) targets() []string {
 	}
 	return ids
 }
+
+// offScreen counts the marked items the filter is hiding.
+func (l *list) offScreen() int {
+	shown := map[string]bool{}
+	for _, i := range l.shown {
+		shown[l.all[i].id] = true
+	}
+	n := 0
+	for id := range l.marked {
+		if !shown[id] {
+			n++
+		}
+	}
+	return n
+}

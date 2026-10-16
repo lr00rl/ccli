@@ -10,14 +10,15 @@ import (
 // The query layer counts a session as hidden while its last activity is no
 // later than the mark, so using the session again brings it back.
 
-// Hide marks sessions as set aside at time at, replacing older marks.
-func (s *Store) Hide(ctx context.Context, ids []string, at time.Time) error {
+// Hide marks sessions as set aside, each at its own time, replacing older
+// marks.
+func (s *Store) Hide(ctx context.Context, marks map[string]time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, id := range ids {
+	for id, at := range marks {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO hidden(session_id, at) VALUES(?, ?)
 			ON CONFLICT(session_id) DO UPDATE SET at = excluded.at`, id, at.UnixMilli()); err != nil {
 			return err

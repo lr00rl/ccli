@@ -165,8 +165,9 @@ type DB struct {
 	accts []account.Account
 	live  map[string]account.Live // session id -> live process
 
-	cacheMu sync.Mutex
-	cache   map[string]*SessionDetail // by ref; nil unless CacheSessions was called
+	cacheMu  sync.Mutex
+	cache    map[string]*SessionDetail // by ref; nil unless CacheSessions was called
+	cacheGen uint64                    // bumped when cached details go stale
 }
 
 // CacheSessions makes Session keep what it loads for the life of the DB, so

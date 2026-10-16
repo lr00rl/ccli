@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestHideLeavesListsNotTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rs) != 2 || !rs[0].Done || rs[0].ID != other || rs[1].Done || rs[1].ID != "" || rs[1].Reason != "no such session" {
+	if len(rs) != 2 || !rs[0].Done || rs[0].ID != other || rs[1].Done || rs[1].ID != "" || !strings.Contains(rs[1].Reason, "no session matches") {
 		t.Fatalf("results %+v", rs)
 	}
 
@@ -160,5 +161,33 @@ func TestHideRefusesRunningSession(t *testing.T) {
 	}
 	if page, _ := svc.Sessions(context.Background(), query.Filter{}); ids(page.Sessions)[next] != 1 {
 		t.Fatal("the running session left the list")
+	}
+}
+
+// Review fixes: a transcript dated after the clock that hides it, a session
+// named twice, and a bad reference among good ones.
+func TestHideEdgeCases(t *testing.T) {
+	fx := setup(t)
+	ctx := context.Background()
+	// The clock reads 09:00, before the session's last line at 11:01.
+	rs, err := fx.svc.Hide(ctx, []string{"dddd", "dddd", "ab"}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rs[0].Done {
+		t.Fatalf("first: %+v", rs[0])
+	}
+	if rs[1].Done || rs[1].Reason != "named more than once" {
+		t.Fatalf("repeat: %+v", rs[1])
+	}
+	if rs[2].Done || rs[2].ID != "" || !strings.Contains(rs[2].Reason, "too short") {
+		t.Fatalf("short reference: %+v", rs[2])
+	}
+	page, err := fx.svc.Sessions(ctx, query.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids(page.Sessions)[other] != 0 {
+		t.Fatal("a session dated after the clock stayed listed after hiding")
 	}
 }

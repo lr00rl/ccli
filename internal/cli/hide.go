@@ -53,14 +53,14 @@ func cmdHide(ctx context.Context, a *app, args []string, hide bool) error {
 	} else {
 		a.term(c).HideResults(verb, rs)
 	}
-	missing := 0
+	unresolved := 0
 	for _, r := range rs {
 		if r.ID == "" {
-			missing++
+			unresolved++
 		}
 	}
-	if missing > 0 {
-		return errors.New(render.Plural(missing, "session") + " not found")
+	if unresolved > 0 {
+		return errors.New(render.Plural(unresolved, "reference") + " matched no single session")
 	}
 	return nil
 }

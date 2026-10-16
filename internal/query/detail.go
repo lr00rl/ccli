@@ -159,15 +159,18 @@ func (d *DB) Session(ctx context.Context, ref string) (*SessionDetail, error) {
 		return d.session(ctx, ref)
 	}
 	d.cacheMu.Lock()
-	det := d.cache[ref]
+	det, gen := d.cache[ref], d.cacheGen
 	d.cacheMu.Unlock()
 	if det != nil {
 		return det, nil
 	}
 	det, err := d.session(ctx, ref)
 	if err == nil {
+		// A detail loaded while the cache was cleared may already be stale.
 		d.cacheMu.Lock()
-		d.cache[ref] = det
+		if d.cacheGen == gen {
+			d.cache[ref] = det
+		}
 		d.cacheMu.Unlock()
 	}
 	return det, err
