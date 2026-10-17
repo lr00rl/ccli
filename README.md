@@ -64,6 +64,8 @@ days, and the Claude Code processes running in it right now.
 ccli sessions                         # active in the last 30 days, newest first
 ccli sessions -a work --days 7 --sort cost -n 20
 ccli sessions --project checkout -q payment
+ccli sessions --dir . --days 0        # every session started in this folder or below
+ccli sessions --tool codex            # only Codex sessions (or claude)
 ```
 
 ![ccli sessions](docs/images/sessions.png)
@@ -97,6 +99,26 @@ The tag is kept in ccli's index too, so nothing is written to the transcript
 and the session keeps its place in the list. It labels the session's copies
 in other accounts and works for Codex sessions. To change the title Claude
 Code itself shows, use `/rename` inside Claude Code; ccli reads that title.
+
+### Projects
+
+```sh
+ccli projects                         # folders sessions started in, here or below
+ccli projects ~/acme --depth 1        # one row per folder directly under ~/acme
+ccli projects / --sort cost           # every project on the machine, costliest first
+```
+
+![ccli projects](docs/images/projects.png)
+
+Every session records the folder it started in (its `cwd`), and `projects`
+groups sessions by that folder: how many there are, when one last ran, the
+prompts, tokens and cost, and which accounts they ran in. It covers all time
+unless you pass `--days` or `--since`. `--depth 1` counts worktrees and
+subfolders toward the folder above them. `--dir <folder>` narrows `sessions`,
+`prompts`, `stats` and `view` the same way. A folder matches by whole path
+segments, so `~/code/app` does not match `~/code/app2`, and symlinks are
+resolved (macOS records `/tmp` as `/private/tmp`). A folder you have deleted
+still works, since its sessions are still in the index.
 
 ### One session
 
@@ -295,7 +317,8 @@ work between Claude Code accounts only.
 | Command | What it does |
 |---------|--------------|
 | `ccli accounts` | accounts with email, sessions, 30-day usage and what is running now |
-| `ccli sessions` | sessions with tokens and cost; filter by account, days, project, model, title; `--hidden` for hidden ones |
+| `ccli sessions` | sessions with tokens and cost; filter by account, days, folder (`--dir`), agent (`--tool`), project, model, title; `--hidden` for hidden ones |
+| `ccli projects [folder]` | the folders sessions started in, at or below a folder (the current one by default), with sessions, tokens and cost |
 | `ccli show <id>` | one session: models, cost split, agent tree, workflow runs, tools, resume command |
 | `ccli log <id> [turn\|N-M\|last]` | the session turn by turn, or turns in full; `--agent` and `--run` for agents |
 | `ccli prompts` | your prompts across sessions; sort by cost, tools, duration, tokens or length |

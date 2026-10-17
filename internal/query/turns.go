@@ -605,7 +605,7 @@ type PromptPage struct {
 // duration, length.
 func (d *DB) Prompts(ctx context.Context, f Filter) (PromptPage, error) {
 	page := PromptPage{Filter: f}
-	sessions, err := d.loadSessions(ctx, Filter{Accounts: f.Accounts, Project: f.Project, Model: f.Model})
+	sessions, err := d.loadSessions(ctx, Filter{Accounts: f.Accounts, Project: f.Project, Dirs: f.Dirs, Tools: f.Tools, Model: f.Model})
 	if err != nil {
 		return page, err
 	}

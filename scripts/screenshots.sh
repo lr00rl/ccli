@@ -73,6 +73,7 @@ shot() { # shot <name> <ccli args...>
 
 shot stats stats
 COLS=136 shot sessions sessions -n 16
+shot projects projects "$home"
 shot show show "${lead:0:8}"
 COLS=120 shot log log "${lead:0:8}"
 COLS=100 shot turn log "${lead:0:8}" 1

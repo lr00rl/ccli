@@ -27,9 +27,26 @@ func (v *viewer) sessionsScreen() (*screen, error) {
 	return s, nil
 }
 
+// scopeText names what the session list is narrowed to, for its title:
+// " in ~/code/app" and " (codex)", or nothing.
+func (v *viewer) scopeText() string {
+	s := ""
+	if len(v.scope.Dirs) > 0 {
+		s = " in " + render.ShortHome(v.scope.Dirs[0])
+	}
+	if len(v.scope.Tools) > 0 {
+		var ts []string
+		for _, t := range v.scope.Tools {
+			ts = append(ts, string(t))
+		}
+		s += " (" + strings.Join(ts, ", ") + ")"
+	}
+	return s
+}
+
 // sessionFilter selects the hidden sessions, or the others.
 func (v *viewer) sessionFilter(hidden bool) query.Filter {
-	f := query.Filter{Loc: v.loc, Sort: "last"}
+	f := query.Filter{Loc: v.loc, Sort: "last", Dirs: v.scope.Dirs, Tools: v.scope.Tools}
 	if hidden {
 		f.Show = query.HiddenOnly
 	}
@@ -51,11 +68,11 @@ func (v *viewer) setSessions(s *screen, page query.SessionPage, hidden bool) {
 	v.replace(s, items)
 	projects := render.Plural(len(groups), "project")
 	if hidden {
-		s.title = "hidden sessions"
+		s.title = "hidden sessions" + v.scopeText()
 		s.hint = render.Plural(len(page.Sessions), "hidden session") + " · " + projects
 		return
 	}
-	s.title = "sessions"
+	s.title = "sessions" + v.scopeText()
 	s.hint = render.Plural(len(page.Sessions), "session") + " · " + projects
 	if page.Hidden > 0 {
 		s.hint += fmt.Sprintf(" · %d hidden", page.Hidden)

@@ -21,6 +21,7 @@ type Service interface {
 	Sessions(ctx context.Context, f Filter) (SessionPage, error)
 	Session(ctx context.Context, ref string) (*SessionDetail, error)
 	Overview(ctx context.Context, f Filter) (*Overview, error)
+	Projects(ctx context.Context, f Filter) (ProjectPage, error)
 }
 
 // Filter narrows a query. Zero values mean "no limit".
@@ -29,6 +30,9 @@ type Filter struct {
 	Since    time.Time      `json:"since,omitempty"`
 	Until    time.Time      `json:"until,omitempty"`
 	Project  string         `json:"project,omitempty"`
+	Dirs     []string       `json:"dirs,omitempty"`  // started in one of these folders or below (see Under)
+	Tools    []account.Tool `json:"tools,omitempty"` // only sessions of these agents
+	Depth    int            `json:"depth,omitempty"` // Projects: group folders by their first Depth levels below the matched dir
 	Model    string         `json:"model,omitempty"`
 	Search   string         `json:"search,omitempty"`
 	Sort     string         `json:"sort,omitempty"` // last, start, cost, tokens, active
