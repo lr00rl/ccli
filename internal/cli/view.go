@@ -30,6 +30,9 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 	if len(pos) > 1 {
 		return errors.New("usage: ccli view [session]")
 	}
+	if len(pos) == 1 && (len(scope.Dirs) > 0 || len(scope.Tools) > 0) {
+		return errors.New("-dir and -tool narrow the session list; leave them out when opening one session")
+	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return errors.New("ccli view needs a terminal; ccli log prints the same turns")
 	}

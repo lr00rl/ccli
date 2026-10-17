@@ -34,9 +34,10 @@ type ProjectPage struct {
 
 // Projects groups the sessions a filter selects by the folder each started
 // in, or with f.Depth by that folder's first Depth levels below the dir it
-// matched, so worktrees and subfolders count toward their project. Hidden
-// sessions count, as they do in every total. Sort: last (default), cost,
-// sessions, path.
+// matched, so worktrees and subfolders count toward their project. f.Dirs
+// are taken as forms of one folder, as scopeDirs in the CLI makes them.
+// Hidden sessions count, as they do in every total. Sort: last (default),
+// cost, sessions, path.
 func (d *DB) Projects(ctx context.Context, f Filter) (ProjectPage, error) {
 	page := ProjectPage{Filter: f}
 	rows, err := d.loadSessions(ctx, f)
@@ -56,8 +57,10 @@ func (d *DB) Projects(ctx context.Context, f Filter) (ProjectPage, error) {
 				if parts := strings.Split(rel, string(filepath.Separator)); len(parts) > f.Depth {
 					rel = filepath.Join(parts[:f.Depth]...)
 				}
-				path = filepath.Join(dir, rel)
 			}
+			// The dirs are forms of one folder: name the row in the first
+			// form, so a cwd recorded in each form lands in one row.
+			path = filepath.Join(f.Dirs[0], rel)
 		}
 		p := byPath[path]
 		if p == nil {

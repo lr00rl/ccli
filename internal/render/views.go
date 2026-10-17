@@ -157,7 +157,7 @@ func dedup(ss []string) []string {
 
 // ShortHome writes a path under the home folder as ~/...
 func ShortHome(p string) string {
-	if h, err := os.UserHomeDir(); err == nil && h != "" && strings.HasPrefix(p, h) {
+	if h, err := os.UserHomeDir(); err == nil && h != "" && h != "/" && (p == h || strings.HasPrefix(p, h+"/")) {
 		return "~" + strings.TrimPrefix(p, h)
 	}
 	return p

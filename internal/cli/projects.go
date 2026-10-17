@@ -39,6 +39,14 @@ func cmdProjects(ctx context.Context, a *app, args []string) error {
 	if len(pos) > 1 {
 		return errors.New("usage: ccli projects [folder]  (the current folder by default; / for all)")
 	}
+	switch f.Sort {
+	case "last", "cost", "sessions", "path":
+	default:
+		return fmt.Errorf("-sort %q: use last, cost, sessions or path", f.Sort)
+	}
+	if f.Depth < 0 {
+		return errors.New("-depth: use 0 for each folder, or a number of levels")
+	}
 	dir := "."
 	if len(pos) == 1 {
 		dir = pos[0]
@@ -63,6 +71,13 @@ func cmdProjects(ctx context.Context, a *app, args []string) error {
 		return a.printJSON(page)
 	}
 	a.term(c).Projects(page)
+	if page.Matched == 0 {
+		// A deleted folder still has its sessions, so say when the folder
+		// is missing too: it may be a typo.
+		if _, err := os.Stat(f.Dirs[0]); errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "%s does not exist on disk either\n", f.Dirs[0])
+		}
+	}
 	return nil
 }
 
@@ -87,7 +102,7 @@ func toolFlag(fs *flag.FlagSet, f *query.Filter) {
 			case account.Claude, account.Codex:
 				f.Tools = append(f.Tools, tool)
 			default:
-				return fmt.Errorf("%q is not claude or codex", t)
+				return fmt.Errorf("%q is not claude or codex", tool)
 			}
 		}
 		return nil
@@ -101,6 +116,9 @@ func toolFlag(fs *flag.FlagSet, f *query.Filter) {
 func scopeDirs(arg string) ([]string, error) {
 	if arg == "" {
 		return nil, errors.New("empty folder")
+	}
+	if strings.HasPrefix(arg, "~") && arg != "~" && !strings.HasPrefix(arg, "~/") {
+		return nil, fmt.Errorf("%s: only ~ and ~/ are expanded, not another user's home", arg)
 	}
 	if arg == "~" || strings.HasPrefix(arg, "~/") {
 		home, err := os.UserHomeDir()

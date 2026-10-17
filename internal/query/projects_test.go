@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	pjApp   = "e0000000-0000-4000-8000-00000000000a" // /code/app
-	pjTree  = "e0000000-0000-4000-8000-00000000000b" // /code/app/.claude/worktrees/w1
-	pjApp2  = "e0000000-0000-4000-8000-00000000000c" // /code/app2
-	pjOther = "e0000000-0000-4000-8000-00000000000d" // /other
-	pjCodex = "01a00000-0000-7000-b000-00000000c001" // Codex, /code/app/sub
+	pjApp    = "e0000000-0000-4000-8000-00000000000a" // /code/app
+	pjTree   = "e0000000-0000-4000-8000-00000000000b" // /code/app/.claude/worktrees/w1
+	pjApp2   = "e0000000-0000-4000-8000-00000000000c" // /code/app2
+	pjOther  = "e0000000-0000-4000-8000-00000000000d" // /other
+	pjLinked = "e0000000-0000-4000-8000-00000000000e" // /link/app/sub, another form of /code/app/sub
+	pjCodex  = "01a00000-0000-7000-b000-00000000c001" // Codex, /code/app/sub
 )
 
 // inDir moves transcript lines built by prompt and asst (which record
@@ -46,8 +47,8 @@ func codexRollout(id, cwd, text string, input int) string {
 		codexAt(4, "event_msg", `{"type":"task_complete","duration_ms":3000}`)
 }
 
-// setupProjects indexes four Claude Code sessions and one Codex thread
-// started in different folders.
+// setupProjects indexes five Claude Code sessions and one Codex thread
+// started in different folders; /link/app stands for a symlink to /code/app.
 func setupProjects(t *testing.T) *query.DB {
 	t.Helper()
 	root := t.TempDir()
@@ -65,6 +66,7 @@ func setupProjects(t *testing.T) *query.DB {
 		{pjTree, "/code/app/.claude/worktrees/w1", "worktree prompt"},
 		{pjApp2, "/code/app2", "app2 prompt"},
 		{pjOther, "/other", "other prompt"},
+		{pjLinked, "/link/app/sub", "linked prompt"},
 	} {
 		min := float64(10 * i)
 		key := strings.ReplaceAll(s.cwd, "/", "-")
@@ -112,8 +114,8 @@ func sorted(ids ...string) []string {
 
 func TestSessionsDirsAndTools(t *testing.T) {
 	db := setupProjects(t)
-	if got := sessionIDs(t, db, query.Filter{}); len(got) != 5 {
-		t.Fatalf("indexed %d sessions, want 5: %v", len(got), got)
+	if got := sessionIDs(t, db, query.Filter{}); len(got) != 6 {
+		t.Fatalf("indexed %d sessions, want 6: %v", len(got), got)
 	}
 	for _, c := range []struct {
 		name string
@@ -126,7 +128,7 @@ func TestSessionsDirsAndTools(t *testing.T) {
 		{"two dirs", query.Filter{Dirs: []string{"/code/app2", "/other"}}, sorted(pjApp2, pjOther)},
 		{"no such dir", query.Filter{Dirs: []string{"/nowhere"}}, nil},
 		{"codex", query.Filter{Tools: []account.Tool{account.Codex}}, []string{pjCodex}},
-		{"claude", query.Filter{Tools: []account.Tool{account.Claude}}, sorted(pjApp, pjTree, pjApp2, pjOther)},
+		{"claude", query.Filter{Tools: []account.Tool{account.Claude}}, sorted(pjApp, pjTree, pjApp2, pjOther, pjLinked)},
 		{"claude under dir", query.Filter{Tools: []account.Tool{account.Claude}, Dirs: []string{"/code/app"}}, sorted(pjApp, pjTree)},
 		{"both tools", query.Filter{Tools: []account.Tool{account.Claude, account.Codex}, Dirs: []string{"/code"}}, sorted(pjApp, pjTree, pjApp2, pjCodex)},
 	} {
@@ -243,14 +245,20 @@ func TestProjectsTwoFormsOfOneDir(t *testing.T) {
 	if page.Matched != 3 {
 		t.Fatalf("rels = %v, want three folders under /code/app", rels(page.Projects))
 	}
-	if p, ok := by["."]; !ok || p.Path != "/code/app" || p.Sessions != 1 {
+	// Rows are named in the first form given, whichever form a session
+	// recorded, and a folder recorded in both forms is one row.
+	if p, ok := by["."]; !ok || p.Path != "/link/app" || p.Sessions != 1 {
 		t.Errorf(`"." row = %+v (found %v)`, p, ok)
 	}
-	if p := by[".claude/worktrees/w1"]; p.Path != "/code/app/.claude/worktrees/w1" {
+	if p := by[".claude/worktrees/w1"]; p.Path != "/link/app/.claude/worktrees/w1" {
 		t.Errorf("worktree row = %+v", p)
 	}
-	if p := by["sub"]; p.Path != "/code/app/sub" {
-		t.Errorf("sub row = %+v", p)
+	if p := by["sub"]; p.Path != "/link/app/sub" || p.Sessions != 2 || !reflect.DeepEqual(p.Accounts, []string{"codex", "default"}) {
+		t.Errorf("sub row = %+v, want both forms' sessions in one row", p)
+	}
+	_, by = projectsBy(t, db, query.Filter{Dirs: []string{"/code/app", "/link/app"}})
+	if p := by["sub"]; p.Path != "/code/app/sub" || p.Sessions != 2 {
+		t.Errorf("forms reversed: sub row = %+v", p)
 	}
 }
 
@@ -305,8 +313,8 @@ func TestPromptsAndOverviewDirs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.Matched != 5 {
-		t.Errorf("all prompts = %d, want 5", all.Matched)
+	if all.Matched != 6 {
+		t.Errorf("all prompts = %d, want 6", all.Matched)
 	}
 
 	o, err := db.Overview(ctx, query.Filter{Dirs: []string{"/code/app"}})

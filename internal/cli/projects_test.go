@@ -140,3 +140,9 @@ func TestToolFlag(t *testing.T) {
 		t.Errorf("-tool cursor accepted: %v", f.Tools)
 	}
 }
+
+func TestScopeDirsOtherUsersHome(t *testing.T) {
+	if _, err := scopeDirs("~bob/code"); err == nil {
+		t.Fatal("~bob/code was accepted; only ~ and ~/ are expanded")
+	}
+}
