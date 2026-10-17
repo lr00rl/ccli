@@ -122,6 +122,8 @@ func sessionFlags(fs *flag.FlagSet, f *query.Filter, accts *accountsFlag) (*int,
 	days := fs.Int("days", 30, "sessions active in the last N days (0 = all time)")
 	since := fs.String("since", "", "sessions active since a date (YYYY-MM-DD); overrides -days")
 	fs.StringVar(&f.Project, "project", "", "project path contains")
+	dirFlag(fs, f)
+	toolFlag(fs, f)
 	fs.StringVar(&f.Model, "model", "", "model contains")
 	fs.StringVar(&f.Search, "q", "", "title, path or id prefix contains")
 	return days, since

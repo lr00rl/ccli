@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/tui"
 )
 
@@ -18,13 +19,19 @@ func init() {
 // named.
 func cmdView(ctx context.Context, a *app, args []string) error {
 	var c common
+	var scope query.Filter
 	fs := newFlags("view", a, &c)
+	dirFlag(fs, &scope)
+	toolFlag(fs, &scope)
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) > 1 {
 		return errors.New("usage: ccli view [session]")
+	}
+	if len(pos) == 1 && (len(scope.Dirs) > 0 || len(scope.Tools) > 0) {
+		return errors.New("-dir and -tool narrow the session list; leave them out when opening one session")
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return errors.New("ccli view needs a terminal; ccli log prints the same turns")
@@ -43,5 +50,5 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 		ref = acct + ":" + id
 	}
 	svc.CacheSessions()
-	return tui.Run(ctx, svc, ref)
+	return tui.Run(ctx, svc, ref, scope)
 }

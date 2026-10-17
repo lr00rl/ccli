@@ -67,7 +67,8 @@ const usage = `ccli: Claude Code and Codex sessions across local accounts
 
 Usage:
   ccli accounts                      accounts, identity, sessions, 30-day usage, live sessions
-  ccli sessions [flags]              sessions with tokens and list-price cost
+  ccli sessions [flags]              sessions with tokens and list-price cost (--dir . for this folder)
+  ccli projects [folder]             folders sessions started in, at or below this one (/ for all)
   ccli show <id>                     one session: totals, models, subagents, links, files
   ccli log <id> [turn|N-M|last]      the session turn by turn: each prompt, what it cost, what it did
   ccli view [id]                     browse sessions, turns and agents interactively

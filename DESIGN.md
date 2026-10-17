@@ -337,6 +337,7 @@ type Service interface {
     Sessions(ctx context.Context, f Filter) (SessionPage, error)
     Session(ctx context.Context, ref string) (*SessionDetail, error)
     Overview(ctx context.Context, f Filter) (*Overview, error)
+    Projects(ctx context.Context, f Filter) (ProjectPage, error)
 }
 ```
 
@@ -365,23 +366,34 @@ Planned HTTP mapping for `ccli web`:
 | `GET /api/sessions/{id}/agents/{agent}` | `Agent` |
 | `GET /api/prompts?account=&days=&q=&sort=&limit=` | `Prompts` |
 | `GET /api/overview?account=&days=` | `Overview` |
+| `GET /api/projects?dir=&account=&tool=&days=&depth=&sort=` | `Projects` |
 | `GET /api/compare?a=&b=&project=` | `transfer.Compare` |
 | `GET /api/quota?account=` | `quota.Reader` |
 | `POST /api/transfer` (dry run unless `apply`) | `transfer.Plan` / `transfer.Apply` |
 
 `Filter` is parsed from flags in the CLI and from query parameters on the web.
+`Filter.Dirs` holds a folder in each form a recorded `cwd` may take: the
+absolute path as given and the same path with symlinks resolved in its
+longest existing prefix, since the agents record physical paths (`/tmp` is
+`/private/tmp` on macOS) and a deleted folder still has sessions. A session
+matches when its first recorded `cwd` is one of them or below it, compared by
+whole path segments. `Filter.Tools` matches the agent of the session's
+account. `Projects` groups the matching sessions by `cwd`, or with `Depth` by
+the first levels below the matched folder; hidden sessions count, as in every
+total.
 All result types are plain structs with JSON tags; `--json` prints them as is.
 
 ## Commands
 
 ```
 ccli accounts                      accounts, identity, sessions, 30-day usage, live sessions
-ccli sessions [-a acct] [--days N] [--project p] [--model m] [-q text] [--sort last|cost|tokens|active] [-n N] [--hidden]
+ccli sessions [-a acct] [--days N] [--dir folder] [--tool claude|codex] [--project p] [--model m] [-q text] [--sort last|cost|tokens|active] [-n N] [--hidden]
+ccli projects [folder] [--depth N] [--sort last|cost|sessions|path]   folders sessions started in, at or below folder (default .)
 ccli show <id>                     one session: totals, cost split, tree of subagents and runs, links, copies, resume command
 ccli log <id> [N | N-M | last]     turns: the list with costs, or turns in full [--tools --thinking --context --raw --all --sort cost]
 ccli log <id> --agent <a>          a subagent's transcript; --run <r> a workflow run's agents
-ccli view [id]                     interactive browser: sessions, turns, agents
-ccli prompts [-a acct] [--days N] [--project p] [-q text] [--sort last|cost|tokens|tools|duration|length] [-n N] [--hidden]
+ccli view [id] [--dir folder] [--tool t]   interactive browser: sessions, turns, agents
+ccli prompts [-a acct] [--days N] [--dir folder] [--tool t] [--project p] [-q text] [--sort last|cost|tokens|tools|duration|length] [-n N] [--hidden]
 ccli stats [-a acct] [--days N]    overview: KPIs, daily chart, projects, models, hour x weekday, session shape, skills
 ccli quota [-a acct] [--offline]   subscription limits per account, asked of the tools now
 ccli diff <a> <b> [--project p]    sessions only in a, only in b, identical, ahead, diverged

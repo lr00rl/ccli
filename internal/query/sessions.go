@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -111,6 +112,12 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 
 func matches(s SessionRow, f Filter) bool {
 	if f.Project != "" && !containsFold(s.Cwd, f.Project) && !containsFold(s.ProjectKey, f.Project) {
+		return false
+	}
+	if len(f.Dirs) > 0 && UnderAny(s.Cwd, f.Dirs) == "" {
+		return false
+	}
+	if len(f.Tools) > 0 && !slices.Contains(f.Tools, s.Tool) {
 		return false
 	}
 	if f.Model != "" {

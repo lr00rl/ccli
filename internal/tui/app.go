@@ -77,6 +77,7 @@ func newScreen(title string, r role) *screen {
 type viewer struct {
 	ctx      context.Context
 	src      Source
+	scope    query.Filter // Dirs and Tools narrow the session list
 	loc      *time.Location
 	stack    []*screen
 	w, h     int
@@ -108,9 +109,9 @@ const maxRendered = 64
 type statusMsg string
 
 // Run starts the browser at the sessions list, or at a session's turns when
-// ref names one.
-func Run(ctx context.Context, src Source, ref string) error {
-	v := &viewer{ctx: ctx, src: src, loc: time.Local, rendered: map[string]string{}}
+// ref names one. scope's Dirs and Tools narrow the sessions list.
+func Run(ctx context.Context, src Source, ref string, scope query.Filter) error {
+	v := &viewer{ctx: ctx, src: src, loc: time.Local, rendered: map[string]string{}, scope: scope}
 	var first *screen
 	var err error
 	if ref != "" {

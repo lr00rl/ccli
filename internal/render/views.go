@@ -32,7 +32,7 @@ func (t Term) Accounts(rows []query.AccountSummary, days int) {
 			live = t.paint(cLive, fmt.Sprintf("● %d", a.Live))
 		}
 		cells = append(cells, []string{
-			t.bold(a.Name), email, shortHome(a.Dir),
+			t.bold(a.Name), email, ShortHome(a.Dir),
 			fmt.Sprintf("%d", a.Sessions), fmt.Sprintf("%d", a.SessionsInRange),
 			Num(a.Tokens.InOut()), Num(a.Tokens.CacheRead), t.money(USD(a.Cost.USD)),
 			t.Ago(a.LastActive), live,
@@ -155,8 +155,9 @@ func dedup(ss []string) []string {
 	return out
 }
 
-func shortHome(p string) string {
-	if h, err := os.UserHomeDir(); err == nil && h != "" && strings.HasPrefix(p, h) {
+// ShortHome writes a path under the home folder as ~/...
+func ShortHome(p string) string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" && h != "/" && (p == h || strings.HasPrefix(p, h+"/")) {
 		return "~" + strings.TrimPrefix(p, h)
 	}
 	return p
@@ -185,7 +186,7 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	if d.Tag != "" {
 		kv("tag", t.tag(d.Tag))
 	}
-	kv("project", shortHome(d.Cwd))
+	kv("project", ShortHome(d.Cwd))
 	switch d.GitBranch {
 	case "":
 	case "HEAD":

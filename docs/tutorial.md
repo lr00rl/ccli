@@ -63,7 +63,30 @@ filters combine:
 ccli sessions -a work --days 7 --sort cost -n 20   # last week in work, costliest first
 ccli sessions --project checkout -q payment        # by folder and by title
 ccli sessions --since 2026-10-01 --model sonnet
+ccli sessions --dir ~/acme/checkout-service        # started in that folder or below
+ccli sessions --tool claude                        # Claude Code only; codex for Codex
 ```
+
+`-a` picks accounts by name, and `--tool` picks the agent, whatever the
+accounts are called. `--dir` and `--tool` also narrow `prompts`, `stats` and
+`view`.
+
+To see which folders you have worked in, `ccli projects` groups sessions by
+the folder each started in, at or below the current folder, over all time:
+
+```
+$ ccli projects ~ --depth 1
+LAST     SESSIONS  PROMPTS  TOKENS    COST  ACCOUNTS      PROJECT
+22m ago        33      423    1.7M  $71.22  default,work  acme
+3d ago         15      180  747.3K  $27.24  default       code
+2 projects under ~, all time · 48 sessions · 2.4M tokens · $98.47 list price
+ccli sessions --dir <folder> lists a project's sessions
+```
+
+Without `--depth` each folder is its own row, so a worktree under
+`.claude/worktrees/` shows apart from its repository; `--depth 1` folds
+everything into the folder directly below the one you asked about.
+`ccli projects /` covers the whole machine.
 
 Any command that takes a session accepts an id prefix, such as `7a93706c`.
 When the same session exists in two accounts, ccli picks the copy with the

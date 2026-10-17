@@ -119,7 +119,7 @@ func (t Term) Plan(verb string, ops []transfer.Op, info map[string]query.Session
 		{title: "BYTES", right: true}, {title: "ACTION", flex: true, min: 20}}, cells)
 	extra := ""
 	if verb == "move" {
-		extra = " Move puts each source in " + shortHome(archive) + " instead of deleting it."
+		extra = " Move puts each source in " + ShortHome(archive) + " instead of deleting it."
 	}
 	t.println(t.dim(fmt.Sprintf("Dry run: %d of %d sessions would %s. Add --apply to do it.%s", ready, len(ops), verb, extra)))
 }
@@ -148,10 +148,10 @@ func (t Term) Results(verb string, rs []transfer.Result, info map[string]query.S
 			}
 			t.printf("%s %s %s %s\n", t.money("✓"), query.ShortID(op.SessionID), title, t.dim(msg))
 			for _, c := range r.Conflicts {
-				t.printf("    %s %s\n", t.warn("conflict"), shortHome(c))
+				t.printf("    %s %s\n", t.warn("conflict"), ShortHome(c))
 			}
 			if r.Archive != "" {
-				t.printf("    %s %s\n", t.dim("archive"), shortHome(r.Archive))
+				t.printf("    %s %s\n", t.dim("archive"), ShortHome(r.Archive))
 			}
 		}
 	}
@@ -184,7 +184,7 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
 func (t Term) Forked(p transfer.ForkPlan, r transfer.Result) {
 	t.printf("%s forked %s → %s as %s, %d files written\n", t.money("✓"), p.From, p.To, p.NewSessionID, len(r.Written))
 	for _, c := range r.Conflicts {
-		t.printf("    %s %s\n", t.warn("left alone"), shortHome(c))
+		t.printf("    %s %s\n", t.warn("left alone"), ShortHome(c))
 	}
 	t.println(t.dim("continue it with: ccli resume " + query.ShortID(p.NewSessionID)))
 }
