@@ -63,6 +63,7 @@ func cmdProjects(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	page, err := svc.Projects(ctx, f)
 	if err != nil {
 		return err

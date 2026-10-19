@@ -118,7 +118,7 @@ type Options struct {
 // Run starts the browser at the sessions list, or at a session's turns when
 // ref names one. scope's Dirs and Tools narrow the sessions list.
 func Run(ctx context.Context, src Source, ref string, scope query.Filter, opt Options) error {
-	v := &viewer{ctx: ctx, src: src, loc: time.Local, rendered: map[string]string{}, scope: scope, tools: opt.Tools}
+	v := &viewer{ctx: ctx, src: src, loc: time.Local, rendered: map[string]string{}, scope: scope, opt: render.LogOptions{Tools: opt.Tools}}
 	var first *screen
 	var err error
 	if ref != "" {
@@ -461,26 +461,26 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return copyText(text)
 	case "t":
-		if s.role == turnsRole {
-			v.tools = !v.tools
-			if v.tools {
-				v.toolN = 0
-				s.focus = true
-				v.stepTool(s, 0)
-			}
-			return v.sync()
-		}
 		v.opt.Tools = !v.opt.Tools
 		return v.sync()
-	case "[", "]":
+	case "[":
 		if s.role != turnsRole || !v.tools {
 			return nil
 		}
-		if k == "[" {
-			v.stepTool(s, -1)
-		} else {
-			v.stepTool(s, 1)
+		v.stepTool(s, -1)
+		return v.sync()
+	case "]":
+		if s.role != turnsRole {
+			return nil
 		}
+		if !v.tools {
+			v.tools = true
+			v.toolN = 0
+			s.focus = true
+			v.stepTool(s, 0)
+			return v.sync()
+		}
+		v.stepTool(s, 1)
 		return v.sync()
 	case "T":
 		v.opt.Thinking = !v.opt.Thinking
@@ -741,6 +741,8 @@ func (v *viewer) footer() string {
 		keys = []string{"↑↓ scroll", "space page", "esc back"}
 		if s.role == turnsRole && v.tools {
 			keys = []string{"↑↓ scroll", "[ ] tool", "esc transcript", "o agents", "y copy prompt"}
+		} else if s.role == turnsRole {
+			keys = append(keys, "t expand", "] tools", "T thinking", "c context", "o agents", "y copy prompt")
 		} else {
 			keys = append(keys, "t tools", "T thinking", "c context", "o agents", "y copy prompt")
 		}
@@ -755,9 +757,9 @@ func (v *viewer) footer() string {
 			}
 		case turnsRole:
 			if v.tools {
-				keys = append(keys, "[ ] tool", "t transcript", "o agents", "y copy prompt")
+				keys = append(keys, "[ ] tool", "esc transcript", "o agents", "y copy prompt")
 			} else {
-				keys = append(keys, "s sort", "a all turns", "o agents", "y copy prompt", "t tools")
+				keys = append(keys, "s sort", "a all turns", "t expand", "] tools", "o agents", "y copy prompt")
 			}
 		default:
 			keys = append(keys, "o agents")
@@ -794,7 +796,9 @@ func (v *viewer) helpLines(n int) []string {
 		"  y              copy the prompt to the clipboard",
 		"",
 		bold("  Preview"),
-		"  t              one tool call at a time; [ ] moves between them, esc returns to the transcript",
+		"  t              expand each tool call where it happened in the turn",
+		"  ]              a page of only the tool calls; [ ] moves between them",
+		"  T              the model's thinking",
 		"  c              text Claude Code added: skills, reminders, peer messages",
 		"  r              prompts and replies as recorded, without markdown",
 		"",

@@ -54,6 +54,9 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	if acct, _, err := svc.Resolve(ctx, pos[0]); err == nil {
+		a.refreshCursorFor(ctx, []string{acct}, nil)
+	}
 	ref := pos[0]
 	t := a.term(c)
 	switch {
@@ -165,6 +168,7 @@ func cmdPrompts(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	p, err := svc.Prompts(ctx, f)
 	if err != nil {
 		return err

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
@@ -61,10 +62,10 @@ func newFlags(name string, a *app, c *common) *flag.FlagSet {
 	return fs
 }
 
-// prepare opens everything, refreshes the index, and loads Cursor's event
-// ledger when a view joins it onto sessions.
+// prepare opens everything and refreshes the index. It does not ask Cursor
+// for usage; commands that show Cursor cost call refreshCursorFor.
 func (a *app) prepare(ctx context.Context, c common, accts []string) (*query.DB, error) {
-	return a.prepareQuery(ctx, c, accts, true)
+	return a.prepareQuery(ctx, c, accts, false)
 }
 
 // prepareQuery is prepare. cursorEvents loads the usage-event ledger. quota
@@ -97,6 +98,47 @@ func (a *app) prepareQuery(ctx context.Context, c common, accts []string, cursor
 	return query.New(a.st, a.accts), nil
 }
 
+// refreshCursorFor reads the usage-event ledger when the command can show a
+// Cursor or Cursor IDE account. A Claude-only filter does not ask Cursor.
+func (a *app) refreshCursorFor(ctx context.Context, names []string, tools []account.Tool) {
+	if !a.needsCursor(names, tools) {
+		a.logf(2, "cursor usage: not needed")
+		return
+	}
+	a.refreshCursor(ctx)
+}
+
+func (a *app) needsCursor(names []string, tools []account.Tool) bool {
+	if len(tools) > 0 {
+		keep := false
+		for _, t := range tools {
+			if t == account.Cursor || t == account.CursorIDE {
+				keep = true
+			}
+		}
+		if !keep {
+			return false
+		}
+	}
+	pool := a.accts
+	if len(names) > 0 {
+		pool = nil
+		for _, n := range names {
+			for _, ac := range a.accts {
+				if ac.Name == n {
+					pool = append(pool, ac)
+				}
+			}
+		}
+	}
+	for _, ac := range pool {
+		if ac.Kind() == account.Cursor || ac.Kind() == account.CursorIDE {
+			return true
+		}
+	}
+	return false
+}
+
 // pullCursor reads the event ledger once per command. A fresh cache is not
 // fetched again. Debug only reports that choice.
 func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledger, error) {
@@ -114,6 +156,9 @@ func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledg
 }
 
 func (a *app) refreshCursor(ctx context.Context) {
+	if !cursorusage.Fresh(store.DataDir()) {
+		fmt.Fprintln(a.errw, "Reading Cursor usage. This asks Cursor and can take a little while.")
+	}
 	led, err := a.pullCursor(ctx, store.DataDir())
 	if led != nil {
 		from := "fetched"
@@ -168,6 +213,7 @@ func cmdAccounts(ctx context.Context, a *app, args []string) error {
 	defer a.close()
 	f := query.Filter{Loc: time.Local}
 	f.Since, f.Until = query.RangeDays(*days, time.Local)
+	a.refreshCursorFor(ctx, nil, nil)
 	rows, err := svc.Accounts(ctx, f)
 	if err != nil {
 		return err
@@ -227,6 +273,7 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	page, err := svc.Sessions(ctx, f)
 	if err != nil {
 		return err
@@ -263,6 +310,11 @@ func cmdShow(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	acct, _, err := svc.Resolve(ctx, ref)
+	if err != nil {
+		return err
+	}
+	a.refreshCursorFor(ctx, []string{acct}, nil)
 	d, err := svc.Session(ctx, ref)
 	if err != nil {
 		return err
@@ -292,6 +344,7 @@ func cmdStats(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	o, err := svc.Overview(ctx, f)
 	if err != nil {
 		return err

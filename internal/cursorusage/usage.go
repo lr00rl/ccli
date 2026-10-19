@@ -171,7 +171,12 @@ type Option struct {
 	Body func(format string, args ...any)
 }
 
-// Refresh fetches the dashboard when the cache is older than freshFor.
+// Fresh reports whether the cached ledger is still new enough to use.
+func Fresh(dataDir string) bool {
+	cur := Load(dataDir)
+	return cur.Version == ledgerVersion && cur.Error == "" && !cur.FetchedAt.IsZero() && time.Since(cur.FetchedAt) < freshFor && (len(cur.Sessions) > 0 || cur.Period != nil)
+}
+
 // A network or auth failure keeps the previous cache. Callers can still
 // use a partial ledger when Period or Sessions is set.
 func Refresh(ctx context.Context, dataDir string) (*Ledger, error) {
@@ -185,7 +190,7 @@ func RefreshOption(ctx context.Context, dataDir string, opt Option) (*Ledger, er
 	ctx = withTrace(ctx, opt.Trace)
 	ctx = withBody(ctx, opt.Body)
 	cur := Load(dataDir)
-	fresh := cur.Version == ledgerVersion && cur.Error == "" && !cur.FetchedAt.IsZero() && time.Since(cur.FetchedAt) < freshFor && (len(cur.Sessions) > 0 || cur.Period != nil)
+	fresh := Fresh(dataDir)
 	if fresh && !opt.Force {
 		cur.FromCache = true
 		trace(ctx, "cursor usage: no request, cache is %s old", time.Since(cur.FetchedAt).Round(time.Second))
