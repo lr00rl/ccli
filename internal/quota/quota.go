@@ -53,8 +53,9 @@ type Snapshot struct {
 	// Source is where the reading came from: empty for the status line
 	// wrapper, FromCodexLog for the rate limits Codex writes to its logs,
 	// FromClaudeLive or FromCodexLive for a live check.
-	Source string `json:"source,omitempty"`
-	Plan   string `json:"plan,omitempty"` // the subscription plan, when the source names it
+	Source  string `json:"source,omitempty"`
+	Plan    string `json:"plan,omitempty"`    // the subscription plan, when the source names it
+	Message string `json:"message,omitempty"` // a short note from the source, such as a limit warning
 	// Limits and Extra come only from a live check (see Checker).
 	Limits []Limit `json:"limits,omitempty"`
 	Extra  *Extra  `json:"extra_usage,omitempty"`
@@ -418,6 +419,8 @@ func SourceName(source string) string {
 		return "Claude Code"
 	case FromCodexLive:
 		return "Codex"
+	case FromCursorLive:
+		return "Cursor"
 	case FromCcline:
 		return "ccline"
 	}

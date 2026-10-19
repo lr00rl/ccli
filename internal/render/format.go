@@ -290,6 +290,9 @@ func (t Term) table(cols []column, rows [][]string) {
 		var b strings.Builder
 		for i, c := range cols {
 			cell := cells[i]
+			if !header {
+				cell = strings.Join(strings.Fields(cell), " ")
+			}
 			if width(cell) > ws[i] {
 				cell = fit(stripANSI(cell), ws[i])
 			}

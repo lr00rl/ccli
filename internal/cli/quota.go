@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/quota"
 	"github.com/lr00rl/ccli/internal/render"
 	"github.com/lr00rl/ccli/internal/store"
@@ -26,7 +27,7 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	var accts accountsFlag
 	fs := newFlags("quota", a, &c)
 	fs.Var(&accts, "a", "account (repeat or comma separate; default all)")
-	offline := fs.Bool("offline", false, "show the last saved figures instead of asking Claude Code and Codex now")
+	offline := fs.Bool("offline", false, "show the last saved figures instead of asking Claude Code, Codex and Cursor now")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -113,6 +114,7 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 		if lastLive != nil {
 			r.Plan, r.Limits, r.Extra = lastLive.Plan, lastLive.Limits, lastLive.Extra
 			r.LimitsAt, r.LimitsFrom = lastLive.CapturedAt, quota.SourceName(lastLive.Source)
+			r.Note = lastLive.Message
 		}
 		if r.Plan == "" && passive != nil {
 			r.Plan = passive.Plan
@@ -161,23 +163,77 @@ func checkLive(ctx context.Context, accts []account.Account, dataDir string) map
 	out := make(map[string]liveCheck, len(accts))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var cursorAccts []account.Account
 	for _, ac := range accts {
+		switch ac.Kind() {
+		case account.Claude, account.Codex:
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s, err := c.Check(ctx, ac)
+				if err == nil {
+					// The figures are shown either way; a failed save only
+					// means --offline will not have them.
+					_ = quota.SaveLive(dataDir, s)
+				}
+				mu.Lock()
+				out[ac.Name] = liveCheck{s, err}
+				mu.Unlock()
+			}()
+		case account.Cursor, account.CursorIDE:
+			cursorAccts = append(cursorAccts, ac)
+		}
+	}
+	if len(cursorAccts) > 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s, err := c.Check(ctx, ac)
-			if err == nil {
-				// The figures are shown either way; a failed save only
-				// means --offline will not have them.
-				_ = quota.SaveLive(dataDir, s)
-			}
+			led, err := cursorusage.Refresh(ctx, dataDir)
 			mu.Lock()
-			out[ac.Name] = liveCheck{s, err}
-			mu.Unlock()
+			defer mu.Unlock()
+			for _, ac := range cursorAccts {
+				if led == nil || led.Period == nil {
+					if err == nil {
+						err = fmt.Errorf("cursor usage: no billing period")
+					}
+					out[ac.Name] = liveCheck{err: err}
+					continue
+				}
+				s := cursorSnapshot(ac, led)
+				_ = quota.SaveLive(dataDir, s)
+				out[ac.Name] = liveCheck{snap: s}
+			}
 		}()
 	}
 	wg.Wait()
 	return out
+}
+
+func cursorSnapshot(ac account.Account, led *cursorusage.Ledger) quota.Snapshot {
+	p := led.Period
+	s := quota.Snapshot{
+		Account:    ac.Name,
+		ConfigDir:  ac.Dir,
+		CapturedAt: led.FetchedAt,
+		Source:     quota.FromCursorLive,
+		Plan:       p.Plan,
+		Message:    p.Message,
+		Limits: []quota.Limit{
+			{Name: "API", Window: quota.Window{UsedPercent: p.APIPercent, ResetsAt: p.CycleEnd}},
+			{Name: "total", Window: quota.Window{UsedPercent: p.Percent, ResetsAt: p.CycleEnd}},
+		},
+	}
+	if p.UsedUSD > 0 || p.LimitUSD > 0 || p.BonusUSD > 0 {
+		pct := p.APIPercent
+		if pct == 0 {
+			pct = p.Percent
+		}
+		s.Extra = &quota.Extra{
+			Used: p.UsedUSD, Limit: p.LimitUSD, UsedPercent: pct,
+			Currency: "USD", Bonus: p.BonusUSD,
+		}
+	}
+	return s
 }
 
 func contains(ss []string, s string) bool {

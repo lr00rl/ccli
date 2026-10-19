@@ -1,7 +1,8 @@
 # ccli
 
-A terminal tool for every Claude Code and Codex session on your machine, across
-all of your accounts. It shows what each session used and what that would cost
+A terminal tool for every Claude Code, Codex, Pi, and Cursor session on your
+machine, across all of your accounts. Cursor's CLI and IDE are separate
+accounts: the same conversation is not merged across them. It shows what each session used and what that would cost
 at API list price, turn by turn: every prompt you typed, what the model did
 with it, which subagents and workflow runs it started and what they cost. It
 also shows where your subscription limits stand, and it moves a Claude Code
@@ -13,8 +14,11 @@ whose.
 An account is one Claude Code config dir: `~/.claude` (shown as `default`) or
 `~/.claude-<name>` (shown as `<name>`), the dir you select with
 `CLAUDE_CONFIG_DIR`. A Codex home is an account too: `~/.codex` (shown as
-`codex`) or `~/.codex-<name>`. If you keep a personal and a work login side by
-side, ccli sees both and keeps their usage apart.
+`codex`) or `~/.codex-<name>`. Pi's agent dir `~/.pi/agent` is `pi`
+(`PI_CODING_AGENT_DIR` for another). The Cursor CLI home `~/.cursor` is
+`cursor`. The Cursor IDE user directory is `cursor-ide`. If you keep a
+personal and a work login side by side, ccli sees both and keeps their usage
+apart.
 
 The [tutorial](docs/tutorial.md) walks through the common jobs step by step:
 reviewing your prompts, following agents, switching accounts and watching
@@ -65,7 +69,7 @@ ccli sessions                         # active in the last 30 days, newest first
 ccli sessions -a work --days 7 --sort cost -n 20
 ccli sessions --project checkout -q payment
 ccli sessions --dir . --days 0        # every session started in this folder or below
-ccli sessions --tool codex            # only Codex sessions (or claude)
+ccli sessions --tool codex            # only Codex sessions (or claude, pi, cursor, cursor-ide)
 ```
 
 ![ccli sessions](docs/images/sessions.png)
@@ -373,10 +377,13 @@ ccli reads transcripts and keeps its own index in
 `~/.local/share/ccli/ccli.db`. It never reads credentials or the Keychain,
 never writes `settings.json` or `.claude.json`, and never calls a model. In a
 Codex home it reads only the session logs: never `auth.json`, `config.toml`
-or Codex's own databases. The one exception is `quota`, which starts Claude
-Code and Codex to ask for your limits; they update their own caches as on any
-start (`--offline` starts nothing). Only
-`copy`, `move`, `fork` and `resume --sync` write into an account, and only the
+or Codex's own databases. `quota` starts Claude Code and Codex to ask for
+your limits; they update their own caches as on any start (`--offline` starts
+nothing). For Cursor, `quota`, `sessions` and `show` also read the usage page
+of the account already signed in to the IDE. That request uses the login
+Cursor stored, sends it only to Cursor's usage service, and caches the
+totals (not the login) in `~/.local/share/ccli/cursor-usage.json` for 15
+minutes. Only `copy`, `move`, `fork` and `resume --sync` write into an account, and only the
 files of the session involved. `hide` and `tag` write only to ccli's own
 index. A transcript that cannot be read is reported
 and retried on the next run. [DESIGN.md](DESIGN.md) has the full contract, the

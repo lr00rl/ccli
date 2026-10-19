@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lr00rl/ccli/internal/account"
 )
 
 // sessionSQL aggregates files and responses per session. Totals cover the
@@ -107,7 +109,11 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return out, d.markHidden(ctx, out)
+	if err := d.markHidden(ctx, out); err != nil {
+		return nil, err
+	}
+	d.applyCursorUsage(ctx, out)
+	return out, nil
 }
 
 func matches(s SessionRow, f Filter) bool {
@@ -142,6 +148,13 @@ func containsFold(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
 
+// ideDraft is a Cursor IDE composer that was never used: no title and no
+// prompt. Cursor writes one of these for an empty window and for a chat
+// that was opened and closed without a message.
+func ideDraft(s SessionRow) bool {
+	return s.Tool == account.CursorIDE && s.Prompts == 0 && s.Title == ""
+}
+
 // Sessions lists sessions active in the filter's range.
 func (d *DB) Sessions(ctx context.Context, f Filter) (SessionPage, error) {
 	rows, err := d.loadSessions(ctx, f)
@@ -151,10 +164,15 @@ func (d *DB) Sessions(ctx context.Context, f Filter) (SessionPage, error) {
 	page := SessionPage{Filter: f}
 	all := rows[:0]
 	for _, s := range rows {
-		if f.Show.keeps(s.Hidden) {
+		switch {
+		case !f.Show.keeps(s.Hidden):
+			if s.Hidden {
+				page.Hidden++
+			}
+		case !f.Drafts && ideDraft(s):
+			page.Drafts++
+		default:
 			all = append(all, s)
-		} else if s.Hidden {
-			page.Hidden++
 		}
 	}
 	sortSessions(all, f.Sort)
@@ -167,6 +185,19 @@ func (d *DB) Sessions(ctx context.Context, f Filter) (SessionPage, error) {
 		all = all[:f.Limit]
 	}
 	page.Sessions = all
+	if len(all) == 0 && !f.Since.IsZero() {
+		wide := f
+		wide.Since, wide.Until, wide.Limit = time.Time{}, time.Time{}, 0
+		older, err := d.loadSessions(ctx, wide)
+		if err != nil {
+			return page, err
+		}
+		for _, s := range older {
+			if f.Show.keeps(s.Hidden) && (f.Drafts || !ideDraft(s)) {
+				page.Older++
+			}
+		}
+	}
 	return page, nil
 }
 
@@ -234,6 +265,12 @@ func (d *DB) Accounts(ctx context.Context, f Filter) ([]AccountSummary, error) {
 		if i, ok := idx[acct]; ok {
 			out[i].Tokens, out[i].Cost = t, c
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.addCursorAccountUsage(ctx, f, out, idx); err != nil {
+		return nil, err
 	}
 	for _, l := range d.live {
 		if i, ok := idx[l.Account]; ok {

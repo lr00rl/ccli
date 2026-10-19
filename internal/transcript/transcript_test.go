@@ -408,3 +408,15 @@ func TestReplayedStretchCountsOnce(t *testing.T) {
 		t.Fatalf("incremental replay: turns=%d state=%+v", len(again.Turns), again.State)
 	}
 }
+
+func TestCommandName(t *testing.T) {
+	if name, ok := CommandName("/copy the rest"); !ok || name != "copy" {
+		t.Fatalf("copy: %q %v", name, ok)
+	}
+	if _, ok := CommandName("/Users/cdcd/proj\n\nmore"); ok {
+		t.Fatal("a path was taken as a command")
+	}
+	if _, ok := CommandName("just text"); ok {
+		t.Fatal("plain text was a command")
+	}
+}

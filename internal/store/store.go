@@ -145,6 +145,7 @@ var columns = []struct{ table, name, def string }{
 	{"files", "carry", "TEXT NOT NULL DEFAULT ''"},
 	{"responses", "turn", "INTEGER NOT NULL DEFAULT 0"},
 	{"responses", "imported", "INTEGER NOT NULL DEFAULT 0"},
+	{"responses", "fixed_cost", "INTEGER NOT NULL DEFAULT 0"},
 	{"processes", "imported", "INTEGER NOT NULL DEFAULT 0"},
 	{"spawns", "turn", "INTEGER NOT NULL DEFAULT 0"},
 	{"spawns", "tool", "TEXT NOT NULL DEFAULT ''"},
@@ -479,7 +480,9 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 	}
 	for _, resp := range r.Responses {
 		var c sql.NullFloat64
-		if v, ok := cost(resp.Model, resp.Speed, resp.Usage); ok {
+		if resp.HasCost {
+			c = sql.NullFloat64{Float64: resp.Cost, Valid: true}
+		} else if v, ok := cost(resp.Model, resp.Speed, resp.Usage); ok {
 			c = sql.NullFloat64{Float64: v, Valid: true}
 		}
 		us := resp.Usage
@@ -487,16 +490,16 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 		// that made it: a line ccli copied in from another account never owns
 		// it, and among the rest the file created first does. A later line in
 		// the owning file may revise its usage.
-		if _, err := tx.ExecContext(ctx, `INSERT INTO responses(key, file_id, account, session_id, kind, ts, model, speed, input, output, cache_read, cache_5m, cache_1h, web_search, cost, born, turn, imported)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO responses(key, file_id, account, session_id, kind, ts, model, speed, input, output, cache_read, cache_5m, cache_1h, web_search, cost, fixed_cost, born, turn, imported)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(key) DO UPDATE SET file_id=excluded.file_id, account=excluded.account, session_id=excluded.session_id, kind=excluded.kind,
 			  born=excluded.born, model=excluded.model, speed=excluded.speed, input=excluded.input, output=excluded.output,
-			  cache_read=excluded.cache_read, cache_5m=excluded.cache_5m, cache_1h=excluded.cache_1h, web_search=excluded.web_search, cost=excluded.cost,
+			  cache_read=excluded.cache_read, cache_5m=excluded.cache_5m, cache_1h=excluded.cache_1h, web_search=excluded.web_search, cost=excluded.cost, fixed_cost=excluded.fixed_cost,
 			  turn=CASE WHEN ? THEN responses.turn ELSE excluded.turn END, imported=excluded.imported
 			WHERE responses.file_id = excluded.file_id OR excluded.imported < responses.imported
 			  OR (excluded.imported = responses.imported AND excluded.born > 0 AND (responses.born = 0 OR excluded.born < responses.born))`,
 			resp.Key, f.ID, f.Account, f.SessionID, f.Kind, resp.TS, resp.Model, resp.Speed,
-			us.Input, us.Output, us.CacheRead, us.Cache5m, us.Cache1h, us.WebSearch, c, f.Born, resp.Turn, boolInt(resp.Imported), resp.Replay); err != nil {
+			us.Input, us.Output, us.CacheRead, us.Cache5m, us.Cache1h, us.WebSearch, c, boolInt(resp.HasCost), f.Born, resp.Turn, boolInt(resp.Imported), resp.Replay); err != nil {
 			return err
 		}
 	}
@@ -869,7 +872,7 @@ func (s *Store) Transfers(ctx context.Context, sessionID string) ([]Transfer, er
 // Reprice recomputes every stored cost with a new price table, records the
 // table's hash as meta "prices", and marks every session for reconciliation.
 func (s *Store) Reprice(ctx context.Context, cost CostFunc, hash string) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT key, model, speed, input, output, cache_read, cache_5m, cache_1h, web_search FROM responses WHERE kind <> 'adjustment'`)
+	rows, err := s.db.QueryContext(ctx, `SELECT key, model, speed, input, output, cache_read, cache_5m, cache_1h, web_search FROM responses WHERE kind <> 'adjustment' AND fixed_cost = 0`)
 	if err != nil {
 		return err
 	}

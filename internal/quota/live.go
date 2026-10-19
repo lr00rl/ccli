@@ -31,6 +31,7 @@ import (
 const (
 	FromClaudeLive = "claude-live"
 	FromCodexLive  = "codex-live"
+	FromCursorLive = "cursor-dashboard"
 )
 
 // Limit is a window a source reports besides the 5-hour and weekly ones: a
@@ -46,6 +47,7 @@ type Extra struct {
 	Used        float64 `json:"used,omitempty"`  // in Currency, when the source says
 	Limit       float64 `json:"limit,omitempty"` // the monthly cap, likewise
 	Currency    string  `json:"currency,omitempty"`
+	Bonus       float64 `json:"bonus,omitempty"` // free usage on top of the included amount
 }
 
 // Checker asks tools for an account's limits.
@@ -70,10 +72,13 @@ func (c Checker) Check(ctx context.Context, a account.Account) (Snapshot, error)
 	}
 	var s Snapshot
 	var err error
-	if a.Kind() == account.Codex {
+	switch a.Kind() {
+	case account.Codex:
 		s, err = c.codex(ctx, a)
-	} else {
+	case account.Claude:
 		s, err = c.claude(ctx, a)
+	default:
+		return Snapshot{}, fmt.Errorf("%s has no live quota check", a.Kind())
 	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

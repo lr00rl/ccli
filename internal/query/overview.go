@@ -135,6 +135,7 @@ func (d *DB) Overview(ctx context.Context, f Filter) (*Overview, error) {
 		addShare(accts, acctSess, k.account, k, t, c.USD)
 	}
 	rows.Close()
+	d.addCursorOverview(ctx, sessions, o, days, projects, models, accts, projSess, modelSess, acctSess, loc)
 	if o.From.IsZero() && first > 0 {
 		o.From = time.UnixMilli(first * 3_600_000)
 	}

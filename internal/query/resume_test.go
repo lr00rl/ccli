@@ -8,6 +8,13 @@ import (
 	"github.com/lr00rl/ccli/internal/account"
 )
 
+func TestTitleOneLine(t *testing.T) {
+	got, src := title("", "", "", "/Users/a/proj\n\nsecond line of the prompt")
+	if src != "prompt" || strings.Contains(got, "\n") || !strings.Contains(got, "second line") {
+		t.Fatalf("title %q from %s", got, src)
+	}
+}
+
 // A Codex session resumes with codex resume, with CODEX_HOME naming any home
 // but ~/.codex. A thread Codex archived must be unarchived first; ccli names
 // the command and does not run it.

@@ -26,6 +26,7 @@ type QuotaRow struct {
 	Extra      *quota.Extra  `json:"extra_usage,omitempty"`
 	LimitsAt   time.Time     `json:"limits_at,omitzero"`    // when the live check holding Limits and Extra answered
 	LimitsFrom string        `json:"limits_from,omitempty"` // and which tool
+	Note       string        `json:"note,omitempty"`        // a short note from the live check
 	// Live is true when the figures were checked just now; LiveError says
 	// why a check failed, and the figures are then the last saved ones.
 	Live      bool   `json:"live"`
@@ -45,12 +46,13 @@ type WindowUse struct {
 // Quota prints subscription limits per account.
 func (t Term) Quota(rows []QuotaRow) {
 	// What the footnotes describe: only the sources these rows used.
-	missing, offline, failed, claudeLive, codexLive := false, false, false, false, false
+	missing, offline, failed, claudeLive, codexLive, cursorLive := false, false, false, false, false, false
 	for i, r := range rows {
 		offline = offline || r.Offline
 		failed = failed || r.LiveError != ""
-		claudeLive = claudeLive || r.Live && r.Tool != account.Codex
+		claudeLive = claudeLive || r.Live && r.Tool == account.Claude
 		codexLive = codexLive || r.Live && r.Tool == account.Codex
+		cursorLive = cursorLive || r.Live && (r.Tool == account.Cursor || r.Tool == account.CursorIDE)
 		lw := 9 // the label column: "5-hour", "weekly", or a longer limit's name
 		for _, l := range r.Limits {
 			lw = max(lw, width(l.Name)+1)
@@ -62,8 +64,8 @@ func (t Term) Quota(rows []QuotaRow) {
 		switch {
 		case r.Email != "":
 			head += t.dim("  " + r.Email)
-		case r.Tool == account.Codex:
-			head += t.dim("  Codex")
+		case r.Tool != account.Claude:
+			head += t.dim("  " + r.Tool.Label())
 		}
 		if r.Plan != "" {
 			head += t.dim(" · " + r.Plan + " plan")
@@ -73,7 +75,7 @@ func (t Term) Quota(rows []QuotaRow) {
 			t.printf("  %s\n", t.warn("live check failed: "+r.LiveError))
 		}
 		if r.FiveHour == nil && r.SevenDay == nil && len(r.Limits) == 0 {
-			missing = missing || r.Tool != account.Codex
+			missing = missing || r.Tool == account.Claude
 			t.printf("  %s\n", t.dim("no limits recorded yet"))
 		}
 		t.window("5-hour", r.FiveHour, r.Use5h, lw)
@@ -86,11 +88,21 @@ func (t Term) Quota(rows []QuotaRow) {
 			more = &quota.Reading{At: r.LimitsAt, Source: r.LimitsFrom}
 		}
 		if e := r.Extra; e != nil {
+			label := "extra use"
+			if r.Tool == account.Cursor || r.Tool == account.CursorIDE {
+				label = "included"
+			}
 			text := pct(e.UsedPercent) + " of the monthly cap"
 			if e.Limit > 0 {
 				text = fmt.Sprintf("%s of %s this month (%s)", money(e.Used, e.Currency), money(e.Limit, e.Currency), pct(e.UsedPercent))
 			}
-			t.printf("  %s %s\n", t.dim(pad("extra use", lw, false)), text)
+			if e.Bonus > 0 {
+				text += " · " + money(e.Bonus, e.Currency) + " bonus"
+			}
+			t.printf("  %s %s\n", t.dim(pad(label, lw, false)), text)
+		}
+		if r.Note != "" {
+			t.printf("  %s\n", t.dim(r.Note))
 		}
 		if src := sources(t, r.FiveHour, r.SevenDay, more); src != "" {
 			t.printf("  %s %s\n", pad("", lw, false), t.dim(src))
@@ -98,7 +110,7 @@ func (t Term) Quota(rows []QuotaRow) {
 	}
 	t.println()
 	if offline {
-		t.println(t.dim("These are the last saved figures. Without --offline, ccli asks Claude Code and Codex for the current ones."))
+		t.println(t.dim("These are the last saved figures. Without --offline, ccli asks Claude Code, Codex and Cursor for the current ones."))
 	}
 	if claudeLive {
 		t.println(t.dim("Live Claude figures come from Claude Code itself, with the same request /usage makes, so use on claude.ai"))
@@ -106,6 +118,9 @@ func (t Term) Quota(rows []QuotaRow) {
 	}
 	if codexLive {
 		t.println(t.dim("Live Codex figures come from Codex's app server, started once per account."))
+	}
+	if cursorLive {
+		t.println(t.dim("Live Cursor figures are the signed-in account's billing cycle from Cursor's usage page. The same cycle is shown for the CLI and the IDE."))
 	}
 	if failed {
 		t.println(t.dim("An account whose check failed shows its last saved figures, each with its source and age."))

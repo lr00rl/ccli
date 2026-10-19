@@ -75,6 +75,11 @@ type Response struct {
 	Turn     int  // turn of the main conversation it belongs to (main transcripts only)
 	Imported bool // the line was copied in from another account
 	Replay   bool // the line repeats an earlier part of the file; it keeps its first turn
+	// Cost is a price the transcript already computed, in USD. Pi writes one
+	// on each reply. When HasCost is set, the index keeps it and does not
+	// reprice Usage from the list-price table.
+	Cost    float64
+	HasCost bool
 }
 
 // Range is a byte range [From, To) of a file.
@@ -828,6 +833,30 @@ func capText(s string, n int) string {
 }
 
 var commandName = regexp.MustCompile(`<command-name>\s*([^<\s]+)\s*</command-name>`)
+
+// slashWord is a slash-command name. An absolute path is not one: a prompt
+// that begins with /Users or /tmp must not be counted as a command.
+var slashWord = regexp.MustCompile(`^[A-Za-z][\w:-]*$`)
+
+// CommandName returns the slash command at the start of text, without the
+// leading slash. A path, or anything with a second slash, is not a command.
+func CommandName(text string) (string, bool) {
+	raw := strings.TrimSpace(text)
+	field := raw
+	if i := strings.IndexAny(raw, " \t\r\n"); i >= 0 {
+		// A whole prompt counts only when it starts as a slash command.
+		// A stored name is a single token and has no space to cut on.
+		if !strings.HasPrefix(raw, "/") {
+			return "", false
+		}
+		field = raw[:i]
+	}
+	field = strings.TrimPrefix(field, "/")
+	if field == "" || strings.Contains(field, "/") || !slashWord.MatchString(field) {
+		return "", false
+	}
+	return field, true
+}
 
 // Tick records a line's time (unix ms; 0 when it has none): the first and
 // last times, and, when active is set, the active time since the previous

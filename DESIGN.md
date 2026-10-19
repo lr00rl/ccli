@@ -1,12 +1,17 @@
 # ccli design
 
-`ccli` reports on Claude Code and Codex sessions across several local
-accounts, and moves Claude Code sessions between accounts. An account is one
-Claude Code config dir: `~/.claude` (account `default`) or `~/.claude-<name>`
-(account `<name>`), selected with `CLAUDE_CONFIG_DIR`; or one Codex home:
-`~/.codex` (account `codex`) or `~/.codex-<name>` (account `codex-<name>`),
-selected with `CODEX_HOME`. `CCLI_CONFIG_DIRS` and `CCLI_CODEX_DIRS` replace
-either search.
+`ccli` reports on Claude Code, Codex, Pi, and Cursor sessions across several
+local accounts, and moves Claude Code sessions between accounts. An account
+is one Claude Code config dir: `~/.claude` (account `default`) or
+`~/.claude-<name>` (account `<name>`), selected with `CLAUDE_CONFIG_DIR`; or
+one Codex home: `~/.codex` (account `codex`) or `~/.codex-<name>` (account
+`codex-<name>`), selected with `CODEX_HOME`; or one Pi agent dir:
+`~/.pi/agent` (account `pi`), selected with `PI_CODING_AGENT_DIR`; or the
+Cursor CLI data dir `~/.cursor` (account `cursor`); or the Cursor IDE user
+dir (account `cursor-ide`). `CCLI_CONFIG_DIRS`, `CCLI_CODEX_DIRS`,
+`CCLI_PI_DIRS`, `CCLI_CURSOR_DIRS` and `CCLI_CURSOR_IDE_DIRS` replace each
+search. Cursor CLI transcripts and IDE composers stay in different accounts
+even when an id appears in both.
 
 ## Boundaries
 
@@ -30,7 +35,8 @@ In a Codex home it reads only the rollout files under `sessions/` and
 Codex's app server, which writes to Codex's own files; see below). It never opens `auth.json` (which
 holds the credentials and the signed-in identity) or `config.toml`, and never
 opens Codex's SQLite databases: opening one read-only can still create a
-`-shm` file next to it.
+`-shm` file next to it. The Cursor IDE database is the exception, and only
+with `immutable=1`, which does not create that sidecar.
 
 It never reads or writes credentials (Keychain, `.credentials.json`), never
 writes `.claude.json`, `settings*.json`, `sessions/` (the live-process
@@ -185,6 +191,42 @@ were checked against 2,022 rollouts written by CLI 0.114 to 0.150.
   home other than `~/.codex`. `codex resume` finds only threads that are not
   archived, so for an archived one ccli prints the `codex unarchive <id>`
   command instead, and does not run it.
+
+## Pi, Cursor CLI, Cursor IDE
+
+These three are readers in the same way Codex is. `diff`, `copy`, `move`,
+`fork` and `resume -a` stay Claude Code only. None of them has a live-process
+registry. Pi is not asked for quota. Cursor's quota is the signed-in
+account's billing cycle.
+
+Pi sessions are `<agent>/sessions/--<cwd>--/<time>_<id>.jsonl` (format
+version 3, the tree of `id` / `parentId`). The conversation shown is the path
+from the latest leaf to the root. Every assistant reply is counted, including
+replies on a branch that was left, and Pi's own USD `usage.cost` is kept
+(`responses.fixed_cost`) instead of being replaced by the list-price table.
+`resume` runs `pi --session <id>`, with `PI_CODING_AGENT_DIR` set when the
+agent dir is not `~/.pi/agent`. A changed file is read again from the start.
+
+Cursor CLI transcripts are
+`~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`, with subagents
+in `subagents/`. The lines have no model, token or timestamp fields. The
+working directory, title and clock come from `~/.cursor/chats/<hash>/<id>/meta.json`
+when that sidecar exists; otherwise the project is the transcript's project
+directory. A typed prompt is the text inside `<user_query>`. `resume` runs
+`agent --resume <id>`. Model, token and cost figures are not in the file.
+They are joined from Cursor's usage page by conversation id (the same id as
+the local session, and a subagent's own id rolled up to its parent) and
+cached in `cursor-usage.json` for 15 minutes. The access token Cursor stored
+for the IDE login is sent only to `api2.cursor.sh`. It is not written to the
+index or the cache.
+
+Cursor IDE composers live in `state.vscdb` (`composerHeaders`,
+`cursorDiskKV` bubbles). The database is opened `immutable=1`, so a read does
+not create a `-shm` or `-wal` beside a database Cursor has open. A subagent
+is filed under `subagentInfo.rootParentConversationId`. Some bubbles carry
+`tokenCount`; there is no price. There is no resume command: opening an IDE
+chat from the CLI can rewrite a transcript, so `show` says to open it from
+the Agents window. A composer is re-read when its `lastUpdatedAt` changes.
 
 ## Relationships
 

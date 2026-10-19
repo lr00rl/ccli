@@ -13,6 +13,9 @@ import (
 	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/codex"
 	"github.com/lr00rl/ccli/internal/conv"
+	"github.com/lr00rl/ccli/internal/cursorcli"
+	"github.com/lr00rl/ccli/internal/cursoride"
+	"github.com/lr00rl/ccli/internal/pi"
 )
 
 // TurnRow is one turn of a session's main conversation: a prompt and the
@@ -728,16 +731,32 @@ func likeEscape(s string) string {
 // readTurn reads one turn of a session's main transcript, in the format of
 // the account's tool.
 func (d *DB) readTurn(acct, path string, from, to int64, seq int) (*conv.Turn, error) {
-	if d.toolOf(acct) == account.Codex {
+	switch d.toolOf(acct) {
+	case account.Codex:
 		return codex.ReadTurn(path, from, to, seq)
+	case account.Pi:
+		return pi.ReadTurn(path, from, to, seq)
+	case account.Cursor:
+		return cursorcli.ReadTurn(path, from, to, seq)
+	case account.CursorIDE:
+		return cursoride.ReadTurn(path, from, to, seq)
+	default:
+		return conv.ReadTurn(path, from, to, seq)
 	}
-	return conv.ReadTurn(path, from, to, seq)
 }
 
 // readAgent reads a subagent's whole transcript.
 func (d *DB) readAgent(acct, path string) ([]conv.Turn, error) {
-	if d.toolOf(acct) == account.Codex {
+	switch d.toolOf(acct) {
+	case account.Codex:
 		return codex.ReadRange(path)
+	case account.Pi:
+		return pi.ReadRange(path)
+	case account.Cursor:
+		return cursorcli.ReadRange(path)
+	case account.CursorIDE:
+		return cursoride.ReadRange(path)
+	default:
+		return conv.ReadRange(path, 0, 0, 1, true)
 	}
-	return conv.ReadRange(path, 0, 0, 1, true)
 }

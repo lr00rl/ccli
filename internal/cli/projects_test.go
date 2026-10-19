@@ -136,8 +136,11 @@ func TestToolFlag(t *testing.T) {
 	if want := []account.Tool{account.Codex, account.Claude}; !reflect.DeepEqual(f.Tools, want) {
 		t.Errorf("repeated -tool set %v, want %v", f.Tools, want)
 	}
-	if f, err := parse("-tool", "cursor"); err == nil {
-		t.Errorf("-tool cursor accepted: %v", f.Tools)
+	if _, err := parse("-tool", "cursor"); err != nil {
+		t.Errorf("-tool cursor: %v", err)
+	}
+	if _, err := parse("-tool", "nope"); err == nil {
+		t.Error("-tool nope was accepted")
 	}
 }
 

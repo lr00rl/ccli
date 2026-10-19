@@ -12,8 +12,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
+	"github.com/lr00rl/ccli/internal/store"
 )
 
 func init() {
@@ -81,7 +83,21 @@ func (a *app) prepare(ctx context.Context, c common, accts []string) (*query.DB,
 			return nil, err
 		}
 	}
+	a.refreshCursor(ctx)
 	return query.New(a.st, a.accts), nil
+}
+
+// refreshCursor updates the cached dashboard usage. A failure leaves the
+// previous cache in place and is mentioned only when there is nothing to show.
+func (a *app) refreshCursor(ctx context.Context) {
+	led, err := cursorusage.Refresh(ctx, store.DataDir())
+	if err == nil || led == nil {
+		return
+	}
+	if len(led.Sessions) > 0 || led.Period != nil {
+		return
+	}
+	fmt.Fprintf(a.errw, "ccli: %s\n", err)
 }
 
 func (a *app) term(c common) render.Term { return render.NewTerm(a.out, c.color) }
@@ -152,6 +168,7 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 	fs.StringVar(&f.Sort, "sort", "last", "sort by last, start, cost, tokens or active")
 	fs.IntVar(&f.Limit, "n", 40, "show at most N sessions (0 = all)")
 	hiddenFlag(fs, &f)
+	fs.BoolVar(&f.Drafts, "drafts", false, "include empty Cursor IDE drafts")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -177,21 +194,30 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 
 func cmdShow(ctx context.Context, a *app, args []string) error {
 	var c common
+	var accts accountsFlag
 	fs := newFlags("show", a, &c)
+	fs.Var(&accts, "a", "account, when the session exists in more than one")
 	all := fs.Bool("all", false, "list every subagent")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: ccli show <session id or prefix, optionally account:prefix>")
+		return errors.New("usage: ccli show [-a account] <session id or prefix>")
 	}
-	svc, err := a.prepare(ctx, c, nil)
+	if len(accts) > 1 {
+		return errors.New("show takes one account")
+	}
+	ref := pos[0]
+	if len(accts) == 1 && !strings.Contains(ref, ":") {
+		ref = accts[0] + ":" + ref
+	}
+	svc, err := a.prepare(ctx, c, accts)
 	if err != nil {
 		return err
 	}
 	defer a.close()
-	d, err := svc.Session(ctx, pos[0])
+	d, err := svc.Session(ctx, ref)
 	if err != nil {
 		return err
 	}

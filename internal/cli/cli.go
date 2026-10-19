@@ -63,7 +63,7 @@ var commands = map[string]func(context.Context, *app, []string) error{
 	"index": cmdIndex,
 }
 
-const usage = `ccli: Claude Code and Codex sessions across local accounts
+const usage = `ccli: Claude Code, Codex, Pi and Cursor sessions across local accounts
 
 Usage:
   ccli accounts                      accounts, identity, sessions, 30-day usage, live sessions
@@ -97,7 +97,7 @@ func (a *app) open() error {
 		return err
 	}
 	if len(accts) == 0 {
-		return errors.New("no Claude Code or Codex home found (looked for ~/.claude, ~/.claude-*, ~/.codex and ~/.codex-*)")
+		return errors.New("no agent home found (looked for ~/.claude, ~/.claude-*, ~/.codex, ~/.codex-*, ~/.pi/agent, ~/.cursor and the Cursor IDE user dir)")
 	}
 	a.accts = accts
 	path, err := store.DefaultPath()
