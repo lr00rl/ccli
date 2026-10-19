@@ -23,6 +23,7 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 	fs := newFlags("view", a, &c)
 	dirFlag(fs, &scope)
 	toolFlag(fs, &scope)
+	tools := fs.Bool("tools", false, "open a turn on its tool calls ([ ] moves between them)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -50,5 +51,5 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 		ref = acct + ":" + id
 	}
 	svc.CacheSessions()
-	return tui.Run(ctx, svc, ref, scope)
+	return tui.Run(ctx, svc, ref, scope, tui.Options{Tools: *tools || a.verbose})
 }
