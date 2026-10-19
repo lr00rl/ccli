@@ -190,12 +190,16 @@ func load(path string, view bool) (transcript.Result, *Agent, []conv.Turn, error
 	if err != nil {
 		return res, agent, nil, err
 	}
-	sort.SliceStable(bubbles, func(i, j int) bool {
-		if bubbles[i].at != bubbles[j].at {
-			return bubbles[i].at < bubbles[j].at
-		}
-		return bubbles[i].key < bubbles[j].key
-	})
+	if order := bubbleOrder(db, id); len(order) > 0 {
+		bubbles = orderBubbles(bubbles, order)
+	} else {
+		sort.SliceStable(bubbles, func(i, j int) bool {
+			if bubbles[i].at != bubbles[j].at {
+				return bubbles[i].at < bubbles[j].at
+			}
+			return bubbles[i].key < bubbles[j].key
+		})
+	}
 	var turns []conv.Turn
 	var models []string
 	noteModel := func(m string) {
@@ -304,6 +308,53 @@ func load(path string, view bool) (transcript.Result, *Agent, []conv.Turn, error
 		turns = nil
 	}
 	return res, agent, turns, nil
+}
+
+// bubbleOrder is the conversation's own bubble list. Rows that are not in
+// it are drafts and retries Cursor kept beside the thread, and createdAt
+// is empty often enough that sorting on it reorders the thread.
+func bubbleOrder(db *sql.DB, id string) []string {
+	var raw []byte
+	if db.QueryRow(`SELECT value FROM cursorDiskKV WHERE key = ?`, "composerData:"+id).Scan(&raw) != nil || len(raw) == 0 {
+		return nil
+	}
+	var v struct {
+		Headers []struct {
+			BubbleID string `json:"bubbleId"`
+		} `json:"fullConversationHeadersOnly"`
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, h := range v.Headers {
+		if h.BubbleID == "" || seen[h.BubbleID] {
+			continue
+		}
+		seen[h.BubbleID] = true
+		ids = append(ids, h.BubbleID)
+	}
+	return ids
+}
+
+func orderBubbles(in []bubble, order []string) []bubble {
+	by := map[string]bubble{}
+	for _, b := range in {
+		if _, ok := by[b.id]; ok {
+			continue
+		}
+		by[b.id] = b
+	}
+	out := make([]bubble, 0, len(order))
+	for _, id := range order {
+		b, ok := by[id]
+		if !ok {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 func composerMeta(db *sql.DB, id string) (name, model string) {

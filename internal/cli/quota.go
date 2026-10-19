@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,21 +46,35 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var checks chan map[string]liveCheck
-	if !*offline {
+	startCheck := func() error {
 		found, err := account.Discover()
 		if err != nil {
 			return err
 		}
 		checks = make(chan map[string]liveCheck, 1)
-		go func() { checks <- checkLive(ctx, pick(found), store.DataDir()) }()
+		go func() { checks <- checkLive(ctx, a, pick(found), store.DataDir()) }()
+		return nil
 	}
-	svc, err := a.prepare(ctx, c, accts)
+	// At debug 4 the exchange is easier to read after account discovery,
+	// instead of having its lines split by that list.
+	if !*offline && a.debug < 4 {
+		if err := startCheck(); err != nil {
+			return err
+		}
+	}
+	svc, err := a.prepareQuery(ctx, c, accts, false)
 	if err != nil {
 		if checks != nil {
 			cancel() // kills the tools; wait so none outlives ccli
 			<-checks
 		}
 		return err
+	}
+	if !*offline && a.debug >= 4 {
+		if err := startCheck(); err != nil {
+			a.close()
+			return err
+		}
 	}
 	defer a.close()
 	saved, err := quota.Load(store.DataDir())
@@ -76,7 +91,7 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 		// The tools take a few seconds to start and answer; say so on a
 		// terminal, and clear the line once they have.
 		f, ok := a.errw.(*os.File)
-		note := ok && !c.json && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd()))
+		note := ok && a.debug == 0 && !c.json && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd()))
 		if note {
 			fmt.Fprint(f, "Checking current limits… (--offline skips this)")
 		}
@@ -120,6 +135,14 @@ func cmdQuota(ctx context.Context, a *app, args []string) error {
 			r.Plan = passive.Plan
 		}
 		r.FiveHour, r.SevenDay = quota.Latest(passive, lastLive, cc)
+		// Cursor's limit is the billing cycle. The 5-hour and weekly
+		// windows belong to Claude and Codex, and bubble tokens are not
+		// those windows.
+		if ac.Kind() == account.Cursor || ac.Kind() == account.CursorIDE {
+			r.FiveHour, r.SevenDay = nil, nil
+			rows = append(rows, r)
+			continue
+		}
 		// Usage is counted from the start of each window as the server
 		// defines it: the reset time minus the window's length.
 		for _, w := range []struct {
@@ -158,8 +181,11 @@ type liveCheck struct {
 // checkLive asks each account's tool for its limits at once, in parallel,
 // and saves each answer as the account's latest snapshot. The tools run in
 // an empty folder of ccli's own (see quota.Checker).
-func checkLive(ctx context.Context, accts []account.Account, dataDir string) map[string]liveCheck {
+func checkLive(ctx context.Context, a *app, accts []account.Account, dataDir string) map[string]liveCheck {
 	c := quota.Checker{WorkDir: filepath.Join(dataDir, "tool-runs"), Client: Version}
+	if a.debug >= 4 {
+		c.Trace = func(format string, args ...any) { a.logf(4, format, args...) }
+	}
 	out := make(map[string]liveCheck, len(accts))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -167,6 +193,7 @@ func checkLive(ctx context.Context, accts []account.Account, dataDir string) map
 	for _, ac := range accts {
 		switch ac.Kind() {
 		case account.Claude, account.Codex:
+			a.logf(1, "quota: asking %s for %s", ac.Kind().Label(), ac.Name)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -185,14 +212,27 @@ func checkLive(ctx context.Context, accts []account.Account, dataDir string) map
 		}
 	}
 	if len(cursorAccts) > 0 {
+		names := make([]string, len(cursorAccts))
+		for i, ac := range cursorAccts {
+			names[i] = ac.Name
+		}
+		a.logf(1, "quota: asking Cursor for the billing cycle (%s)", strings.Join(names, ", "))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			led, err := cursorusage.Refresh(ctx, dataDir)
+			opt := cursorusage.Option{}
+			if a.debug >= 2 {
+				opt.Trace = func(format string, args ...any) { a.logf(2, format, args...) }
+			}
+			if a.debug >= 4 {
+				opt.Body = func(format string, args ...any) { a.logf(4, format, args...) }
+			}
+			p, err := cursorusage.FetchPeriod(ctx, opt)
+			led := &cursorusage.Ledger{FetchedAt: time.Now(), Period: p}
 			mu.Lock()
 			defer mu.Unlock()
 			for _, ac := range cursorAccts {
-				if led == nil || led.Period == nil {
+				if p == nil {
 					if err == nil {
 						err = fmt.Errorf("cursor usage: no billing period")
 					}
@@ -220,16 +260,12 @@ func cursorSnapshot(ac account.Account, led *cursorusage.Ledger) quota.Snapshot 
 		Message:    p.Message,
 		Limits: []quota.Limit{
 			{Name: "API", Window: quota.Window{UsedPercent: p.APIPercent, ResetsAt: p.CycleEnd}},
-			{Name: "total", Window: quota.Window{UsedPercent: p.Percent, ResetsAt: p.CycleEnd}},
+			{Name: "total", Window: quota.Window{UsedPercent: p.TotalPercent, ResetsAt: p.CycleEnd}},
 		},
 	}
 	if p.UsedUSD > 0 || p.LimitUSD > 0 || p.BonusUSD > 0 {
-		pct := p.APIPercent
-		if pct == 0 {
-			pct = p.Percent
-		}
 		s.Extra = &quota.Extra{
-			Used: p.UsedUSD, Limit: p.LimitUSD, UsedPercent: pct,
+			Used: p.UsedUSD, Limit: p.LimitUSD, UsedPercent: p.Percent,
 			Currency: "USD", Bonus: p.BonusUSD,
 		}
 	}

@@ -102,10 +102,20 @@ func (t Term) Turns(l *query.TurnList, all bool) {
 		if tr.DurationMS > 0 {
 			took = Dur(tr.DurationMS)
 		}
-		rows = append(rows, []string{fmt.Sprint(tr.Seq), t.dim(when), took, cost, tools, agents, prompt})
+		row := []string{fmt.Sprint(tr.Seq), t.dim(when), took, cost, tools, agents}
+		if t.Verbose {
+			row = append(row, Num(tr.Tokens.Input), Num(tr.Tokens.Output), Num(tr.Tokens.CacheRead))
+		}
+		row = append(row, prompt)
+		rows = append(rows, row)
 	}
-	t.table([]column{{title: " TURN", right: true}, {title: "WHEN"}, {title: "TOOK", right: true}, {title: "COST", right: true},
-		{title: "TOOLS", right: true}, {title: "AGENTS", right: true}, {title: "PROMPT", flex: true, min: 20}}, rows)
+	cols := []column{{title: " TURN", right: true}, {title: "WHEN"}, {title: "TOOK", right: true}, {title: "COST", right: true},
+		{title: "TOOLS", right: true}, {title: "AGENTS", right: true}}
+	if t.Verbose {
+		cols = append(cols, column{title: "IN", right: true}, column{title: "OUT", right: true}, column{title: "CACHED", right: true})
+	}
+	cols = append(cols, column{title: "PROMPT", flex: true, min: 20})
+	t.table(cols, rows)
 	t.println()
 	id := query.ShortID(s.ID)
 	if hidden > 0 {
@@ -169,6 +179,10 @@ func turnFacts(t Term, r query.TurnRow) []string {
 	}
 	if r.Chars > 0 {
 		parts = append(parts, fmt.Sprintf("prompt %s chars", Num(int64(r.Chars))))
+	}
+	if t.Verbose && r.Tokens.All() > 0 {
+		parts = append(parts, fmt.Sprintf("%s in · %s out · %s cache read · %s cache write",
+			Num(r.Tokens.Input), Num(r.Tokens.Output), Num(r.Tokens.CacheRead), Num(r.Tokens.CacheWrite)))
 	}
 	return parts
 }

@@ -100,6 +100,25 @@ func (t Term) Quota(rows []QuotaRow) {
 				text += " · " + money(e.Bonus, e.Currency) + " bonus"
 			}
 			t.printf("  %s %s\n", t.dim(pad(label, lw, false)), text)
+			if t.Verbose && (r.Tool == account.Cursor || r.Tool == account.CursorIDE) {
+				api, total, end := "", "", ""
+				for _, l := range r.Limits {
+					switch l.Name {
+					case "API":
+						api = pct(l.UsedPercent)
+					case "total":
+						total = pct(l.UsedPercent)
+						if !l.ResetsAt.IsZero() {
+							end = clock(t, l.ResetsAt)
+						}
+					}
+				}
+				extra := fmt.Sprintf("API pool %s · total pool %s", api, total)
+				if end != "" {
+					extra += " · cycle ends " + end
+				}
+				t.printf("  %s %s\n", pad("", lw, false), t.dim(extra))
+			}
 		}
 		if r.Note != "" {
 			t.printf("  %s\n", t.dim(r.Note))

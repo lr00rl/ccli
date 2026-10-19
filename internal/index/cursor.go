@@ -44,30 +44,65 @@ func scanCursor(a account.Account) ([]discovered, error) {
 		if err != nil {
 			return nil
 		}
-		var session, agent, kind string
+		var session, agent, kind, chat string
 		switch {
 		case len(parts) == 4 && strings.TrimSuffix(parts[3], ".jsonl") == parts[2]:
-			session, kind = parts[2], "main"
+			chat, session, kind = parts[2], parts[2], "main"
 		case len(parts) == 5 && parts[3] == "subagents":
-			session, agent, kind = parts[2], strings.TrimSuffix(parts[4], ".jsonl"), "subagent"
+			chat = strings.TrimSuffix(parts[4], ".jsonl")
+			session, agent, kind = parts[2], chat, "subagent"
 		case len(parts) == 3:
-			session, kind = strings.TrimSuffix(parts[2], ".jsonl"), "main"
+			chat = strings.TrimSuffix(parts[2], ".jsonl")
+			session, kind = chat, "main"
 		default:
 			return nil
 		}
-		m := metas[session]
-		title := m.title
-		if kind == "subagent" {
-			if sub, ok := metas[agent]; ok && sub.title != "" {
-				title = sub.title
+		own := metas[chat]
+		parentAgent, agentType, toolUse := "", own.kind, own.tool
+		if kind == "main" && own.sub {
+			rootID := own.root
+			if rootID == "" {
+				rootID = own.parent
+			}
+			if rootID != "" && rootID != chat {
+				if own.parent != "" && own.parent != rootID && own.parent != chat {
+					parentAgent = own.parent
+				}
+				session, agent, kind = rootID, chat, "subagent"
 			}
 		}
-		cwd := m.cwd
+		if kind == "subagent" && len(parts) == 5 {
+			if folder, ok := metas[parts[2]]; ok && folder.sub && parts[2] != session {
+				rootID := folder.root
+				if rootID == "" {
+					rootID = folder.parent
+				}
+				if rootID != "" && rootID != parts[2] {
+					if parentAgent == "" {
+						parentAgent = parts[2]
+					}
+					session = rootID
+				}
+			}
+		}
+		title := own.title
+		if title == "" {
+			title = metas[session].title
+		}
+		cwd := own.cwd
+		if cwd == "" {
+			cwd = metas[session].cwd
+		}
 		if cwd == "" {
 			cwd = filepath.Join(root, slug)
 		}
+		started, ended, model := own.created, own.updated, own.model
+		if started == 0 && ended == 0 {
+			started, ended = metas[session].created, metas[session].updated
+		}
 		found = append(found, discovered{
-			tool: account.Cursor, cwd: cwd, title: title, model: m.model, started: m.created, ended: m.updated,
+			tool: account.Cursor, cwd: cwd, title: title, model: model, started: started, ended: ended,
+			agentType: agentType, toolUse: toolUse, parentAgent: parentAgent,
 			file: storeFile(a, path, session, kind, agent, st),
 		})
 		return nil
@@ -100,24 +135,39 @@ func dedupeCursor(found []discovered) []discovered {
 		out = append(out, d)
 		dir[id] = filepath.Dir(d.file.Path)
 	}
-	seenAgent := map[string]bool{}
+	best := map[string]discovered{}
 	for _, s := range subs {
-		if filepath.Dir(filepath.Dir(s.file.Path)) != dir[s.file.SessionID] {
+		main, ok := kept[s.file.SessionID]
+		if !ok || s.file.AgentID == "" {
 			continue
 		}
-		if seenAgent[s.file.AgentID] {
+		beside := filepath.Dir(filepath.Dir(s.file.Path)) == dir[s.file.SessionID]
+		prev, seen := best[s.file.AgentID]
+		if !seen {
+			best[s.file.AgentID] = s
 			continue
 		}
-		seenAgent[s.file.AgentID] = true
+		prevBeside := filepath.Dir(filepath.Dir(prev.file.Path)) == filepath.Dir(main.file.Path)
+		if prevBeside && !beside {
+			continue
+		}
+		if beside == prevBeside && prev.file.MTime >= s.file.MTime {
+			continue
+		}
+		best[s.file.AgentID] = s
+	}
+	for _, s := range best {
 		out = append(out, s)
 	}
 	return out
 }
 
 type cursorMeta struct {
-	cwd              string
-	title, model     string
-	created, updated int64
+	cwd                      string
+	title, model             string
+	created, updated         int64
+	sub                      bool
+	parent, root, tool, kind string
 }
 
 func cursorMetas(root string) map[string]cursorMeta {
@@ -141,9 +191,11 @@ func cursorMetas(root string) map[string]cursorMeta {
 			return nil
 		}
 		dir := filepath.Dir(path)
+		info := cursorcli.ReadStore(filepath.Join(dir, "store.db"))
 		out[filepath.Base(dir)] = cursorMeta{
-			cwd: v.Cwd, title: v.Title, model: cursorcli.StoreModel(filepath.Join(dir, "store.db")),
-			created: v.Created, updated: v.Updated,
+			cwd: v.Cwd, title: v.Title, model: info.Model,
+			created: v.Created, updated: v.Updated, sub: v.Subagent,
+			parent: info.Parent, root: info.Root, tool: info.ToolCall, kind: info.AgentType,
 		}
 		return nil
 	})

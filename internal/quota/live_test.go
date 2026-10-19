@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,7 +52,10 @@ echo '`+claudeAnswer+`'
 `)
 	work := filepath.Join(root, "work")
 	before := time.Now()
-	c := Checker{WorkDir: work}
+	var log strings.Builder
+	c := Checker{WorkDir: work, Trace: func(format string, args ...any) {
+		fmt.Fprintf(&log, format+"\n", args...)
+	}}
 	for _, tc := range []struct {
 		acct account.Account
 		dir  string
@@ -83,6 +87,15 @@ echo '`+claudeAnswer+`'
 		}
 		if !strings.Contains(got, work) && !strings.Contains(got, real) {
 			t.Fatalf("%s: not run in the work folder: %q", tc.acct.Name, got)
+		}
+		traced := log.String()
+		for _, want := range []string{"exec: ", "pid: ", "transport: JSON lines", "get_usage", "control_response", "stdin closed", "exit: ", "cwd: " + work} {
+			if !strings.Contains(traced, want) && !strings.Contains(traced, "cwd: "+real) {
+				if want == "cwd: "+work && strings.Contains(traced, "cwd: "+real) {
+					continue
+				}
+				t.Fatalf("%s: trace missing %q\n%s", tc.acct.Name, want, traced)
+			}
 		}
 	}
 }

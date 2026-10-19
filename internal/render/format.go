@@ -17,11 +17,12 @@ import (
 
 // Term describes the output.
 type Term struct {
-	W     io.Writer
-	Width int
-	Color bool
-	Now   time.Time
-	Loc   *time.Location
+	W       io.Writer
+	Width   int
+	Color   bool
+	Verbose bool
+	Now     time.Time
+	Loc     *time.Location
 }
 
 // NewTerm inspects w. mode is "auto", "always" or "never".

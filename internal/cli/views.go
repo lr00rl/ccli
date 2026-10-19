@@ -57,11 +57,19 @@ func newFlags(name string, a *app, c *common) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(a.errw)
 	c.register(fs)
+	a.registerGlobals(fs)
 	return fs
 }
 
-// prepare opens everything, refreshes the index and builds the service.
+// prepare opens everything, refreshes the index, and loads Cursor's event
+// ledger when a view joins it onto sessions.
 func (a *app) prepare(ctx context.Context, c common, accts []string) (*query.DB, error) {
+	return a.prepareQuery(ctx, c, accts, true)
+}
+
+// prepareQuery is prepare. cursorEvents loads the usage-event ledger. quota
+// does not: a billing-cycle check is a different, smaller request.
+func (a *app) prepareQuery(ctx context.Context, c common, accts []string, cursorEvents bool) (*query.DB, error) {
 	if err := a.open(); err != nil {
 		return nil, err
 	}
@@ -83,14 +91,48 @@ func (a *app) prepare(ctx context.Context, c common, accts []string) (*query.DB,
 			return nil, err
 		}
 	}
-	a.refreshCursor(ctx)
+	if cursorEvents {
+		a.refreshCursor(ctx)
+	}
 	return query.New(a.st, a.accts), nil
 }
 
-// refreshCursor updates the cached dashboard usage. A failure leaves the
-// previous cache in place and is mentioned only when there is nothing to show.
+// pullCursor reads the event ledger once per command. A fresh cache is not
+// fetched again. Debug only reports that choice.
+func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledger, error) {
+	a.cursorOnce.Do(func() {
+		opt := cursorusage.Option{}
+		if a.debug >= 2 {
+			opt.Trace = func(format string, args ...any) { a.logf(2, format, args...) }
+		}
+		if a.debug >= 4 {
+			opt.Body = func(format string, args ...any) { a.logf(4, format, args...) }
+		}
+		a.cursorLed, a.cursorErr = cursorusage.RefreshOption(ctx, dataDir, opt)
+	})
+	return a.cursorLed, a.cursorErr
+}
+
 func (a *app) refreshCursor(ctx context.Context) {
-	led, err := cursorusage.Refresh(ctx, store.DataDir())
+	led, err := a.pullCursor(ctx, store.DataDir())
+	if led != nil {
+		from := "fetched"
+		if led.FromCache {
+			from = "cache"
+		}
+		note := ""
+		if led.Truncated {
+			note = ", truncated"
+		}
+		a.logf(1, "cursor usage: %s, %d conversations, %d events%s", from, len(led.Sessions), led.EventCount, note)
+		if p := led.Period; p != nil {
+			a.logf(2, "cursor cycle: %s included $%.2f of $%.2f (%.1f%%), API %.1f%%, total %.1f%%",
+				p.Plan, p.UsedUSD, p.LimitUSD, p.Percent, p.APIPercent, p.TotalPercent)
+		}
+	}
+	if err != nil {
+		a.logf(1, "cursor usage: %s", err)
+	}
 	if err == nil || led == nil {
 		return
 	}
@@ -100,7 +142,11 @@ func (a *app) refreshCursor(ctx context.Context) {
 	fmt.Fprintf(a.errw, "ccli: %s\n", err)
 }
 
-func (a *app) term(c common) render.Term { return render.NewTerm(a.out, c.color) }
+func (a *app) term(c common) render.Term {
+	t := render.NewTerm(a.out, c.color)
+	t.Verbose = a.verbose
+	return t
+}
 
 func (a *app) printJSON(v any) error {
 	enc := json.NewEncoder(a.out)

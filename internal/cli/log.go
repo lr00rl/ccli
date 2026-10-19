@@ -46,6 +46,9 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 	if len(pos) < 1 || len(pos) > 2 {
 		return errors.New("usage: ccli log <session> [turn | from-to | last] [--tools] [--thinking] [--agent id] [--run id]")
 	}
+	if a.verbose {
+		opt.Tools = true
+	}
 	svc, err := a.prepare(ctx, c, nil)
 	if err != nil {
 		return err

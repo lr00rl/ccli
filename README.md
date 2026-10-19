@@ -338,6 +338,14 @@ work between Claude Code accounts only.
 | `ccli statusline -- <cmd>` | status line wrapper that records the rate limits |
 | `ccli index [--rebuild]` | update the index (every other command does this first) |
 
+`--debug` prints what ccli itself did, on stderr: `1` is the steps, `2` names
+each request, `3` adds every file, `4` prints that request and its response.
+It does not fetch anything the command would not have fetched.
+`--verbose`
+prints more of the thing you asked about (token split, full paths, per-model
+and per-day figures) on `sessions`, `show`, `log`, `stats`, `quota` and
+`accounts`. Both can sit before the command or after it.
+
 `ccli <command> -h` lists a command's flags. Session ids can be shortened to
 any unique prefix, or written `account:id` to pick one account's copy.
 

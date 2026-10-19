@@ -48,6 +48,24 @@ func TestPiCursorAndIDE(t *testing.T) {
 			`{"role":"assistant","message":{"content":[{"type":"text","text":"LGTM"}]}}`+"\n")
 	write(filepath.Join(curHome, "chats", "abc", curID, "meta.json"),
 		`{"schemaVersion":1,"createdAtMs":1000,"updatedAtMs":5000,"hasConversation":true,"title":"Parser","cwd":"/work/app"}`+"\n")
+	const ownSub = "66666666-6666-4666-8666-666666666666"
+	write(filepath.Join(curHome, "projects", "work-app", "agent-transcripts", ownSub, ownSub+".jsonl"),
+		`{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nowned folder\n</user_query>"}]}}`+"\n"+
+			`{"role":"assistant","message":{"content":[{"type":"text","text":"noted"}]}}`+"\n")
+	write(filepath.Join(curHome, "chats", "abc", ownSub, "meta.json"),
+		`{"isSubagent":true,"createdAtMs":2000,"updatedAtMs":4000,"title":"own folder"}`+"\n")
+	sdb, err := sql.Open("sqlite", filepath.Join(curHome, "chats", "abc", ownSub, "store.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdb.Exec(`CREATE TABLE meta (key TEXT, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sdb.Exec(`INSERT INTO meta (key, value) VALUES ('0', ?)`,
+		`{"lastUsedModel":"composer-2","subagentInfo":{"parentAgentId":"`+curID+`","rootParentAgentId":"`+curID+`","toolCallId":"call-sub","typeName":"reviewer"}}`); err != nil {
+		t.Fatal(err)
+	}
+	sdb.Close()
 
 	const ideID = "44444444-4444-4444-8444-444444444444"
 	const ideSub = "55555555-5555-4555-8555-555555555555"
@@ -138,8 +156,11 @@ func TestPiCursorAndIDE(t *testing.T) {
 		t.Fatalf("pi row %+v", piRow)
 	}
 	cur := byID[curID]
-	if cur.Cwd != "/work/app" || cur.Prompts < 1 || cur.Title != "Parser" || cur.Subagents != 1 || cur.ToolCalls < 1 {
+	if cur.Cwd != "/work/app" || cur.Prompts < 1 || cur.Title != "Parser" || cur.Subagents != 2 || cur.ToolCalls < 1 {
 		t.Fatalf("cursor row %+v", cur)
+	}
+	if _, ok := byID[ownSub]; ok {
+		t.Fatal("subagent transcript was indexed as its own session")
 	}
 	ide := byID[ideID]
 	if ide.Cwd != "/work/ide" || ide.Prompts < 1 || ide.Title != "IDE chat" || ide.Subagents != 1 || ide.Tokens.Input != 12 || ide.Tool != account.CursorIDE {

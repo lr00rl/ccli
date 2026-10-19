@@ -37,6 +37,8 @@ type Options struct {
 	Rebuild  bool                               // re-read every file from the start
 	Workers  int                                // parse goroutines (default: CPUs)
 	Progress func(done, total int, bytes int64) // called from the writer goroutine
+	// Trace reports each file. read is false when the file was left unchanged.
+	Trace func(path string, read, reset bool)
 	// QuotaDir is where rate-limit readings found in logs (Codex writes them)
 	// are saved as quota snapshots; empty saves none.
 	QuotaDir string
@@ -56,16 +58,17 @@ type Stats struct {
 }
 
 type job struct {
-	file              store.File
-	reset             bool
-	from              int64
-	state             transcript.State
-	meta              string // path of the subagent's .meta.json, if any
-	tool              account.Tool
-	cwd, title, model string
-	started, ended    int64
-	imported          []transcript.Range // byte ranges ccli copied in from another account
-	ledger            int64              // the newest ledger entry when imported was read
+	file                            store.File
+	reset                           bool
+	from                            int64
+	state                           transcript.State
+	meta                            string // path of the subagent's .meta.json, if any
+	tool                            account.Tool
+	cwd, title, model               string
+	started, ended                  int64
+	agentType, toolUse, parentAgent string
+	imported                        []transcript.Range // byte ranges ccli copied in from another account
+	ledger                          int64              // the newest ledger entry when imported was read
 }
 
 // Run brings the store up to date for the given accounts.
@@ -120,6 +123,9 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 			seen[d.file.Path] = true
 			stats.Files++
 			if j, ok := plan(d, known[d.file.Path], opt.Rebuild); ok {
+				if opt.Trace != nil {
+					opt.Trace(d.file.Path, true, j.reset)
+				}
 				j.imported, j.ledger = imported[d.file.Path], ledger
 				if j.file.Kind == "main" && !j.reset && j.file.ID != 0 {
 					if j.state.Prompts, err = st.PromptIDs(j.file.ID); err != nil {
@@ -127,6 +133,8 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 					}
 				}
 				jobs = append(jobs, j)
+			} else if opt.Trace != nil {
+				opt.Trace(d.file.Path, false, false)
 			}
 		}
 	}
@@ -182,11 +190,13 @@ func mustMeta(st *store.Store, k string) string {
 }
 
 type discovered struct {
-	file              store.File
-	meta              string
-	tool              account.Tool
-	cwd, title, model string
-	started, ended    int64
+	file               store.File
+	meta               string
+	tool               account.Tool
+	cwd, title, model  string
+	started, ended     int64
+	agentType, toolUse string
+	parentAgent        string
 }
 
 // scan lists an account's transcript files, and reads the workflow journals
@@ -378,7 +388,8 @@ func journal(path string, r *store.Run) {
 // plan decides what to read from a file.
 func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	f := d.file
-	j := job{file: f, meta: d.meta, tool: d.tool, cwd: d.cwd, title: d.title, model: d.model, started: d.started, ended: d.ended}
+	j := job{file: f, meta: d.meta, tool: d.tool, cwd: d.cwd, title: d.title, model: d.model, started: d.started, ended: d.ended,
+		agentType: d.agentType, toolUse: d.toolUse, parentAgent: d.parentAgent}
 	if d.tool == account.CursorIDE {
 		return planIDE(j, old, rebuild)
 	}
@@ -422,7 +433,7 @@ func fullReread(t account.Tool) bool {
 func fileParser(t account.Tool) int {
 	switch t {
 	case account.Cursor, account.CursorIDE:
-		return 4
+		return 5
 	default:
 		return ParserVersion
 	}
@@ -609,8 +620,14 @@ func parseOne(j job) parsed {
 			side.Model = j.model
 		}
 		res, err = cursorcli.Parse(f, j.file.SessionID, side)
-		if err == nil && j.file.Kind == "subagent" && res.FirstPrompt != "" {
-			agent = &store.AgentMeta{AgentType: "subagent", Description: clean(res.FirstPrompt, 200)}
+		if err == nil && j.file.Kind == "subagent" {
+			agent = &store.AgentMeta{AgentType: j.agentType, ToolUseID: j.toolUse, ParentAgent: j.parentAgent}
+			if agent.AgentType == "" {
+				agent.AgentType = "subagent"
+			}
+			if res.FirstPrompt != "" {
+				agent.Description = clean(res.FirstPrompt, 200)
+			}
 		}
 	default:
 		res, err = transcript.Parse(f, kind, j.state)
