@@ -22,10 +22,11 @@ func (t Term) Accounts(rows []query.AccountSummary, days int) {
 		email := a.Email
 		switch {
 		case email != "":
-		case a.Kind() == account.Codex:
-			email = t.dim("Codex") // Codex keeps the identity next to its credentials, which ccli does not read
-		default:
+		case a.Kind() == account.Claude:
 			email = t.dim("(not signed in)")
+		default:
+			// These tools keep the signed-in identity next to credentials, which ccli does not read.
+			email = t.dim(a.Kind().Label())
 		}
 		live := ""
 		if a.Live > 0 {
@@ -44,13 +45,30 @@ func (t Term) Accounts(rows []query.AccountSummary, days int) {
 		{title: "TOKENS", right: true}, {title: "CACHE READ", right: true}, {title: "COST", right: true},
 		{title: "LAST"}, {title: "LIVE"},
 	}, cells)
-	t.println(t.dim(fmt.Sprintf("ACTIVE, TOKENS, CACHE READ and COST cover the %s. Cost is list price; subscriptions are not billed per token.", span)))
+	if t.Verbose {
+		t.println()
+		for _, a := range rows {
+			t.printf("%s  %s\n", t.bold(a.Name), a.Dir)
+			t.printf("  %s in · %s out · %s cache read · %s cache write · %s\n",
+				Num(a.Tokens.Input), Num(a.Tokens.Output), Num(a.Tokens.CacheRead), Num(a.Tokens.CacheWrite), USD(a.Cost.USD))
+		}
+	}
+	t.println(t.dim(fmt.Sprintf("ACTIVE, TOKENS, CACHE READ and COST cover the %s. Claude, Codex and Pi cost is list price. Cursor cost is the billed amount from the usage page.", span)))
 }
 
 // Sessions prints a session list.
 func (t Term) Sessions(p query.SessionPage, showAccount bool) {
+	if t.Verbose {
+		t.sessionDetails(p, showAccount)
+		return
+	}
 	if len(p.Sessions) == 0 {
-		t.println("No sessions match.")
+		if p.Older > 0 && !p.Filter.Since.IsZero() {
+			t.printf("No sessions since %s. %d older: pass --days 0\n", p.Filter.Since.In(t.Loc).Format("2006-01-02"), p.Older)
+		} else {
+			t.println("No sessions match.")
+		}
+		t.draftsLeftOut(p.Drafts)
 		return
 	}
 	cols := []column{{title: "LAST"}}
@@ -111,12 +129,77 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 	if p.Filter.Show == query.HiddenOnly {
 		count = plural(p.Matched, "hidden session")
 	}
-	t.println(t.dim(fmt.Sprintf("%s%s · %s tokens · %s cached · %s list price", count, more,
-		Num(p.Tokens.InOut()), Num(p.Tokens.CacheRead), costText(p.Cost))))
+	t.println(t.dim(fmt.Sprintf("%s%s · %s tokens · %s cached · %s %s", count, more,
+		Num(p.Tokens.InOut()), Num(p.Tokens.CacheRead), costText(p.Cost), priceWord(p.Sessions))))
 	if p.Hidden > 0 {
 		t.println(t.dim(fmt.Sprintf("%s left out: ccli sessions --hidden lists them", plural(p.Hidden, "hidden session"))))
 	}
+	if p.Drafts > 0 {
+		t.draftsLeftOut(p.Drafts)
+	}
 	t.println(t.dim("● running   × transcript deleted (history kept)   + unpriced models left out"))
+}
+
+func (t Term) sessionDetails(p query.SessionPage, showAccount bool) {
+	if len(p.Sessions) == 0 {
+		if p.Older > 0 && !p.Filter.Since.IsZero() {
+			t.printf("No sessions since %s. %d older: pass --days 0\n", p.Filter.Since.In(t.Loc).Format("2006-01-02"), p.Older)
+		} else {
+			t.println("No sessions match.")
+		}
+		t.draftsLeftOut(p.Drafts)
+		return
+	}
+	for i, s := range p.Sessions {
+		if i > 0 {
+			t.println()
+		}
+		ttl := s.Title
+		if ttl == "" {
+			ttl = "(untitled)"
+		}
+		t.println(t.bold(fit(ttl, max(20, t.Width-len(s.ID)-2))) + "  " + t.dim(s.ID))
+		where := s.Project
+		if s.Cwd != "" {
+			where += "  " + s.Cwd
+		}
+		if showAccount {
+			where = s.Account + "  " + where
+		}
+		t.println("  " + t.dim(where))
+		t.printf("  %s · active %s · %d prompts · %d tool calls · %d subagents\n",
+			t.Ago(s.Last), Dur(s.ActiveMS), s.Prompts, s.ToolCalls, s.Subagents)
+		if len(s.Models) > 0 {
+			t.println("  " + t.dim(strings.Join(s.Models, ", ")))
+		}
+		t.printf("  %s in · %s out · %s cache read · %s cache write · %s\n",
+			Num(s.Tokens.Input), Num(s.Tokens.Output), Num(s.Tokens.CacheRead), Num(s.Tokens.CacheWrite), t.money(costText(s.Cost)))
+	}
+	t.println()
+	more := ""
+	if p.Matched > len(p.Sessions) {
+		more = fmt.Sprintf(", showing %d", len(p.Sessions))
+	}
+	t.println(t.dim(fmt.Sprintf("%s%s · %s in · %s out · %s",
+		plural(p.Matched, "session"), more, Num(p.Tokens.Input), Num(p.Tokens.Output), costText(p.Cost))))
+}
+
+func (t Term) draftsLeftOut(n int) {
+	if n > 0 {
+		t.println(t.dim(fmt.Sprintf("%s left out: ccli sessions --drafts lists them", plural(n, "empty Cursor IDE draft"))))
+	}
+}
+
+func priceWord(ss []query.SessionRow) string {
+	if len(ss) == 0 {
+		return "list price"
+	}
+	for _, s := range ss {
+		if s.Tool != account.Cursor && s.Tool != account.CursorIDE {
+			return "list price"
+		}
+	}
+	return "Cursor usage"
 }
 
 func costText(c query.Cost) string {
@@ -165,11 +248,11 @@ func ShortHome(p string) string {
 
 // Session prints one session's detail.
 func (t Term) Session(d *query.SessionDetail, all bool) {
-	ttl := d.Title
+	ttl := strings.Join(strings.Fields(d.Title), " ")
 	if ttl == "" {
 		ttl = "(untitled)"
 	}
-	t.println(t.bold(ttl))
+	t.println(t.bold(fit(ttl, max(20, t.Width))))
 	state := ""
 	switch {
 	case d.Live:
@@ -186,7 +269,11 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	if d.Tag != "" {
 		kv("tag", t.tag(d.Tag))
 	}
-	kv("project", ShortHome(d.Cwd))
+	project := ShortHome(d.Cwd)
+	if t.Verbose {
+		project = d.Cwd
+	}
+	kv("project", project)
 	switch d.GitBranch {
 	case "":
 	case "HEAD":
@@ -205,7 +292,7 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	}
 	kv("prompts", prompts+fmt.Sprintf(" · %d replies · %d tool calls", d.Replies, d.ToolCalls))
 	kv("tokens", fmt.Sprintf("%s in · %s out · %s cache read · %s cache write", Num(d.Tokens.Input), Num(d.Tokens.Output), Num(d.Tokens.CacheRead), Num(d.Tokens.CacheWrite)))
-	cost := t.money(costText(d.Cost)) + t.dim(" list price")
+	cost := t.money(costText(d.Cost)) + t.dim(" "+priceWord([]query.SessionRow{d.SessionRow}))
 	if d.Cost.Unlogged > 0 {
 		cost += t.dim(fmt.Sprintf(" (includes %s of calls Claude Code billed but did not write to the transcript)", USD(d.Cost.Unlogged)))
 	}
@@ -218,17 +305,33 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	}
 
 	if len(d.ByModel) > 0 {
-		t.println()
-		t.println(t.accent("Models"))
 		var rows [][]string
 		for _, m := range d.ByModel {
 			name := m.Name
-			if strings.HasPrefix(name, "adj|") {
+			if strings.HasPrefix(name, "adj|") || (m.Tokens.All() == 0 && m.Cost == 0) {
 				continue
 			}
 			rows = append(rows, []string{"  " + name, fmt.Sprint(m.Sessions), Num(m.Tokens.InOut()), Num(m.Tokens.CacheRead), t.money(USD(m.Cost))})
 		}
-		t.table([]column{{title: "  MODEL"}, {title: "CALLS", right: true}, {title: "TOKENS", right: true}, {title: "CACHED", right: true}, {title: "COST", right: true}}, rows)
+		if len(rows) > 0 {
+			t.println()
+			t.println(t.accent("Models"))
+			if t.Verbose {
+				rows = rows[:0]
+				for _, m := range d.ByModel {
+					name := m.Name
+					if strings.HasPrefix(name, "adj|") || (m.Tokens.All() == 0 && m.Cost == 0) {
+						continue
+					}
+					rows = append(rows, []string{"  " + name, fmt.Sprint(m.Sessions),
+						Num(m.Tokens.Input), Num(m.Tokens.Output), Num(m.Tokens.CacheRead), Num(m.Tokens.CacheWrite), t.money(USD(m.Cost))})
+				}
+				t.table([]column{{title: "  MODEL"}, {title: "CALLS", right: true}, {title: "IN", right: true}, {title: "OUT", right: true},
+					{title: "CACHE READ", right: true}, {title: "CACHE WRITE", right: true}, {title: "COST", right: true}}, rows)
+			} else {
+				t.table([]column{{title: "  MODEL"}, {title: "CALLS", right: true}, {title: "TOKENS", right: true}, {title: "CACHED", right: true}, {title: "COST", right: true}}, rows)
+			}
+		}
 	}
 
 	if len(d.Files) > 1 || len(d.Runs) > 0 {
@@ -459,6 +562,15 @@ func (t Term) Overview(o *query.Overview, days int) {
 	}
 	t.println()
 	t.daily(o.Daily)
+	if t.Verbose {
+		for _, d := range o.Daily {
+			if d.Tokens.All() == 0 && d.Cost == 0 {
+				continue
+			}
+			t.printf("  %s  %s in · %s out · %s cache read · %s\n",
+				d.Date, Num(d.Tokens.Input), Num(d.Tokens.Output), Num(d.Tokens.CacheRead), USD(d.Cost))
+		}
+	}
 	t.println()
 	half := (t.Width - 4) / 2
 	if half < 34 {
@@ -482,7 +594,7 @@ func (t Term) Overview(o *query.Overview, days int) {
 		t.println()
 		t.println(t.accent("Skills"))
 		top := o.Skills
-		if len(top) > 8 {
+		if !t.Verbose && len(top) > 8 {
 			top = top[:8]
 		}
 		maxUses := top[0].Uses

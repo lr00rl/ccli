@@ -293,6 +293,9 @@ func (v *viewer) turnItems(ref string, l *query.TurnList) []item {
 				return ds[0], nil
 			},
 			draw: func(v *viewer, data any, w int) string {
+				if v.tools {
+					return v.toolPane(data, w)
+				}
 				return v.capture(w, func(t render.Term) { t.Turn(data.(*query.TurnDetail), v.opt) })
 			},
 			children: func(data any) *screen {

@@ -1,20 +1,24 @@
 # ccli
 
-A terminal tool for every Claude Code and Codex session on your machine, across
-all of your accounts. It shows what each session used and what that would cost
-at API list price, turn by turn: every prompt you typed, what the model did
-with it, which subagents and workflow runs it started and what they cost. It
-also shows where your subscription limits stand, and it moves a Claude Code
-session from one account to another and back without mixing up whose usage is
-whose.
+A terminal tool for every Claude Code, Codex, Pi, and Cursor session on your
+machine, across all of your accounts. The Cursor CLI and the Cursor IDE are
+separate accounts: the same conversation is not merged across them. It shows
+what each session used and what that cost, turn by turn: every prompt you
+typed, what the model did with it, which subagents and workflow runs it
+started and what they cost. It also shows where your subscription limits
+stand, and it moves a Claude Code session from one account to another and
+back without mixing up whose usage is whose.
 
 ![ccli stats: totals, daily usage, projects, models, accounts, active hours, session shape and skills](docs/images/stats.png)
 
 An account is one Claude Code config dir: `~/.claude` (shown as `default`) or
 `~/.claude-<name>` (shown as `<name>`), the dir you select with
 `CLAUDE_CONFIG_DIR`. A Codex home is an account too: `~/.codex` (shown as
-`codex`) or `~/.codex-<name>`. If you keep a personal and a work login side by
-side, ccli sees both and keeps their usage apart.
+`codex`) or `~/.codex-<name>`. Pi's agent dir `~/.pi/agent` is `pi`
+(`PI_CODING_AGENT_DIR` for another). The Cursor CLI home `~/.cursor` is
+`cursor`. The Cursor IDE user directory is `cursor-ide`. If you keep a
+personal and a work login side by side, ccli sees both and keeps their usage
+apart.
 
 The [tutorial](docs/tutorial.md) walks through the common jobs step by step:
 reviewing your prompts, following agents, switching accounts and watching
@@ -65,7 +69,7 @@ ccli sessions                         # active in the last 30 days, newest first
 ccli sessions -a work --days 7 --sort cost -n 20
 ccli sessions --project checkout -q payment
 ccli sessions --dir . --days 0        # every session started in this folder or below
-ccli sessions --tool codex            # only Codex sessions (or claude)
+ccli sessions --tool codex            # only Codex sessions (or claude, pi, cursor, cursor-ide)
 ```
 
 ![ccli sessions](docs/images/sessions.png)
@@ -178,12 +182,15 @@ ccli view 7a93706c            # start at one session's turns
 each project under a title in its own color, then a session's turns, then the
 agents a turn started (`o`), then an agent's transcript or a workflow run's
 agents. The preview follows the selection. `/` filters by what the prompt
-says, `s` sorts by cost, `y` copies the prompt to the clipboard, and `t`, `T`
-and `c` toggle tool details, thinking and added context. In the sessions
+says, `s` sorts by cost, and `y` copies the prompt to the clipboard. `t`
+expands each tool call in place, in the order it happened, next to the prompt
+and the reply. `]` opens one call on its own, and `[` and `]` move between
+calls. `T` and `c` toggle thinking and added context. `ccli view --tools` and
+`ccli view --verbose` start with the calls already expanded. In the sessions
 list, `m` marks sessions and `x` hides the marked ones (or the selected one)
 after asking; `H` lists hidden sessions, where `u` brings them back; `#`
-tags the selected session in a line at the bottom. The mouse
-wheel scrolls the pane under the pointer; `?` lists every key.
+tags the selected session in a line at the bottom. The mouse wheel scrolls
+the pane under the pointer; `?` lists every key.
 
 ```sh
 ccli prompts --sort cost      # your costliest prompts across all sessions
@@ -195,6 +202,31 @@ ccli prompts -q "migration" --days 7
 `prompts` lists what you typed across every session, which is the quickest way
 to find the prompts worth rewriting. Each row names the session and turn to
 open with `ccli log`.
+
+### Export
+
+```sh
+ccli export 7a93706c
+ccli export 7a93706c 3-6 --out handoff.md
+ccli export 7a93706c --format jsonl --agents
+```
+
+`export` writes one session as markdown, or as jsonl with `--format jsonl`.
+The file is for a person or another agent to read. Its first lines say it is
+not a transcript any tool can resume. `copy` and `move` still work only
+between Claude Code accounts.
+
+A turn keeps the order of the conversation: your prompt, the reply, then each
+tool call with its name, input and output. Thinking, and text the tool added
+on its own, stay out unless you pass `--thinking` and `--context`. A subagent
+is one line unless `--agents`, which writes that agent's turns after the turn
+that started it. `--all` includes turns started by tasks, other sessions and
+the system, as `log --all` does.
+
+`--out` writes only the path you name, and replaces that file if it exists.
+Without it the text goes to stdout. Tool output stops at 32 KiB, the same cap
+as `log --tools`, and the file says how many bytes were left out. If the
+transcript is gone, export still writes the turns it kept and says so.
 
 ### Dashboard
 
@@ -215,18 +247,25 @@ ccli quota
 
 ![ccli quota: the 5-hour and weekly windows per account, with reset times and the usage counted in each](docs/images/quota.png)
 
-For each account: how much of the 5-hour and the weekly window is used, when
-each resets, per-model weekly limits and extra use when the plan has them, and
-what this machine used inside each window, counted from the window's real
-start.
+For a Claude Code or Codex account: how much of the 5-hour and the weekly
+window is used, when each resets, per-model weekly limits and extra use when
+the plan has them, and what this machine used inside each window, counted
+from the window's real start. A Cursor account shows the billing cycle
+instead: included spend against the plan limit, and the API pool and the
+total pool as their own bars. The CLI and the IDE share that cycle. Pi is
+not asked.
 
-The figures are current. `quota` asks each account's own tool: Claude Code
-answers with the same data `/usage` shows, and Codex's app server with its
-rate limits. Use on claude.ai, the desktop app and other machines is
-included. ccli starts each tool once, in parallel, in an empty folder of its
-own, with no prompt, none of your hooks or MCP servers, and no transcript; it
-never reads your credentials, because the tool uses its own login. This takes
-a few seconds. Starting a tool updates its own caches the way any start does.
+The figures are current. `quota` asks Claude Code and Codex through each
+account's own tool: Claude Code answers with the same data `/usage` shows,
+and Codex's app server with its rate limits. Use on claude.ai, the desktop
+app and other machines is included. ccli starts each of those tools once, in
+parallel, in an empty folder of its own, with no prompt, none of your hooks
+or MCP servers, and no transcript. It does not read their credentials,
+because each tool uses its own login. This takes a few seconds. Starting a
+tool updates its own caches the way any start does. Cursor is two requests
+for the billing cycle, sent with the login the IDE already stored, and only
+to Cursor. `--verbose` adds the API pool, the total pool, and when the cycle
+ends. That check does not download the usage-event list.
 
 `ccli quota --offline` skips the check and shows the last saved figures. They
 come from the last check, and from two passive sources:
@@ -312,6 +351,19 @@ windows of other lengths such as a free plan's 30-day window, and falls back
 to the limits Codex writes to its logs with each reply. Copying and moving
 work between Claude Code accounts only.
 
+### Pi and Cursor
+
+Pi sessions, Cursor CLI sessions and Cursor IDE composers appear in
+`sessions`, `show`, `log`, `view`, `prompts` and `stats`. `resume` runs
+`pi --session` for Pi and `agent --resume` for the Cursor CLI, in the
+session's folder. A Cursor IDE session has no resume command: `show` tells
+you to open it from the Agents window. `diff`, `copy`, `move`, `fork` and
+`resume -a` stay Claude Code only. To hand one of these sessions to another
+tool, use `export`.
+
+Pi keeps the dollar amount it recorded. Cursor's tokens and dollars come from
+the usage page, as [How it counts](#how-it-counts) describes.
+
 ## Commands
 
 | Command | What it does |
@@ -321,18 +373,27 @@ work between Claude Code accounts only.
 | `ccli projects [folder]` | the folders sessions started in, at or below a folder (the current one by default), with sessions, tokens and cost |
 | `ccli show <id>` | one session: models, cost split, agent tree, workflow runs, tools, resume command |
 | `ccli log <id> [turn\|N-M\|last]` | the session turn by turn, or turns in full; `--agent` and `--run` for agents |
+| `ccli export <id> [turn\|N-M\|last]` | a readable transcript for handoff (`--format jsonl`, `--agents`, `--out file`); not a file any tool can resume |
 | `ccli prompts` | your prompts across sessions; sort by cost, tools, duration, tokens or length |
-| `ccli view [id]` | interactive browser over sessions, turns and agents |
+| `ccli view [id]` | interactive browser; `t` expands tools in the turn, `]` opens one call |
 | `ccli stats` | dashboard: totals, daily chart, projects, models, accounts, hours, skills |
-| `ccli quota` | current 5-hour and weekly limits per account, asked of Claude Code and Codex; `--offline` shows the last saved ones |
+| `ccli quota` | current limits: Claude and Codex windows, Cursor's billing cycle; `--offline` shows the last saved ones |
 | `ccli diff <a> <b>` | sessions only in one account, in both, ahead or diverged |
 | `ccli copy\|move <id>... --to <acct>` | copy a session to another account; `move` archives the source |
 | `ccli fork <id> --to <acct>` | continue a session under a new id, in any account |
-| `ccli resume <id> [-a <acct> --sync]` | run `claude --resume` (or `codex resume`) in the right account and folder |
+| `ccli resume <id> [-a <acct> --sync]` | resume with that session's tool (`claude`, `codex`, `pi` or `agent`); `-a` is Claude Code only |
 | `ccli hide\|unhide <id>...` | leave sessions out of lists, or bring them back; totals still count them |
 | `ccli tag <id> <tag>` | label a session, shown next to its title; `--clear` removes the tag |
 | `ccli statusline -- <cmd>` | status line wrapper that records the rate limits |
 | `ccli index [--rebuild]` | update the index (every other command does this first) |
+
+`--debug` prints what ccli itself did, on stderr: `1` is the steps, `2` names
+each request, `3` adds every file, `4` prints that request and its response.
+It does not fetch anything the command would not have fetched. `--verbose`
+prints more of the thing you asked about (token split, full paths, per-model
+and per-day figures) on `sessions`, `show`, `log`, `stats`, `quota`,
+`accounts` and `view`. On `view` it starts with tool calls expanded. Both
+can sit before the command or after it.
 
 `ccli <command> -h` lists a command's flags. Session ids can be shortened to
 any unique prefix, or written `account:id` to pick one account's copy.
@@ -367,20 +428,43 @@ ccli counts each call once: repeats and the count after a compaction add
 nothing, a resumed thread's restarted counter is a new stream, and a fork
 counts only what came after the history it copied.
 
+Pi writes a dollar cost on each call. ccli keeps that figure and does not
+reprice the call from the table.
+
+A Cursor CLI line has no model, tokens or time. Those come from Cursor's
+usage events, and each event keeps its own time, so a date window does not
+put a whole conversation on the day it ended. A subagent's events count on
+the parent session. Where an IDE bubble already has a token count, that
+count is kept. The dollars still come from the usage page when the transcript
+recorded none.
+
 ## What it touches
 
 ccli reads transcripts and keeps its own index in
-`~/.local/share/ccli/ccli.db`. It never reads credentials or the Keychain,
-never writes `settings.json` or `.claude.json`, and never calls a model. In a
-Codex home it reads only the session logs: never `auth.json`, `config.toml`
-or Codex's own databases. The one exception is `quota`, which starts Claude
-Code and Codex to ask for your limits; they update their own caches as on any
-start (`--offline` starts nothing). Only
-`copy`, `move`, `fork` and `resume --sync` write into an account, and only the
-files of the session involved. `hide` and `tag` write only to ccli's own
-index. A transcript that cannot be read is reported
-and retried on the next run. [DESIGN.md](DESIGN.md) has the full contract, the
-transcript fields used and the store schema.
+`~/.local/share/ccli/ccli.db`. It never reads the Keychain, never writes
+`settings.json` or `.claude.json`, and never calls a model. In a Codex home
+it reads only the session logs: never `auth.json`, `config.toml` or Codex's
+own databases.
+
+`quota` starts Claude Code and Codex to ask for your limits. They update
+their own caches as on any start. `--offline` starts nothing. For Cursor,
+`quota` asks only for the billing cycle, and only when an account you
+selected is the Cursor CLI or the Cursor IDE. The usage-event list is
+separate, and slower. `accounts`, `sessions`, `show`, `log`, `prompts`,
+`projects`, `stats`, `view` and `export` read it when the command can show a
+Cursor account. A `--tool` filter that leaves Cursor out, or `-a` naming only
+other accounts, does not ask. The list is cached for 15 minutes in
+`~/.local/share/ccli/cursor-usage.json`. The login is not written there, nor
+into the debug log. When the cache is stale, ccli says it is reading Cursor
+usage before it asks. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
+`fork`, `statusline` and `index` do not ask Cursor.
+
+Only `copy`, `move`, `fork` and `resume --sync` write into an account, and
+only the files of the session involved. `hide` and `tag` write only to ccli's
+own index. `export --out` writes only the path you give. A transcript that
+cannot be read is reported and retried on the next run.
+[DESIGN.md](DESIGN.md) has the full contract, the transcript fields used and
+the store schema.
 
 ## Retention
 

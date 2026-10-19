@@ -18,6 +18,9 @@ import (
 
 	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/codex"
+	"github.com/lr00rl/ccli/internal/cursorcli"
+	"github.com/lr00rl/ccli/internal/cursoride"
+	"github.com/lr00rl/ccli/internal/pi"
 	"github.com/lr00rl/ccli/internal/pricing"
 	"github.com/lr00rl/ccli/internal/store"
 	"github.com/lr00rl/ccli/internal/transcript"
@@ -34,6 +37,8 @@ type Options struct {
 	Rebuild  bool                               // re-read every file from the start
 	Workers  int                                // parse goroutines (default: CPUs)
 	Progress func(done, total int, bytes int64) // called from the writer goroutine
+	// Trace reports each file. read is false when the file was left unchanged.
+	Trace func(path string, read, reset bool)
 	// QuotaDir is where rate-limit readings found in logs (Codex writes them)
 	// are saved as quota snapshots; empty saves none.
 	QuotaDir string
@@ -53,14 +58,17 @@ type Stats struct {
 }
 
 type job struct {
-	file     store.File
-	reset    bool
-	from     int64
-	state    transcript.State
-	meta     string // path of the subagent's .meta.json, if any
-	tool     account.Tool
-	imported []transcript.Range // byte ranges ccli copied in from another account
-	ledger   int64              // the newest ledger entry when imported was read
+	file                            store.File
+	reset                           bool
+	from                            int64
+	state                           transcript.State
+	meta                            string // path of the subagent's .meta.json, if any
+	tool                            account.Tool
+	cwd, title, model               string
+	started, ended                  int64
+	agentType, toolUse, parentAgent string
+	imported                        []transcript.Range // byte ranges ccli copied in from another account
+	ledger                          int64              // the newest ledger entry when imported was read
 }
 
 // Run brings the store up to date for the given accounts.
@@ -86,9 +94,16 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 		var found []discovered
 		var rs []store.Run
 		var moves []moved
-		if a.Kind() == account.Codex {
+		switch a.Kind() {
+		case account.Codex:
 			found, moves, err = scanCodex(a, known)
-		} else {
+		case account.Pi:
+			found, err = scanPi(a)
+		case account.Cursor:
+			found, err = scanCursor(a)
+		case account.CursorIDE:
+			found, err = scanCursorIDE(a)
+		default:
 			found, rs, err = scan(a, knownRuns, opt.Rebuild)
 		}
 		if err != nil {
@@ -108,6 +123,9 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 			seen[d.file.Path] = true
 			stats.Files++
 			if j, ok := plan(d, known[d.file.Path], opt.Rebuild); ok {
+				if opt.Trace != nil {
+					opt.Trace(d.file.Path, true, j.reset)
+				}
 				j.imported, j.ledger = imported[d.file.Path], ledger
 				if j.file.Kind == "main" && !j.reset && j.file.ID != 0 {
 					if j.state.Prompts, err = st.PromptIDs(j.file.ID); err != nil {
@@ -115,6 +133,8 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 					}
 				}
 				jobs = append(jobs, j)
+			} else if opt.Trace != nil {
+				opt.Trace(d.file.Path, false, false)
 			}
 		}
 	}
@@ -170,9 +190,13 @@ func mustMeta(st *store.Store, k string) string {
 }
 
 type discovered struct {
-	file store.File
-	meta string
-	tool account.Tool
+	file               store.File
+	meta               string
+	tool               account.Tool
+	cwd, title, model  string
+	started, ended     int64
+	agentType, toolUse string
+	parentAgent        string
 }
 
 // scan lists an account's transcript files, and reads the workflow journals
@@ -364,12 +388,20 @@ func journal(path string, r *store.Run) {
 // plan decides what to read from a file.
 func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	f := d.file
-	j := job{file: f, meta: d.meta, tool: d.tool}
+	j := job{file: f, meta: d.meta, tool: d.tool, cwd: d.cwd, title: d.title, model: d.model, started: d.started, ended: d.ended,
+		agentType: d.agentType, toolUse: d.toolUse, parentAgent: d.parentAgent}
+	if d.tool == account.CursorIDE {
+		return planIDE(j, old, rebuild)
+	}
 	if old.ID == 0 {
 		return j, true
 	}
 	j.file.ID = old.ID
-	if rebuild || old.Parser != ParserVersion || f.Size < old.Offset {
+	// Pi and Cursor CLI rewrite or branch in place. A changed file is read
+	// again from the start so an abandoned branch is not left in the index
+	// as if it were still the conversation.
+	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset ||
+		(fullReread(d.tool) && (f.Size != old.Offset || f.MTime != old.MTime)) {
 		j.reset = true
 		return j, true
 	}
@@ -389,6 +421,36 @@ func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	}
 	j.from, j.state = old.Offset, continueFrom(old)
 	return j, true
+}
+
+func fullReread(t account.Tool) bool {
+	return t == account.Pi || t == account.Cursor
+}
+
+// fileParser is the parser stamp stored on a file. Cursor's clock and model
+// are read by a newer parser than Claude's; bumping only these keeps a
+// Claude transcript from being read again.
+func fileParser(t account.Tool) int {
+	switch t {
+	case account.Cursor, account.CursorIDE:
+		return 5
+	default:
+		return ParserVersion
+	}
+}
+
+// planIDE keys a composer on its lastUpdatedAt, stored as the file's size
+// and mtime. The path is not a real file, so there is no head hash to check.
+func planIDE(j job, old store.File, rebuild bool) (job, bool) {
+	if old.ID == 0 {
+		return j, true
+	}
+	j.file.ID = old.ID
+	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || j.file.Size != old.Size || j.file.MTime != old.MTime {
+		j.reset = true
+		return j, true
+	}
+	return j, false
 }
 
 // continueFrom is the parse state an incremental parse of a file starts with.
@@ -510,6 +572,9 @@ func parseAll(ctx context.Context, st *store.Store, jobs []job, prices *pricing.
 }
 
 func parseOne(j job) parsed {
+	if j.tool == account.CursorIDE {
+		return parseIDE(j)
+	}
 	f, err := os.Open(j.file.Path)
 	if err != nil {
 		return parsed{err: err}
@@ -533,7 +598,8 @@ func parseOne(j job) parsed {
 	j.state.Base, j.state.Imported = from, j.imported
 	var res transcript.Result
 	var agent *store.AgentMeta
-	if j.tool == account.Codex {
+	switch j.tool {
+	case account.Codex:
 		thread := j.file.SessionID
 		if kind == transcript.Subagent {
 			thread = j.file.AgentID
@@ -542,15 +608,56 @@ func parseOne(j job) parsed {
 		if res, meta, err = codex.Parse(f, kind, thread, j.state); err == nil && meta != nil && kind == transcript.Subagent {
 			agent = codexAgent(meta, j.file.SessionID)
 		}
-	} else {
+	case account.Pi:
+		thread := j.file.SessionID
+		if kind == transcript.Subagent && j.file.AgentID != "" {
+			thread = j.file.AgentID
+		}
+		res, err = pi.Parse(f, thread, j.state)
+	case account.Cursor:
+		side := cursorcli.Side{Cwd: j.cwd, Title: j.title, Created: j.started, Updated: j.ended}
+		if j.file.Kind == "main" {
+			side.Model = j.model
+		}
+		res, err = cursorcli.Parse(f, j.file.SessionID, side)
+		if err == nil && j.file.Kind == "subagent" {
+			agent = &store.AgentMeta{AgentType: j.agentType, ToolUseID: j.toolUse, ParentAgent: j.parentAgent}
+			if agent.AgentType == "" {
+				agent.AgentType = "subagent"
+			}
+			if res.FirstPrompt != "" {
+				agent.Description = clean(res.FirstPrompt, 200)
+			}
+		}
+	default:
 		res, err = transcript.Parse(f, kind, j.state)
 	}
 	if err != nil {
 		return parsed{err: err}
 	}
+	if j.tool == account.Cursor {
+		if res.Cwd == "" {
+			res.Cwd = j.cwd
+		}
+		if res.CustomTitle == "" {
+			res.CustomTitle = j.title
+		}
+		if res.FirstTS == 0 {
+			res.FirstTS = j.started
+		}
+		if j.ended > res.LastTS {
+			res.LastTS = j.ended
+		}
+		if res.FirstTS == 0 {
+			res.FirstTS = j.file.MTime
+		}
+		if res.LastTS == 0 {
+			res.LastTS = j.file.MTime
+		}
+	}
 	up := store.Update{File: j.file, Reset: j.reset, From: from, Result: res, Ledger: j.ledger, Agent: agent}
 	up.File.Offset = from + res.Consumed
-	up.File.Parser = ParserVersion
+	up.File.Parser = fileParser(j.tool)
 	if up.File.Offset > 0 {
 		if h, err := headHash(j.file.Path, up.File.Offset); err == nil {
 			up.File.HeadHash = h
@@ -558,6 +665,27 @@ func parseOne(j job) parsed {
 	}
 	if j.meta != "" {
 		up.Agent = readMeta(j.meta)
+	}
+	return parsed{up: up, bytes: res.Consumed}
+}
+
+func parseIDE(j job) parsed {
+	from := j.from
+	if j.reset {
+		from = 0
+	}
+	res, agent, err := cursoride.Parse(j.file.Path)
+	if err != nil {
+		return parsed{err: err}
+	}
+	if res.Cwd == "" {
+		res.Cwd = j.cwd
+	}
+	up := store.Update{File: j.file, Reset: j.reset, From: from, Result: res, Ledger: j.ledger}
+	up.File.Offset = j.file.Size
+	up.File.Parser = fileParser(j.tool)
+	if agent != nil {
+		up.Agent = &store.AgentMeta{AgentType: agent.Type, Description: agent.Description, ToolUseID: agent.ToolUseID}
 	}
 	return parsed{up: up, bytes: res.Consumed}
 }

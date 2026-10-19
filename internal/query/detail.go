@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/transcript"
 )
 
 // SessionDetail is everything ccli knows about one session.
@@ -356,7 +357,9 @@ func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
 		}
 		switch {
 		case name == "Command":
-			det.Commands = append(det.Commands, Count{skill, n})
+			if cmd, ok := transcript.CommandName(skill); ok {
+				det.Commands = append(det.Commands, Count{"/" + cmd, n})
+			}
 		case skill != "":
 			det.Skills = append(det.Skills, Count{skill, n})
 		default:
@@ -364,6 +367,7 @@ func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
 		}
 	}
 	trows.Close()
+	d.applyCursorDetail(ctx, det)
 	return d.sql().QueryRowContext(ctx, `SELECT COUNT(DISTINCT p.start_ms) FROM processes p JOIN files f ON f.id = p.file_id
 		WHERE f.account = ? AND f.session_id = ?`, det.Account, det.ID).Scan(&det.Processes)
 }
@@ -445,9 +449,18 @@ func (d *DB) resume(det *SessionDetail) Resume {
 	if acct.Dir != "" {
 		r.Env, r.EnvValue = acct.SelectEnv()
 	}
-	if acct.Kind() == account.Codex {
+	switch acct.Kind() {
+	case account.Codex:
 		r.Program, r.Args = "codex", []string{"resume", det.ID}
-	} else {
+	case account.Pi:
+		r.Program, r.Args = "pi", []string{"--session", det.ID}
+	case account.Cursor:
+		r.Program, r.Args = "agent", []string{"--resume", det.ID}
+	case account.CursorIDE:
+		r.Program = "Cursor IDE"
+		r.Reason = "this session is in the Cursor IDE; open it from the Agents window in " + det.Cwd
+		return r
+	default:
 		r.Program, r.Args, r.ForkArg = "claude", []string{"--resume", det.ID}, "--fork-session"
 	}
 	line := func(args ...string) string {
@@ -458,7 +471,9 @@ func (d *DB) resume(det *SessionDetail) Resume {
 		return cmd
 	}
 	r.Command = line(r.Args...)
-	if det.Cwd != "" {
+	// A Cursor transcript directory is where the log lives, not the project
+	// the session worked in. Resuming from there opens the wrong folder.
+	if det.Cwd != "" && !cursorStoreDir(det.Cwd) {
 		r.Command = "cd " + shellQuote(det.Cwd) + " && " + r.Command
 	}
 	switch {
@@ -487,6 +502,11 @@ func archived(det *SessionDetail, home string) bool {
 		}
 	}
 	return false
+}
+
+// cursorStoreDir is where the CLI keeps transcripts, not a project folder.
+func cursorStoreDir(p string) bool {
+	return strings.Contains(p, "/.cursor/projects/") || strings.Contains(p, "/.cursor/chats/")
 }
 
 func shellQuote(s string) string {

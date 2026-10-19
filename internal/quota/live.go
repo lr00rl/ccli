@@ -31,6 +31,7 @@ import (
 const (
 	FromClaudeLive = "claude-live"
 	FromCodexLive  = "codex-live"
+	FromCursorLive = "cursor-dashboard"
 )
 
 // Limit is a window a source reports besides the 5-hour and weekly ones: a
@@ -46,6 +47,7 @@ type Extra struct {
 	Used        float64 `json:"used,omitempty"`  // in Currency, when the source says
 	Limit       float64 `json:"limit,omitempty"` // the monthly cap, likewise
 	Currency    string  `json:"currency,omitempty"`
+	Bonus       float64 `json:"bonus,omitempty"` // free usage on top of the included amount
 }
 
 // Checker asks tools for an account's limits.
@@ -53,6 +55,8 @@ type Checker struct {
 	WorkDir string        // an empty folder of ccli's own to run the tools in
 	Client  string        // ccli's version, given to Codex's app server
 	Timeout time.Duration // per account; 0 means 30s
+	// Trace receives the command and each JSON line exchanged. Nil prints nothing.
+	Trace func(format string, args ...any)
 }
 
 // Check asks the account's tool for its limits now. The snapshot carries
@@ -70,10 +74,13 @@ func (c Checker) Check(ctx context.Context, a account.Account) (Snapshot, error)
 	}
 	var s Snapshot
 	var err error
-	if a.Kind() == account.Codex {
+	switch a.Kind() {
+	case account.Codex:
 		s, err = c.codex(ctx, a)
-	} else {
+	case account.Claude:
 		s, err = c.claude(ctx, a)
+	default:
+		return Snapshot{}, fmt.Errorf("%s has no live quota check", a.Kind())
 	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -98,6 +105,8 @@ func (c Checker) claude(ctx context.Context, a account.Account) (Snapshot, error
 		return Snapshot{}, err
 	}
 	defer p.stop()
+	p.trace = c.Trace
+	p.noteStart(a)
 	if err := p.send(map[string]any{"type": "control_request", "request_id": usageRequest,
 		"request": map[string]any{"subtype": "get_usage", "skip_behaviors": true}}); err != nil {
 		return Snapshot{}, p.fail(err)
@@ -260,6 +269,8 @@ func (c Checker) codex(ctx context.Context, a account.Account) (Snapshot, error)
 		return Snapshot{}, err
 	}
 	defer p.stop()
+	p.trace = c.Trace
+	p.noteStart(a)
 	reply := func(id int) func(map[string]json.RawMessage) bool {
 		want := fmt.Sprint(id)
 		return func(m map[string]json.RawMessage) bool { return string(m["id"]) == want }
@@ -451,13 +462,31 @@ func toolEnv(a account.Account) []string {
 
 // proc is a tool started with JSON lines on stdin and stdout.
 type proc struct {
-	name   string
-	cmd    *exec.Cmd
-	in     io.WriteCloser
-	out    *bufio.Scanner
-	stderr *tailBuffer
-	once   sync.Once
-	done   chan struct{} // closed once Wait has returned
+	name    string
+	cmd     *exec.Cmd
+	in      io.WriteCloser
+	out     *bufio.Scanner
+	stderr  *tailBuffer
+	once    sync.Once
+	done    chan struct{} // closed once Wait has returned
+	trace   func(string, ...any)
+	started time.Time
+	logged  sync.Once
+}
+
+func (p *proc) noteStart(a account.Account) {
+	if p == nil || p.trace == nil || p.cmd == nil {
+		return
+	}
+	p.trace("exec: %s", strings.Join(p.cmd.Args, " "))
+	if p.cmd.Process != nil {
+		p.trace("pid: %d", p.cmd.Process.Pid)
+	}
+	p.trace("transport: JSON lines on this process's stdin and stdout. ccli does not open an HTTP connection")
+	p.trace("cwd: %s", p.cmd.Dir)
+	if name, value := a.SelectEnv(); value != "" {
+		p.trace("env: %s=%s", name, value)
+	}
 }
 
 func start(ctx context.Context, dir string, env []string, name string, args ...string) (*proc, error) {
@@ -480,7 +509,7 @@ func start(ctx context.Context, dir string, env []string, name string, args ...s
 	if err != nil {
 		return nil, err
 	}
-	p := &proc{name: name, cmd: cmd, in: in, out: bufio.NewScanner(out), stderr: &tailBuffer{max: 400}}
+	p := &proc{name: name, cmd: cmd, in: in, out: bufio.NewScanner(out), stderr: &tailBuffer{max: 400}, started: time.Now()}
 	p.out.Buffer(make([]byte, 64<<10), 16<<20)
 	cmd.Stderr = p.stderr
 	if err := cmd.Start(); err != nil {
@@ -494,8 +523,21 @@ func (p *proc) send(v any) error {
 	if err != nil {
 		return err
 	}
+	p.say("->", b)
 	_, err = p.in.Write(append(b, '\n'))
 	return err
+}
+
+func (p *proc) say(prefix string, raw []byte) {
+	if p == nil || p.trace == nil {
+		return
+	}
+	var buf bytes.Buffer
+	if json.Indent(&buf, raw, "", "  ") == nil {
+		p.trace("%s\n%s", prefix, buf.String())
+		return
+	}
+	p.trace("%s %s", prefix, raw)
 }
 
 // await reads lines until one matches; lines that are not JSON objects are
@@ -503,6 +545,7 @@ func (p *proc) send(v any) error {
 func (p *proc) await(match func(map[string]json.RawMessage) bool) ([]byte, error) {
 	for p.out.Scan() {
 		line := p.out.Bytes()
+		p.say("<-", line)
 		var m map[string]json.RawMessage
 		if json.Unmarshal(line, &m) == nil && match(m) {
 			return bytes.Clone(line), nil
@@ -536,9 +579,12 @@ func (p *proc) stop() { p.wait(3 * time.Second) }
 // number of times.
 func (p *proc) wait(d time.Duration) {
 	p.once.Do(func() {
+		if p.trace != nil {
+			p.trace("stdin closed")
+		}
 		p.in.Close()
 		p.done = make(chan struct{})
-		go func() { p.cmd.Wait(); close(p.done) }()
+		go func() { _ = p.cmd.Wait(); close(p.done) }()
 	})
 	select {
 	case <-p.done:
@@ -546,6 +592,19 @@ func (p *proc) wait(d time.Duration) {
 		killGroup(p.cmd)
 		<-p.done
 	}
+	p.logged.Do(func() {
+		if p.trace == nil {
+			return
+		}
+		code := -1
+		if p.cmd.ProcessState != nil {
+			code = p.cmd.ProcessState.ExitCode()
+		}
+		p.trace("exit: %d after %s", code, time.Since(p.started).Round(time.Millisecond))
+		if msg := strings.TrimSpace(p.stderr.String()); msg != "" {
+			p.trace("stderr:\n%s", msg)
+		}
+	})
 }
 
 // killGroup kills the tool and everything in its process group. It is only

@@ -12,8 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
+	"github.com/lr00rl/ccli/internal/store"
 )
 
 func init() {
@@ -55,11 +58,19 @@ func newFlags(name string, a *app, c *common) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(a.errw)
 	c.register(fs)
+	a.registerGlobals(fs)
 	return fs
 }
 
-// prepare opens everything, refreshes the index and builds the service.
+// prepare opens everything and refreshes the index. It does not ask Cursor
+// for usage; commands that show Cursor cost call refreshCursorFor.
 func (a *app) prepare(ctx context.Context, c common, accts []string) (*query.DB, error) {
+	return a.prepareQuery(ctx, c, accts, false)
+}
+
+// prepareQuery is prepare. cursorEvents loads the usage-event ledger. quota
+// does not: a billing-cycle check is a different, smaller request.
+func (a *app) prepareQuery(ctx context.Context, c common, accts []string, cursorEvents bool) (*query.DB, error) {
 	if err := a.open(); err != nil {
 		return nil, err
 	}
@@ -81,10 +92,106 @@ func (a *app) prepare(ctx context.Context, c common, accts []string) (*query.DB,
 			return nil, err
 		}
 	}
+	if cursorEvents {
+		a.refreshCursor(ctx)
+	}
 	return query.New(a.st, a.accts), nil
 }
 
-func (a *app) term(c common) render.Term { return render.NewTerm(a.out, c.color) }
+// refreshCursorFor reads the usage-event ledger when the command can show a
+// Cursor or Cursor IDE account. A Claude-only filter does not ask Cursor.
+func (a *app) refreshCursorFor(ctx context.Context, names []string, tools []account.Tool) {
+	if !a.needsCursor(names, tools) {
+		a.logf(2, "cursor usage: not needed")
+		return
+	}
+	a.refreshCursor(ctx)
+}
+
+func (a *app) needsCursor(names []string, tools []account.Tool) bool {
+	if len(tools) > 0 {
+		keep := false
+		for _, t := range tools {
+			if t == account.Cursor || t == account.CursorIDE {
+				keep = true
+			}
+		}
+		if !keep {
+			return false
+		}
+	}
+	pool := a.accts
+	if len(names) > 0 {
+		pool = nil
+		for _, n := range names {
+			for _, ac := range a.accts {
+				if ac.Name == n {
+					pool = append(pool, ac)
+				}
+			}
+		}
+	}
+	for _, ac := range pool {
+		if ac.Kind() == account.Cursor || ac.Kind() == account.CursorIDE {
+			return true
+		}
+	}
+	return false
+}
+
+// pullCursor reads the event ledger once per command. A fresh cache is not
+// fetched again. Debug only reports that choice.
+func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledger, error) {
+	a.cursorOnce.Do(func() {
+		opt := cursorusage.Option{}
+		if a.debug >= 2 {
+			opt.Trace = func(format string, args ...any) { a.logf(2, format, args...) }
+		}
+		if a.debug >= 4 {
+			opt.Body = func(format string, args ...any) { a.logf(4, format, args...) }
+		}
+		a.cursorLed, a.cursorErr = cursorusage.RefreshOption(ctx, dataDir, opt)
+	})
+	return a.cursorLed, a.cursorErr
+}
+
+func (a *app) refreshCursor(ctx context.Context) {
+	if !cursorusage.Fresh(store.DataDir()) {
+		fmt.Fprintln(a.errw, "Reading Cursor usage. This asks Cursor and can take a little while.")
+	}
+	led, err := a.pullCursor(ctx, store.DataDir())
+	if led != nil {
+		from := "fetched"
+		if led.FromCache {
+			from = "cache"
+		}
+		note := ""
+		if led.Truncated {
+			note = ", truncated"
+		}
+		a.logf(1, "cursor usage: %s, %d conversations, %d events%s", from, len(led.Sessions), led.EventCount, note)
+		if p := led.Period; p != nil {
+			a.logf(2, "cursor cycle: %s included $%.2f of $%.2f (%.1f%%), API %.1f%%, total %.1f%%",
+				p.Plan, p.UsedUSD, p.LimitUSD, p.Percent, p.APIPercent, p.TotalPercent)
+		}
+	}
+	if err != nil {
+		a.logf(1, "cursor usage: %s", err)
+	}
+	if err == nil || led == nil {
+		return
+	}
+	if len(led.Sessions) > 0 || led.Period != nil {
+		return
+	}
+	fmt.Fprintf(a.errw, "ccli: %s\n", err)
+}
+
+func (a *app) term(c common) render.Term {
+	t := render.NewTerm(a.out, c.color)
+	t.Verbose = a.verbose
+	return t
+}
 
 func (a *app) printJSON(v any) error {
 	enc := json.NewEncoder(a.out)
@@ -106,6 +213,7 @@ func cmdAccounts(ctx context.Context, a *app, args []string) error {
 	defer a.close()
 	f := query.Filter{Loc: time.Local}
 	f.Since, f.Until = query.RangeDays(*days, time.Local)
+	a.refreshCursorFor(ctx, nil, nil)
 	rows, err := svc.Accounts(ctx, f)
 	if err != nil {
 		return err
@@ -152,6 +260,7 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 	fs.StringVar(&f.Sort, "sort", "last", "sort by last, start, cost, tokens or active")
 	fs.IntVar(&f.Limit, "n", 40, "show at most N sessions (0 = all)")
 	hiddenFlag(fs, &f)
+	fs.BoolVar(&f.Drafts, "drafts", false, "include empty Cursor IDE drafts")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -164,6 +273,7 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	page, err := svc.Sessions(ctx, f)
 	if err != nil {
 		return err
@@ -177,21 +287,35 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 
 func cmdShow(ctx context.Context, a *app, args []string) error {
 	var c common
+	var accts accountsFlag
 	fs := newFlags("show", a, &c)
+	fs.Var(&accts, "a", "account, when the session exists in more than one")
 	all := fs.Bool("all", false, "list every subagent")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: ccli show <session id or prefix, optionally account:prefix>")
+		return errors.New("usage: ccli show [-a account] <session id or prefix>")
 	}
-	svc, err := a.prepare(ctx, c, nil)
+	if len(accts) > 1 {
+		return errors.New("show takes one account")
+	}
+	ref := pos[0]
+	if len(accts) == 1 && !strings.Contains(ref, ":") {
+		ref = accts[0] + ":" + ref
+	}
+	svc, err := a.prepare(ctx, c, accts)
 	if err != nil {
 		return err
 	}
 	defer a.close()
-	d, err := svc.Session(ctx, pos[0])
+	acct, _, err := svc.Resolve(ctx, ref)
+	if err != nil {
+		return err
+	}
+	a.refreshCursorFor(ctx, []string{acct}, nil)
+	d, err := svc.Session(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -220,6 +344,7 @@ func cmdStats(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	o, err := svc.Overview(ctx, f)
 	if err != nil {
 		return err

@@ -63,6 +63,7 @@ func cmdProjects(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	page, err := svc.Projects(ctx, f)
 	if err != nil {
 		return err
@@ -93,16 +94,16 @@ func dirFlag(fs *flag.FlagSet, f *query.Filter) {
 	})
 }
 
-// toolFlag adds -tool: only sessions of Claude Code or of Codex.
+// toolFlag adds -tool: only sessions of one agent.
 func toolFlag(fs *flag.FlagSet, f *query.Filter) {
-	fs.Func("tool", "only sessions of this agent: claude or codex (repeat or comma separate)", func(s string) error {
+	fs.Func("tool", "only sessions of this agent: claude, codex, pi, cursor or cursor-ide (repeat or comma separate)", func(s string) error {
 		for _, t := range strings.Split(s, ",") {
 			switch tool := account.Tool(strings.TrimSpace(t)); tool {
 			case "":
-			case account.Claude, account.Codex:
+			case account.Claude, account.Codex, account.Pi, account.Cursor, account.CursorIDE:
 				f.Tools = append(f.Tools, tool)
 			default:
-				return fmt.Errorf("%q is not claude or codex", tool)
+				return fmt.Errorf("%q is not claude, codex, pi, cursor or cursor-ide", tool)
 			}
 		}
 		return nil

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/store"
 )
 
@@ -37,7 +38,8 @@ type Filter struct {
 	Search   string         `json:"search,omitempty"`
 	Sort     string         `json:"sort,omitempty"` // last, start, cost, tokens, active
 	Limit    int            `json:"limit,omitempty"`
-	Show     Visibility     `json:"show"` // lists only: hidden sessions are left out unless asked for
+	Show     Visibility     `json:"show"`             // lists only: hidden sessions are left out unless asked for
+	Drafts   bool           `json:"drafts,omitempty"` // sessions list: include empty Cursor IDE drafts
 	Loc      *time.Location `json:"-"`
 }
 
@@ -160,7 +162,9 @@ type SessionPage struct {
 	Filter   Filter       `json:"filter"`
 	Sessions []SessionRow `json:"sessions"`
 	Matched  int          `json:"matched"`
-	Hidden   int          `json:"hidden"` // hidden sessions in range that were left out
+	Hidden   int          `json:"hidden"`           // hidden sessions in range that were left out
+	Older    int          `json:"older,omitempty"`  // sessions the time window left out, when the page is empty
+	Drafts   int          `json:"drafts,omitempty"` // empty Cursor IDE drafts left out of this list
 	Tokens   Tokens       `json:"tokens"`
 	Cost     Cost         `json:"cost"`
 }
@@ -174,6 +178,10 @@ type DB struct {
 	cacheMu  sync.Mutex
 	cache    map[string]*SessionDetail // by ref; nil unless CacheSessions was called
 	cacheGen uint64                    // bumped when cached details go stale
+	useOnce  sync.Once
+	use      *cursorusage.Ledger
+	kidOnce  sync.Once
+	kids     map[string][]string
 }
 
 // CacheSessions makes Session keep what it loads for the life of the DB, so
@@ -219,15 +227,21 @@ func projectName(cwd, key string) string {
 func title(custom, ai, summary, prompt string) (string, string) {
 	switch {
 	case custom != "":
-		return custom, "custom"
+		return oneLine(custom), "custom"
 	case ai != "":
-		return ai, "ai"
+		return oneLine(ai), "ai"
 	case summary != "":
-		return summary, "summary"
+		return oneLine(summary), "summary"
 	case prompt != "":
-		return prompt, "prompt"
+		return oneLine(prompt), "prompt"
 	}
 	return "", "none"
+}
+
+// oneLine folds a title onto one line. A prompt pasted as a title can carry
+// newlines; one of those breaks a table row.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // ShortID is the first 8 characters of a session id, or all of a shorter one.

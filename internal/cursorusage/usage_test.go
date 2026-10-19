@@ -1,0 +1,281 @@
+package cursorusage
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+func TestAddEventCentsAndModels(t *testing.T) {
+	got := &Use{Models: map[string]*Model{}}
+	addEvent(got, ev("conv-1", "composer-2", 3.45, 100, 20, 400, 0))
+	// No chargedCents, so totalCents (150) is the bill.
+	second := ev("conv-1", "gpt", 0, 10, 5, 0, 0)
+	second.TokenUsage.TotalCents = 150
+	addEvent(got, second)
+	if got.Input != 110 || got.Output != 25 || got.CacheRead != 400 || got.Events != 2 {
+		t.Fatalf("tokens %+v", got)
+	}
+	if got.USD < 0.0344 || got.USD > 0.0346+1.5 {
+		t.Fatalf("usd %v", got.USD)
+	}
+	// 3.45 cents + 150 cents.
+	if got.USD < 1.534 || got.USD > 1.535 {
+		t.Fatalf("usd %v, want 1.5345", got.USD)
+	}
+	if got.Primary() != "gpt" {
+		t.Fatalf("primary %q", got.Primary())
+	}
+}
+
+func ev(id, model string, charged float64, in, out, cache int64, total float64) event {
+	e := event{ConversationID: id, Model: model, ChargedCents: flexF(charged)}
+	e.TokenUsage.Input = flexI(in)
+	e.TokenUsage.Output = flexI(out)
+	e.TokenUsage.CacheRead = flexI(cache)
+	e.TokenUsage.TotalCents = flexF(total)
+	return e
+}
+
+func TestRefreshJoinsConversationAndHidesToken(t *testing.T) {
+	const secret = "test-token-do-not-store"
+	dbPath := filepath.Join(t.TempDir(), "state.vscdb")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES ('cursorAuth/accessToken', ?)`, `"`+secret+`"`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	var pages int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !strings.Contains(r.Header.Get("Authorization"), secret) {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents"):
+			pages++
+			if pages == 1 {
+				fmtJSON(w, map[string]any{
+					"totalUsageEventsCount": 2,
+					"usageEventsDisplay": []any{
+						map[string]any{"conversationId": "sess-a", "model": "composer-2", "chargedCents": "3.45", "tokenUsage": map[string]any{"inputTokens": "100", "outputTokens": 20, "cacheReadTokens": 5, "cacheWriteTokens": 1, "totalCents": 9}},
+						map[string]any{"conversationId": "sess-a", "model": "composer-2", "chargedCents": 10, "tokenUsage": map[string]any{"inputTokens": 1, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalCents": 10}},
+					},
+				})
+				return
+			}
+			fmtJSON(w, map[string]any{"totalUsageEventsCount": 2, "usageEventsDisplay": []any{}})
+		case strings.HasSuffix(r.URL.Path, "GetCurrentPeriodUsage"):
+			fmtJSON(w, map[string]any{
+				"billingCycleEnd": "1893456000000",
+				"displayMessage":  "Pro",
+				"planUsage": map[string]any{
+					"totalSpend": 41963, "includedSpend": 2000, "bonusSpend": 39963,
+					"limit": 2000, "totalPercentUsed": 33.57, "apiPercentUsed": 100,
+				},
+			})
+		case strings.HasSuffix(r.URL.Path, "GetPlanInfo"):
+			fmtJSON(w, map[string]any{"planInfo": map[string]any{"planName": "Pro"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase, oldDo, oldDB := apiBase, httpDo, stateDBOverride
+	apiBase, httpDo, stateDBOverride = srv.URL+"/", srv.Client(), dbPath
+	t.Cleanup(func() {
+		apiBase, httpDo, stateDBOverride = oldBase, oldDo, oldDB
+	})
+
+	dir := t.TempDir()
+	led, err := Refresh(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := led.Sessions["sess-a"]
+	if u == nil || u.Input != 101 || u.Output != 21 || u.CacheRead != 5 || u.CacheWrite != 1 || u.Events != 2 {
+		t.Fatalf("use %+v", u)
+	}
+	if u.USD < 0.134 || u.USD > 0.135 {
+		t.Fatalf("usd %v", u.USD)
+	}
+	p := led.Period
+	if p == nil || p.Plan != "Pro" || p.UsedUSD != 20 || p.LimitUSD != 20 || p.APIPercent != 100 || p.TotalPercent != 33.57 || p.Percent != 100 || p.BonusUSD < 399.62 || p.BonusUSD > 399.64 {
+		t.Fatalf("period %+v", p)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "cursor-usage.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), secret) {
+		t.Fatal("cache contains the access token")
+	}
+	again, err := Refresh(context.Background(), dir)
+	if err != nil || again.Sessions["sess-a"].Events != 2 {
+		t.Fatalf("cached %+v %v", again, err)
+	}
+}
+
+func TestTraceNamesRequestsAndSkipsToken(t *testing.T) {
+	const secret = "trace-token-do-not-print"
+	dbPath := filepath.Join(t.TempDir(), "state.vscdb")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES ('cursorAuth/accessToken', ?)`, secret); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents"):
+			var body struct {
+				Page int `json:"page"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.Page > 1 {
+				fmtJSON(w, map[string]any{"totalUsageEventsCount": 1, "usageEventsDisplay": []any{}})
+				return
+			}
+			fmtJSON(w, map[string]any{"totalUsageEventsCount": 1, "usageEventsDisplay": []any{
+				map[string]any{"conversationId": "s", "model": "m", "timestamp": "1000", "chargedCents": 1, "tokenUsage": map[string]any{"inputTokens": 1, "outputTokens": 1}},
+			}})
+		default:
+			fmtJSON(w, map[string]any{"planInfo": map[string]any{"planName": "Pro"}, "planUsage": map[string]any{"includedSpend": 1, "limit": 2}})
+		}
+	}))
+	defer srv.Close()
+	oldBase, oldDo, oldDB := apiBase, httpDo, stateDBOverride
+	apiBase, httpDo, stateDBOverride = srv.URL+"/", srv.Client(), dbPath
+	t.Cleanup(func() { apiBase, httpDo, stateDBOverride = oldBase, oldDo, oldDB })
+
+	var lines []string
+	trace := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	dir := t.TempDir()
+	if _, err := RefreshOption(context.Background(), dir, Option{Trace: trace}); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(lines, "\n")
+	if strings.Contains(got, secret) || !strings.Contains(got, "GetCurrentPeriodUsage") || !strings.Contains(got, "-> 200") {
+		t.Fatalf("trace:\n%s", got)
+	}
+	lines = nil
+	cached, err := RefreshOption(context.Background(), dir, Option{Trace: trace})
+	if err != nil || !cached.FromCache || !strings.Contains(strings.Join(lines, "\n"), "no request") {
+		t.Fatalf("cache %+v %v %q", cached, err, lines)
+	}
+	lines = nil
+	forced, err := RefreshOption(context.Background(), dir, Option{Force: true, Trace: trace})
+	if err != nil || forced.FromCache {
+		t.Fatalf("force %+v %v", forced, err)
+	}
+	got = strings.Join(lines, "\n")
+	if !strings.Contains(got, "fetching again") || !strings.Contains(got, "POST ") || strings.Contains(got, secret) {
+		t.Fatalf("force trace:\n%s", got)
+	}
+}
+
+func TestFetchPeriodSkipsEvents(t *testing.T) {
+	const secret = "period-token"
+	dbPath := filepath.Join(t.TempDir(), "state.vscdb")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES ('cursorAuth/accessToken', ?)`, secret); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	var events int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents") {
+			events++
+		}
+		fmtJSON(w, map[string]any{
+			"planInfo":        map[string]any{"planName": "Team"},
+			"planUsage":       map[string]any{"includedSpend": 2000, "limit": 2000, "apiPercentUsed": 100, "totalPercentUsed": 37.5},
+			"displayMessage":  "ok",
+			"billingCycleEnd": "1893456000000",
+		})
+	}))
+	defer srv.Close()
+	oldBase, oldDo, oldDB := apiBase, httpDo, stateDBOverride
+	apiBase, httpDo, stateDBOverride = srv.URL+"/", srv.Client(), dbPath
+	t.Cleanup(func() { apiBase, httpDo, stateDBOverride = oldBase, oldDo, oldDB })
+	var lines []string
+	var bodies []string
+	p, err := FetchPeriod(context.Background(), Option{
+		Trace: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) },
+		Body:  func(format string, args ...any) { bodies = append(bodies, fmt.Sprintf(format, args...)) },
+	})
+	if err != nil || p == nil || p.Plan != "Team" || events != 0 {
+		t.Fatalf("period %+v err %v events %d", p, err, events)
+	}
+	got := strings.Join(lines, "\n")
+	if strings.Contains(got, secret) || strings.Contains(got, "GetFilteredUsageEvents") || !strings.Contains(got, "GetCurrentPeriodUsage") {
+		t.Fatalf("trace:\n%s", got)
+	}
+	body := strings.Join(bodies, "\n")
+	if strings.Contains(body, secret) || !strings.Contains(body, "request GetCurrentPeriodUsage") || !strings.Contains(body, `"planName": "Team"`) {
+		t.Fatalf("body:\n%s", body)
+	}
+}
+
+func TestBetweenUsesEventTime(t *testing.T) {
+	u := &Use{Models: map[string]*Model{}}
+	early := ev("c", "gpt", 100, 10, 1, 0, 0)
+	early.Timestamp = 1_000
+	late := ev("c", "gpt", 200, 20, 2, 0, 0)
+	late.Timestamp = 5_000
+	addEvent(u, early)
+	addEvent(u, late)
+	day := u.Between(time.UnixMilli(4_000), time.UnixMilli(6_000))
+	if day.Events != 1 || day.Input != 20 || day.USD < 1.99 || day.USD > 2.01 {
+		t.Fatalf("day %+v", day)
+	}
+	none := u.Between(time.UnixMilli(10_000), time.Time{})
+	if none.Events != 0 {
+		t.Fatalf("late range %+v", none)
+	}
+}
+
+func TestIncludedZeroStaysZero(t *testing.T) {
+	p := fillPeriod(0, 500, 2000, 0, 0)
+	if p.UsedUSD != 0 || p.BonusUSD != 5 || p.Percent != 0 || p.LimitUSD != 20 {
+		t.Fatalf("%+v", p)
+	}
+	full := fillPeriod(1288, 0, 2000, 2.64, 3.73)
+	if full.UsedUSD < 12.87 || full.UsedUSD > 12.89 || full.Percent < 64.3 || full.Percent > 64.5 || full.APIPercent != 2.64 || full.TotalPercent != 3.73 {
+		t.Fatalf("%+v", full)
+	}
+}
+
+func fmtJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}

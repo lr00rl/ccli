@@ -17,11 +17,12 @@ import (
 
 // Term describes the output.
 type Term struct {
-	W     io.Writer
-	Width int
-	Color bool
-	Now   time.Time
-	Loc   *time.Location
+	W       io.Writer
+	Width   int
+	Color   bool
+	Verbose bool
+	Now     time.Time
+	Loc     *time.Location
 }
 
 // NewTerm inspects w. mode is "auto", "always" or "never".
@@ -290,6 +291,9 @@ func (t Term) table(cols []column, rows [][]string) {
 		var b strings.Builder
 		for i, c := range cols {
 			cell := cells[i]
+			if !header {
+				cell = strings.Join(strings.Fields(cell), " ")
+			}
 			if width(cell) > ws[i] {
 				cell = fit(stripANSI(cell), ws[i])
 			}

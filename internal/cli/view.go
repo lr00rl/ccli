@@ -23,6 +23,7 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 	fs := newFlags("view", a, &c)
 	dirFlag(fs, &scope)
 	toolFlag(fs, &scope)
+	tools := fs.Bool("tools", false, "expand tool calls inside each turn")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -48,7 +49,10 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 			return err
 		}
 		ref = acct + ":" + id
+		a.refreshCursorFor(ctx, []string{acct}, nil)
+	} else {
+		a.refreshCursorFor(ctx, nil, scope.Tools)
 	}
 	svc.CacheSessions()
-	return tui.Run(ctx, svc, ref, scope)
+	return tui.Run(ctx, svc, ref, scope, tui.Options{Tools: *tools || a.verbose})
 }

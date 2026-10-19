@@ -1,0 +1,90 @@
+package export
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/conv"
+	"github.com/lr00rl/ccli/internal/query"
+)
+
+func sample() Doc {
+	at := time.Date(2026, 10, 18, 20, 58, 0, 0, time.UTC)
+	return Doc{
+		Session: query.SessionRow{
+			Account: "cursor", Tool: account.Cursor, ID: "ee0b5fa1-83a7-4e1f-a260-bb4a1657ad54",
+			Title: "Tmux Radar", Cwd: "/work/ccli", Started: at, Last: at,
+		},
+		Turns: []*query.TurnDetail{{
+			Row: query.TurnRow{Seq: 6},
+			Turn: &conv.Turn{Speaker: "Cursor", Entries: []conv.Entry{
+				{Kind: conv.KindPrompt, Text: "filter the drafts"},
+				{Kind: conv.KindThinking, Text: "secret plan"},
+				{Kind: conv.KindContext, Label: "skill", Text: "a long skill"},
+				{Kind: conv.KindText, Text: "They stay out of the list."},
+				{Kind: conv.KindTool, Call: &conv.Call{
+					Name: "Grep", Summary: "ideDraft", Input: []byte(`{"path":"sessions.go"}`),
+					Output: "found\n", OutputLen: 10, Done: true,
+				}},
+			}},
+			Agents: []query.AgentNode{{FileInfo: query.FileInfo{AgentID: "sub-1"}, Label: "reviewer"}},
+		}},
+		Agents: map[string]*query.AgentLog{
+			"sub-1": {Turns: []conv.Turn{{Speaker: "Cursor", Entries: []conv.Entry{
+				{Kind: conv.KindPrompt, Text: "check the filter"},
+				{Kind: conv.KindText, Text: "It drops empty drafts."},
+			}}}},
+		},
+	}
+}
+
+func TestMarkdownKeepsOrderAndSkipsAsides(t *testing.T) {
+	var b strings.Builder
+	if err := Write(&b, sample(), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	got := b.String()
+	prompt := strings.Index(got, "filter the drafts")
+	reply := strings.Index(got, "They stay out of the list.")
+	tool := strings.Index(got, "### Tool: Grep")
+	if prompt < 0 || reply < prompt || tool < reply {
+		t.Fatalf("order:\n%s", got)
+	}
+	if strings.Contains(got, "secret plan") || strings.Contains(got, "a long skill") {
+		t.Fatalf("aside leaked:\n%s", got)
+	}
+	if !strings.Contains(got, "Started agent reviewer.") || strings.Contains(got, "check the filter") {
+		t.Fatalf("agent:\n%s", got)
+	}
+	if !strings.Contains(got, "4 more bytes were not included.") {
+		t.Fatalf("truncation:\n%s", got)
+	}
+	if !strings.Contains(got, "not a file any tool can resume") {
+		t.Fatalf("banner missing:\n%s", got)
+	}
+}
+
+func TestAgentsInlineAndJSONL(t *testing.T) {
+	var b strings.Builder
+	if err := Write(&b, sample(), Options{Format: "jsonl", Agents: true, Thinking: true}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], `"type":"session"`) || !strings.Contains(lines[0], `"tool":"cursor"`) {
+		t.Fatalf("head %q", lines[0])
+	}
+	body := strings.Join(lines[1:], "\n")
+	if !strings.Contains(body, `"kind":"thinking"`) {
+		t.Fatalf("thinking missing:\n%s", body)
+	}
+	if strings.Contains(body, "a long skill") {
+		t.Fatal("context included without the flag")
+	}
+	agent := strings.Index(body, `"agent":"sub-1"`)
+	child := strings.Index(body, "check the filter")
+	if agent < 0 || child < agent {
+		t.Fatalf("agent order:\n%s", body)
+	}
+}

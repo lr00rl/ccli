@@ -46,11 +46,17 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 	if len(pos) < 1 || len(pos) > 2 {
 		return errors.New("usage: ccli log <session> [turn | from-to | last] [--tools] [--thinking] [--agent id] [--run id]")
 	}
+	if a.verbose {
+		opt.Tools = true
+	}
 	svc, err := a.prepare(ctx, c, nil)
 	if err != nil {
 		return err
 	}
 	defer a.close()
+	if acct, _, err := svc.Resolve(ctx, pos[0]); err == nil {
+		a.refreshCursorFor(ctx, []string{acct}, nil)
+	}
 	ref := pos[0]
 	t := a.term(c)
 	switch {
@@ -162,6 +168,7 @@ func cmdPrompts(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	p, err := svc.Prompts(ctx, f)
 	if err != nil {
 		return err
