@@ -16,10 +16,15 @@ import (
 
 // LogOptions choose how much of a turn to print.
 type LogOptions struct {
-	Tools    bool // tool inputs and outputs, not just one line per call
+	Detail   string // full (default) or reply. reply keeps the prompt and the turn's last reply.
+	Tools    bool   // tool inputs and outputs, not just one line per call
 	Thinking bool
 	Context  bool // text Claude Code added: skill bodies, reminders, peer messages
 	Raw      bool // prompts and replies as recorded, without markdown rendering
+}
+
+func (o LogOptions) reply() bool {
+	return strings.EqualFold(strings.TrimSpace(o.Detail), "reply")
 }
 
 var kindTag = map[string]string{
@@ -137,7 +142,7 @@ func (t Term) Turn(d *query.TurnDetail, opt LogOptions) {
 	if d.Turn != nil {
 		t.Conversation(d.Turn, opt, d.Agents)
 	}
-	if len(d.Agents) > 0 || len(d.Runs) > 0 {
+	if !opt.reply() && (len(d.Agents) > 0 || len(d.Runs) > 0) {
 		t.println()
 		t.println(t.accent("Agents started in this turn"))
 		t.agentNodes(d.Agents, "  ")
@@ -244,8 +249,12 @@ func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNo
 			speaker = who
 		}
 	}
-	for i := 0; i < len(tr.Entries); i++ {
-		e := tr.Entries[i]
+	entries := tr.Entries
+	if opt.reply() {
+		entries = conv.ReplyEntries(entries)
+	}
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
 		switch e.Kind {
 		case conv.KindPrompt:
 			who := "You"
@@ -286,7 +295,7 @@ func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNo
 			}
 			t.println(md(conv.PromptDisplay(e.Text)))
 		case conv.KindText:
-			if speaker == assistant && i > 0 && tr.Entries[i-1].Kind == conv.KindTool {
+			if speaker == assistant && i > 0 && entries[i-1].Kind == conv.KindTool {
 				t.println() // set the reply apart from the tool calls above it
 			}
 			say(assistant)
@@ -306,13 +315,13 @@ func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNo
 				continue
 			}
 			j := i + 1
-			for j < len(tr.Entries) && tr.Entries[j].Kind == conv.KindTool && tr.Entries[j].Call.Name == e.Call.Name && byTool[tr.Entries[j].Call.ID].AgentID == "" {
+			for j < len(entries) && entries[j].Kind == conv.KindTool && entries[j].Call.Name == e.Call.Name && byTool[entries[j].Call.ID].AgentID == "" {
 				j++
 			}
 			if j-i > 4 {
-				t.call(tr.Entries[i+1].Call, opt, byTool, w)
+				t.call(entries[i+1].Call, opt, byTool, w)
 				t.println(t.dim(fmt.Sprintf("  ▸ … %d more %s calls", j-i-3, e.Call.Name)))
-				t.call(tr.Entries[j-1].Call, opt, byTool, w)
+				t.call(entries[j-1].Call, opt, byTool, w)
 				i = j - 1
 			}
 		case conv.KindContext:
@@ -494,6 +503,9 @@ func (t Term) AgentLog(a *query.AgentLog, opt LogOptions) {
 			t.println()
 		}
 		t.Conversation(&a.Turns[i], opt, n.Children)
+	}
+	if opt.reply() {
+		return
 	}
 	if len(n.Children) > 0 {
 		t.println()

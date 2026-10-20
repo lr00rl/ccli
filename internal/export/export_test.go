@@ -1,6 +1,7 @@
 package export
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,46 @@ func TestMarkdownKeepsOrderAndSkipsAsides(t *testing.T) {
 	}
 	if !strings.Contains(got, "not a file any tool can resume") {
 		t.Fatalf("banner missing:\n%s", got)
+	}
+}
+
+func TestReplyKeepsPromptAndLastText(t *testing.T) {
+	doc := sample()
+	doc.Turns[0].Turn.Entries = []conv.Entry{
+		{Kind: conv.KindPrompt, Text: "filter the drafts"},
+		{Kind: conv.KindText, Text: "Looking now."},
+		{Kind: conv.KindTool, Call: &conv.Call{Name: "Grep", Input: []byte(`{"path":"sessions.go"}`), Output: "found\n", OutputLen: 6, Done: true}},
+		{Kind: conv.KindText, Text: "They stay out of the list."},
+		{Kind: conv.KindText, Text: "Empty drafts too."},
+	}
+	var b strings.Builder
+	if err := Write(&b, doc, Options{Detail: "reply"}); err != nil {
+		t.Fatal(err)
+	}
+	got := b.String()
+	prompt := strings.Index(got, "filter the drafts")
+	reply := strings.Index(got, "They stay out of the list.")
+	tail := strings.Index(got, "Empty drafts too.")
+	if prompt < 0 || reply < prompt || tail < reply {
+		t.Fatalf("order:\n%s", got)
+	}
+	if strings.Contains(got, "Looking now.") || strings.Contains(got, "### Tool:") || strings.Contains(got, "Started agent") {
+		t.Fatalf("step leaked:\n%s", got)
+	}
+
+	b.Reset()
+	if err := Write(&b, doc, Options{Format: "jsonl", Detail: "reply", Agents: true, Thinking: true}); err != nil {
+		t.Fatal(err)
+	}
+	body := b.String()
+	if strings.Contains(body, `"kind":"tool"`) || strings.Contains(body, "Looking now.") || strings.Contains(body, "reviewer") {
+		t.Fatalf("jsonl steps:\n%s", body)
+	}
+	if !strings.Contains(body, `"kind":"prompt"`) || !strings.Contains(body, "Empty drafts too.") {
+		t.Fatalf("jsonl reply:\n%s", body)
+	}
+	if err := Write(io.Discard, doc, Options{Detail: "steps"}); err == nil {
+		t.Fatal("bad detail was accepted")
 	}
 }
 

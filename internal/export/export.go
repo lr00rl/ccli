@@ -18,6 +18,7 @@ import (
 // Options selects how much of the conversation is written.
 type Options struct {
 	Format   string // md or jsonl. Empty means md.
+	Detail   string // full (default) or reply. reply keeps each turn's prompt and its last reply.
 	Thinking bool   // include the model's thinking
 	Context  bool   // include text the tool added (skills, reminders, peer messages)
 	Agents   bool   // inline a subagent's conversation after the turn that started it
@@ -36,6 +37,11 @@ type Doc struct {
 func Write(w io.Writer, doc Doc, opt Options) error {
 	if opt.Loc == nil {
 		opt.Loc = time.Local
+	}
+	switch strings.ToLower(strings.TrimSpace(opt.Detail)) {
+	case "", "full", "reply":
+	default:
+		return fmt.Errorf("export detail %q: use full or reply", opt.Detail)
 	}
 	switch strings.ToLower(opt.Format) {
 	case "", "md", "markdown":
@@ -72,6 +78,9 @@ func writeMD(w io.Writer, doc Doc, opt Options) error {
 		}
 		fmt.Fprintf(&b, "\n## Turn %d\n", d.Row.Seq)
 		writeTurnMD(&b, d.Turn, opt, "")
+		if opt.reply() {
+			continue
+		}
 		writeAgentsMD(&b, d.Agents, doc.Agents, opt)
 		for _, r := range d.Runs {
 			name := r.Name
@@ -94,7 +103,11 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 	if speaker == "" {
 		speaker = "Assistant"
 	}
-	for _, e := range tr.Entries {
+	entries := tr.Entries
+	if opt.reply() {
+		entries = conv.ReplyEntries(entries)
+	}
+	for _, e := range entries {
 		switch e.Kind {
 		case conv.KindThinking:
 			if !opt.Thinking {
@@ -231,6 +244,9 @@ func writeJSONL(w io.Writer, doc Doc, opt Options) error {
 		if err := writeTurnJSONL(enc, d.Row.Seq, d.Turn, "", opt); err != nil {
 			return err
 		}
+		if opt.reply() {
+			continue
+		}
 		if err := writeAgentsJSONL(enc, d.Row.Seq, d.Agents, doc.Agents, opt); err != nil {
 			return err
 		}
@@ -246,7 +262,11 @@ func writeTurnJSONL(enc *json.Encoder, seq int, tr *conv.Turn, agent string, opt
 	if speaker == "" {
 		speaker = "Assistant"
 	}
-	for _, e := range tr.Entries {
+	entries := tr.Entries
+	if opt.reply() {
+		entries = conv.ReplyEntries(entries)
+	}
+	for _, e := range entries {
 		var line map[string]any
 		switch e.Kind {
 		case conv.KindThinking:
@@ -346,6 +366,10 @@ func writeAgentsJSONL(enc *json.Encoder, seq int, nodes []query.AgentNode, logs 
 		}
 	}
 	return nil
+}
+
+func (opt Options) reply() bool {
+	return strings.EqualFold(strings.TrimSpace(opt.Detail), "reply")
 }
 
 func entryLine(seq int, kind, agent, text string, tool map[string]any) map[string]any {

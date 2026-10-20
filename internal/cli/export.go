@@ -20,6 +20,7 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 	var c common
 	fs := newFlags("export", a, &c)
 	format := fs.String("format", "md", "md or jsonl")
+	detail := fs.String("detail", "full", "full writes each step; reply writes your prompt and the turn's last reply")
 	outPath := fs.String("out", "", "write the transcript to this file instead of stdout")
 	agents := fs.Bool("agents", false, "include each subagent's conversation after the turn that started it")
 	thinking := fs.Bool("thinking", false, "include the model's thinking")
@@ -69,7 +70,7 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 			return err
 		}
 	}
-	opt := export.Options{Format: *format, Thinking: *thinking, Context: *context, Agents: *agents, Loc: time.Local}
+	opt := export.Options{Format: *format, Detail: *detail, Thinking: *thinking, Context: *context, Agents: *agents, Loc: time.Local}
 	var w io.Writer = a.out
 	var closeFile func() error
 	if *outPath != "" {

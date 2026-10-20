@@ -164,8 +164,8 @@ Usage:
   ccli sessions [flags]              sessions with tokens and list-price cost (--dir . for this folder)
   ccli projects [folder]             folders sessions started in, at or below this one (/ for all)
   ccli show <id>                     one session: totals, models, subagents, links, files
-  ccli log <id> [turn|N-M|last]      the session turn by turn: each prompt, what it cost, what it did
-  ccli export <id> [turn|N-M|last]   write a readable transcript (md or jsonl) for handoff
+  ccli log <id> [turn|N-M|last]      the session turn by turn; --detail reply keeps the prompt and last reply
+  ccli export <id> [turn|N-M|last]   write a readable transcript (md or jsonl); --detail reply keeps the prompt and last reply
   ccli view [id]                     browse sessions, turns and agents interactively
   ccli prompts [flags]               your prompts across sessions, sortable by cost
   ccli stats [flags]                 overview: KPIs, daily chart, projects, models, hours, shape, skills

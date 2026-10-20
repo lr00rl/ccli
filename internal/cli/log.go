@@ -32,6 +32,7 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 	fs := newFlags("log", a, &c)
 	all := fs.Bool("all", false, "include turns started by tasks, other sessions and the system")
 	sortBy := fs.String("sort", "turn", "list order: turn or cost")
+	detail := fs.String("detail", "full", "full shows each step; reply shows your prompt and the turn's last reply")
 	fs.BoolVar(&opt.Tools, "tools", false, "show tool inputs and outputs")
 	fs.BoolVar(&opt.Thinking, "thinking", false, "show the model's thinking")
 	fs.BoolVar(&opt.Context, "context", false, "show text Claude Code added (skills, reminders, peer messages)")
@@ -44,9 +45,16 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	if len(pos) < 1 || len(pos) > 2 {
-		return errors.New("usage: ccli log <session> [turn | from-to | last] [--tools] [--thinking] [--agent id] [--run id]")
+		return errors.New("usage: ccli log <session> [turn | from-to | last] [--detail full|reply] [--tools] [--thinking] [--agent id] [--run id]")
 	}
-	if a.verbose {
+	switch strings.ToLower(strings.TrimSpace(*detail)) {
+	case "", "full", "reply":
+		opt.Detail = strings.ToLower(strings.TrimSpace(*detail))
+	default:
+		return fmt.Errorf("detail %q: use full or reply", *detail)
+	}
+	reply := opt.Detail == "reply"
+	if a.verbose && !reply {
 		opt.Tools = true
 	}
 	svc, err := a.prepare(ctx, c, nil)
@@ -83,6 +91,26 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 			return a.printJSON(map[string]any{"run": info, "agents": nodes, "status": status})
 		}
 		return a.page(t, *noPager, func(t render.Term) { t.RunAgents(info, nodes, status, ref) })
+	case len(pos) == 1 && reply:
+		l, err := svc.Turns(ctx, ref)
+		if err != nil {
+			return err
+		}
+		if len(l.Turns) == 0 {
+			return fmt.Errorf("session %s has no turns", query.ShortID(l.Session.ID))
+		}
+		from, to := l.Turns[0].Seq, l.Turns[len(l.Turns)-1].Seq
+		details, err := svc.TurnRange(ctx, ref, from, to, *all)
+		if err != nil && !(errors.Is(err, query.ErrNoTranscript) && len(details) > 0) {
+			return err
+		}
+		if err != nil {
+			fmt.Fprintln(a.errw, "ccli:", err)
+		}
+		if c.json {
+			return a.printJSON(details)
+		}
+		return a.pageTurns(t, *noPager, details, opt)
 	case len(pos) == 1:
 		l, err := svc.Turns(ctx, ref)
 		if err != nil {
@@ -113,7 +141,11 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		}
 		return a.printJSON(details)
 	}
-	return a.page(t, *noPager, func(t render.Term) {
+	return a.pageTurns(t, *noPager, details, opt)
+}
+
+func (a *app) pageTurns(t render.Term, noPager bool, details []*query.TurnDetail, opt render.LogOptions) error {
+	return a.page(t, noPager, func(t render.Term) {
 		for i, d := range details {
 			if i > 0 {
 				fmt.Fprintln(t.W)
