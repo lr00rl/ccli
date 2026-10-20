@@ -346,7 +346,7 @@ func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNo
 
 func (t Term) call(c *conv.Call, opt LogOptions, byTool map[string]query.AgentNode, w int) {
 	name := c.Name
-	sum := shortPaths(c.Summary)
+	sum := shortPaths(conv.Printable(c.Summary))
 	extra := ""
 	if n, ok := byTool[c.ID]; ok {
 		extra = t.dim(fmt.Sprintf("  → %s · %s", n.AgentID[:min(8, len(n.AgentID))], USD(n.Cost)))
@@ -366,12 +366,12 @@ func (t Term) call(c *conv.Call, opt LogOptions, byTool map[string]query.AgentNo
 	}
 	if c.Prompt != "" {
 		t.println(t.dim("    prompt"))
-		t.println(t.Markdown(c.Prompt, "    ", w-4))
+		t.println(t.Markdown(conv.Printable(c.Prompt), "    ", w-4))
 	} else if in := toolInput(c); in != "" {
-		t.println(t.dim(indentLines(wrapPlain(strings.ReplaceAll(in, "\t", "    "), w-4), "    ")))
+		t.println(t.dim(indentLines(wrapPlain(strings.ReplaceAll(conv.Printable(in), "\t", "    "), w-4), "    ")))
 	}
 	if c.Done && strings.TrimSpace(c.Output) != "" {
-		out := firstLines(strings.TrimRight(c.Output, "\n"), 14)
+		out := firstLines(strings.TrimRight(conv.Printable(c.Output), "\n"), 14)
 		if n := strings.Count(c.Output, "\n") + 1; n > 14 {
 			out += fmt.Sprintf("\n… %d more lines", n-14)
 		} else if c.OutputLen > len(c.Output) {

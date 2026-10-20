@@ -234,11 +234,11 @@ func writeToolMD(b *strings.Builder, c *conv.Call) {
 		fmt.Fprintf(b, "\n%s\n", s)
 	}
 	if c.Prompt != "" {
-		fmt.Fprintf(b, "\n%s\n", fence(strings.TrimSpace(c.Prompt)))
+		fmt.Fprintf(b, "\n%s\n", fence(strings.TrimSpace(conv.Printable(c.Prompt))))
 	} else if in := inputText(c.Input); in != "" {
-		fmt.Fprintf(b, "\n%s\n", fence(in))
+		fmt.Fprintf(b, "\n%s\n", fence(conv.Printable(in)))
 	}
-	out := strings.TrimRight(c.Output, "\n")
+	out := strings.TrimRight(conv.Printable(c.Output), "\n")
 	if out != "" {
 		fmt.Fprintf(b, "\n%s\n", fence(out))
 		if c.OutputLen > len(c.Output) {

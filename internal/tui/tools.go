@@ -38,6 +38,7 @@ func (v *viewer) stepTool(s *screen, d int) {
 	if s.role != turnsRole {
 		return
 	}
+	v.toolFor(itemKey(s, s.list.selected()))
 	calls := v.selectedCalls()
 	if len(calls) == 0 {
 		if idx := s.list.selected(); idx >= 0 && s.data[idx] == nil && s.errs[idx] == nil {
@@ -57,6 +58,16 @@ func (v *viewer) stepTool(s *screen, d int) {
 	}
 	v.status = fmt.Sprintf("tool %d/%d  [ ] another  esc the transcript", v.toolN+1, len(calls))
 }
+
+// toolFor starts the inspector at the first call when the selection moved
+// to another turn since toolN was set.
+func (v *viewer) toolFor(item string) {
+	if v.toolAt != item {
+		v.toolAt, v.toolN = item, 0
+	}
+}
+
+func itemKey(s *screen, idx int) string { return fmt.Sprintf("%p/%d/%d/", s, s.gen, idx) }
 
 // toolPane is one tool call, with the nearby calls listed above it.
 func (v *viewer) toolPane(data any, w int) string {
@@ -79,9 +90,9 @@ func (v *viewer) toolPane(data any, w int) string {
 	for i := from; i < to; i++ {
 		mark := "  "
 		name := calls[i].Name
-		sum := oneLine(calls[i].Summary)
+		sum := oneLine(conv.Printable(calls[i].Summary))
 		if sum == "" || sum == name {
-			sum = oneLine(callArg(calls[i]))
+			sum = oneLine(conv.Printable(callArg(calls[i])))
 		}
 		line := fmt.Sprintf("%2d  %s  %s", i+1, name, sum)
 		if i == n {
@@ -105,16 +116,18 @@ func (v *viewer) toolPane(data any, w int) string {
 		head += "  no result"
 	}
 	fmt.Fprintf(&b, "%s\n", bold(head))
-	if sum := oneLine(c.Summary); sum != "" && sum != c.Name {
+	// Recorded text is shown without its escape sequences: they would act on
+	// the terminal, not be read.
+	if sum := oneLine(conv.Printable(c.Summary)); sum != "" && sum != c.Name {
 		fmt.Fprintf(&b, "%s\n", dim(sum))
 	}
 	if c.Prompt != "" {
-		fmt.Fprintf(&b, "\n%s\n%s\n", dim("prompt"), indent(c.Prompt, "  "))
+		fmt.Fprintf(&b, "\n%s\n%s\n", dim("prompt"), indent(conv.Printable(c.Prompt), "  "))
 	}
 	if in := callBody(c.Input); in != "" {
-		fmt.Fprintf(&b, "\n%s\n%s\n", dim("input"), indent(in, "  "))
+		fmt.Fprintf(&b, "\n%s\n%s\n", dim("input"), indent(conv.Printable(in), "  "))
 	}
-	out := strings.TrimRight(c.Output, "\n")
+	out := strings.TrimRight(conv.Printable(c.Output), "\n")
 	if out != "" {
 		shown, extra := clipLines(out, 80)
 		fmt.Fprintf(&b, "\n%s\n%s\n", dim("output"), indent(shown, "  "))

@@ -82,8 +82,9 @@ type viewer struct {
 	stack    []*screen
 	w, h     int
 	opt      render.LogOptions
-	tools    bool // the turn preview is one tool call, not the whole transcript
-	toolN    int  // which call, when tools is on
+	tools    bool   // the turn preview is one tool call, not the whole transcript
+	toolN    int    // which call, when tools is on
+	toolAt   string // the list item toolN belongs to
 	allTurns bool
 	sortCost bool
 	filter   bool   // the filter line has the keyboard
@@ -183,7 +184,10 @@ func (v *viewer) sync() tea.Cmd {
 		return nil
 	}
 	w := v.previewWidth(s)
-	itemKey := fmt.Sprintf("%p/%d/%d/", s, s.gen, idx)
+	itemKey := itemKey(s, idx)
+	if v.tools {
+		v.toolFor(itemKey)
+	}
 	toolKey := fmt.Sprintf("/tool:%t:%d", v.tools, v.toolN)
 	key := fmt.Sprintf("%s%d/%v%s", itemKey, w, v.opt, toolKey)
 	if s.shown == key {
