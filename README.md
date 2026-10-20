@@ -455,7 +455,9 @@ ccli reads transcripts and keeps its own index in
 `~/.local/share/ccli/ccli.db`. It never reads the Keychain, never writes
 `settings.json` or `.claude.json`, and never calls a model. In a Codex home
 it reads only the session logs: never `auth.json`, `config.toml` or Codex's
-own databases.
+own databases. Cursor is the one exception for logins: Cursor's transcripts
+have no usage figures, so ccli reads the login the Cursor IDE stored and
+sends it to Cursor, and nowhere else, to fetch them.
 
 `quota` starts Claude Code and Codex to ask for your limits. They update
 their own caches as on any start. `--offline` starts nothing. For Cursor,
@@ -467,7 +469,8 @@ Cursor account. A `--tool` filter that leaves Cursor out, or `-a` naming only
 other accounts, does not ask. The list is cached for 15 minutes in
 `~/.local/share/ccli/cursor-usage.json`. The login is not written there, nor
 into the debug log. When the cache is stale, ccli says it is reading Cursor
-usage before it asks. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
+usage before it asks. After a failed read it uses what it has and waits five
+minutes before asking again, and with no IDE login it does not ask at all. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
 `fork`, `statusline` and `index` do not ask Cursor.
 
 Only `copy`, `move`, `fork` and `resume --sync` write into an account, and

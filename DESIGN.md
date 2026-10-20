@@ -38,18 +38,28 @@ opens Codex's SQLite databases: opening one read-only can still create a
 `-shm` file next to it. Cursor's databases are the exception, opened so that
 no sidecar is ever created (see below).
 
-It never reads or writes credentials (Keychain, `.credentials.json`), never
+It never reads or writes Claude Code or Codex credentials (Keychain,
+`.credentials.json`, `auth.json`), never
 writes `.claude.json`, `settings*.json`, `sessions/` (the live-process
 registry), `teams/`, `jobs/`, `session-env/`, or anything else in a config dir.
 From `.claude.json` it reads only `oauthAccount.emailAddress`,
 `organizationName` and `billingType`, to label an account. From
 `<dir>/ccline/.api_usage_cache.json`, when a status line program left one,
 it reads only the usage percentages and times. ccli itself never sends a
-request to a model or to any other service.
+request to a model.
+
+Cursor is the one exception to both rules. Cursor transcripts carry no
+model, token or cost figures, so ccli reads the access token the Cursor IDE
+stored in `state.vscdb` (`cursorAuth/accessToken`) and sends it to
+`api2.cursor.sh`, and only there: redirects are refused. It asks only when a
+command shows Cursor figures for an account you selected. The token is kept
+in memory for that request and is never written to the index, the cache, an
+error or debug output (see Cursor below).
 
 The one exception to "reader" is `quota` without `--offline`: it starts each
 account's own tool once to ask for the current limits (see Quota). Claude
-Code and Codex answer with their own login; ccli still reads no credentials.
+Code and Codex answer with their own login; ccli reads none of their
+credentials.
 Starting them does what any start does to their own files: Claude Code
 refreshes cache entries in `.claude.json`, and Codex writes to its databases
 and plugin cache. They run in `$XDG_DATA_HOME/ccli/tool-runs/`, an empty
@@ -218,7 +228,13 @@ They are joined from Cursor's usage page by conversation id (the same id as
 the local session, and a subagent's own id rolled up to its parent) and
 cached in `cursor-usage.json` for 15 minutes. The access token Cursor stored
 for the IDE login is sent only to `api2.cursor.sh`. It is not written to the
-index or the cache.
+index or the cache. A failed read is saved with its time and not retried for
+five minutes, and a part that failed (the cycle or the event list) keeps
+what the cache had for it. A Cursor IDE composer is read again when its
+header's `lastUpdatedAt`, its bubble count or its newest bubble row changes,
+because Cursor writes a reply's bubbles minutes after it moves
+`lastUpdatedAt`. A Cursor CLI chat is read again when its transcript,
+`meta.json` or `store.db` changes.
 
 Cursor IDE composers live in `state.vscdb` (`composerHeaders`,
 `cursorDiskKV` bubbles). Cursor keeps it in WAL mode, and recent commits may
@@ -557,11 +573,12 @@ on the next open, except for sessions tagged in the meantime.
 
 ## Quota
 
-ccli never calls a usage endpoint with stored credentials (the terms forbid
-third-party tools collecting or intermediating Claude.ai credentials), and
-it does not run `/usage`, which is not documented as available under
-`claude -p`. It asks the tools instead, and keeps passive sources as the
-fallback.
+For Claude Code and Codex, ccli never calls a usage endpoint with stored
+credentials (the terms forbid third-party tools collecting or intermediating
+Claude.ai credentials), and it does not run `/usage`, which is not documented
+as available under `claude -p`. It asks the tools instead, and keeps passive
+sources as the fallback. Cursor's billing cycle is read with the IDE's
+stored login, as described above.
 
 Live check (`quota` without `--offline`), one per account, in parallel,
 while the index is brought up to date:
