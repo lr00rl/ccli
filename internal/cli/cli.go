@@ -252,7 +252,7 @@ func (a *app) refresh(ctx context.Context, rebuild bool) (index.Stats, error) {
 		fmt.Fprint(a.errw, "\r\033[K")
 	}
 	if s.Errors > 0 {
-		fmt.Fprintf(a.errw, "ccli: %d transcript file(s) could not be read and will be retried (first: %s)\n", s.Errors, s.FirstError)
+		fmt.Fprintf(a.errw, "ccli: %d transcript file(s) or home(s) could not be read and will be retried (first: %s)\n", s.Errors, s.FirstError)
 	}
 	a.logf(1, "index: %d files, %d read, %d re-read, %d gone, %d errors, %s",
 		s.Files, s.Parsed, s.Reset, s.Missing, s.Errors, s.Duration.Round(time.Millisecond))

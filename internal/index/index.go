@@ -90,6 +90,7 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	var jobs []job
 	var runs []store.Run
 	seen := map[string]bool{}
+	failed := map[string]bool{} // accounts whose scan failed keep their files as they were
 	for _, a := range accts {
 		var found []discovered
 		var rs []store.Run
@@ -107,7 +108,13 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 			found, rs, err = scan(a, knownRuns, opt.Rebuild)
 		}
 		if err != nil {
-			return stats, err
+			// One unreadable home must not stop the others.
+			failed[a.Name] = true
+			stats.Errors++
+			if stats.FirstError == "" {
+				stats.FirstError = a.Name + ": " + err.Error()
+			}
+			continue
 		}
 		for _, m := range moves {
 			if err := st.MovePath(ctx, m.ID, m.To); err != nil {
@@ -141,7 +148,7 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	// Files that vanished keep their history; mark them missing.
 	accSet := map[string]bool{}
 	for _, a := range accts {
-		accSet[a.Name] = true
+		accSet[a.Name] = !failed[a.Name]
 	}
 	var gone []int64
 	for p, f := range known {

@@ -7,12 +7,10 @@ package cursorusage
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,8 +20,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/cursoride"
-
-	_ "modernc.org/sqlite"
+	"github.com/lr00rl/ccli/internal/sqlitero"
 )
 
 const (
@@ -610,8 +607,7 @@ func accessToken() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	u := url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&immutable=1"}
-	db, err := sql.Open("sqlite", u.String())
+	db, err := sqlitero.Open(dbPath)
 	if err != nil {
 		return "", fmt.Errorf("cursor usage: no local login")
 	}

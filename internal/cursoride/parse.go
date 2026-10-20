@@ -1,6 +1,6 @@
 // Package cursoride reads Cursor IDE composer chats from state.vscdb.
-// The database is opened immutable, so a read does not create a -shm or
-// -wal file next to a database Cursor has open. IDE chats and Cursor CLI
+// A read creates no -shm or -wal next to the database (see sqlitero) and
+// still sees what Cursor has committed to its -wal. IDE chats and Cursor CLI
 // transcripts are different stores and stay different accounts.
 package cursoride
 

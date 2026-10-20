@@ -35,8 +35,8 @@ In a Codex home it reads only the rollout files under `sessions/` and
 Codex's app server, which writes to Codex's own files; see below). It never opens `auth.json` (which
 holds the credentials and the signed-in identity) or `config.toml`, and never
 opens Codex's SQLite databases: opening one read-only can still create a
-`-shm` file next to it. The Cursor IDE database is the exception, and only
-with `immutable=1`, which does not create that sidecar.
+`-shm` file next to it. Cursor's databases are the exception, opened so that
+no sidecar is ever created (see below).
 
 It never reads or writes credentials (Keychain, `.credentials.json`), never
 writes `.claude.json`, `settings*.json`, `sessions/` (the live-process
@@ -221,8 +221,12 @@ for the IDE login is sent only to `api2.cursor.sh`. It is not written to the
 index or the cache.
 
 Cursor IDE composers live in `state.vscdb` (`composerHeaders`,
-`cursorDiskKV` bubbles). The database is opened `immutable=1`, so a read does
-not create a `-shm` or `-wal` beside a database Cursor has open. A subagent
+`cursorDiskKV` bubbles). Cursor keeps it in WAL mode, and recent commits may
+sit only in `state.vscdb-wal`. While Cursor has it open, its `-wal` and
+`-shm` both exist, and ccli opens a plain read-only connection that reads the
+WAL through Cursor's own `-shm`. Otherwise every commit is in the main file,
+and ccli opens it `immutable=1`. Neither creates a file beside the database.
+The same rule applies to Cursor CLI's `store.db`. A subagent
 is filed under `subagentInfo.rootParentConversationId`. Some bubbles carry
 `tokenCount`; there is no price. There is no resume command: opening an IDE
 chat from the CLI can rewrite a transcript, so `show` says to open it from

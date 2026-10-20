@@ -1,13 +1,11 @@
 package cursorcli
 
 import (
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"net/url"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	"github.com/lr00rl/ccli/internal/sqlitero"
 )
 
 // StoreInfo is the chat metadata Cursor keeps in store.db.
@@ -19,9 +17,9 @@ type StoreInfo struct {
 	AgentType string
 }
 
-// StoreModel reads lastUsedModel from a chat's store.db. The file is opened
-// immutable so a read does not create a -shm next to a store Cursor has
-// open. An absent or unreadable store returns "".
+// StoreModel reads lastUsedModel from a chat's store.db. The read creates no
+// file next to a store Cursor has open (see sqlitero). An absent or
+// unreadable store returns "".
 func StoreModel(path string) string { return ReadStore(path).Model }
 
 // ReadStore reads the model and, when this chat is a subagent, who started it.
@@ -29,8 +27,7 @@ func ReadStore(path string) StoreInfo {
 	if path == "" {
 		return StoreInfo{}
 	}
-	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}
-	db, err := sql.Open("sqlite", u.String())
+	db, err := sqlitero.Open(path)
 	if err != nil {
 		return StoreInfo{}
 	}
