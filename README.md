@@ -233,8 +233,9 @@ which writes that agent's turns after the turn that started it. `--all`
 includes turns started by tasks, other sessions and the system, as
 `log --all` does.
 
-`--out` writes only the path you name, and replaces that file if it exists.
-Without it the text goes to stdout. Tool output stops at 32 KiB, the same cap
+`--out` writes only the path you name, readable by you alone, and replaces
+that file if it exists. It refuses a path inside an agent's home. Without it,
+or with `--out -`, the text goes to stdout. Tool output stops at 32 KiB, the same cap
 as `log --tools`, and the file says how many bytes were left out. If the
 transcript is gone, export still writes the turns it kept and says so.
 
@@ -471,7 +472,8 @@ usage before it asks. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
 
 Only `copy`, `move`, `fork` and `resume --sync` write into an account, and
 only the files of the session involved. `hide` and `tag` write only to ccli's
-own index. `export --out` writes only the path you give. A transcript that
+own index. `export --out` writes only the path you give, never inside an
+agent's home. A transcript that
 cannot be read is reported and retried on the next run.
 [DESIGN.md](DESIGN.md) has the full contract, the transcript fields used and
 the store schema.

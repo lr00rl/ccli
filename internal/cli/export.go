@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/lr00rl/ccli/internal/export"
@@ -21,10 +22,10 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 	fs := newFlags("export", a, &c)
 	format := fs.String("format", "md", "md or jsonl")
 	detail := fs.String("detail", "full", "full writes each step; reply writes your prompt and the turn's last reply")
-	outPath := fs.String("out", "", "write the transcript to this file instead of stdout")
+	outPath := fs.String("out", "", "write the transcript to this file (mode 0600) instead of stdout")
 	agents := fs.Bool("agents", false, "include each subagent's conversation after the turn that started it")
 	thinking := fs.Bool("thinking", false, "include the model's thinking")
-	context := fs.Bool("context", false, "include text the tool added (skills, reminders, peer messages)")
+	withContext := fs.Bool("context", false, "include text the tool added (skills, reminders, peer messages)")
 	all := fs.Bool("all", false, "include turns started by tasks, other sessions and the system")
 	pos, err := parse(fs, args)
 	if err != nil {
@@ -70,33 +71,55 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 			return err
 		}
 	}
-	opt := export.Options{Format: *format, Detail: *detail, Thinking: *thinking, Context: *context, Agents: *agents, Loc: time.Local}
-	var w io.Writer = a.out
-	var closeFile func() error
-	if *outPath != "" {
-		f, err := os.Create(*outPath)
-		if err != nil {
-			return err
-		}
-		w = f
-		closeFile = f.Close
-	}
-	err = export.Write(w, doc, opt)
-	if closeFile != nil {
-		if cerr := closeFile(); err == nil {
-			err = cerr
-		}
+	opt := export.Options{Format: *format, Detail: *detail, Thinking: *thinking, Context: *withContext, Agents: *agents, Loc: time.Local}
+	if *outPath == "" || *outPath == "-" {
+		err = export.Write(a.out, doc, opt)
+	} else {
+		err = a.writeFile(*outPath, func(w io.Writer) error { return export.Write(w, doc, opt) })
 	}
 	if err != nil {
 		return err
 	}
-	if *outPath != "" {
+	if *outPath != "" && *outPath != "-" {
 		fmt.Fprintf(a.errw, "wrote %s\n", *outPath)
 	}
 	if gone != nil {
 		fmt.Fprintln(a.errw, "ccli:", gone)
 	}
 	return nil
+}
+
+// writeFile writes through a temporary file in the target's folder, so a
+// failed write leaves nothing behind and an existing file is replaced only
+// by a complete one. The file is private, because an export holds prompts and
+// tool output. A path inside an agent's home is refused: ccli never writes
+// there, and a jsonl export placed in one would be read back as a session.
+func (a *app) writeFile(path string, write func(io.Writer) error) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	real := resolveExisting(abs)
+	for _, ac := range a.accts {
+		if home := resolveExisting(ac.Dir); query.Under(real, home) {
+			return fmt.Errorf("%s is inside the %s home %s, and ccli does not write there", path, ac.Name, home)
+		}
+	}
+	f, err := os.CreateTemp(filepath.Dir(abs), ".ccli-export-*")
+	if err != nil {
+		return err
+	}
+	err = write(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), abs)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 func agentLogs(ctx context.Context, svc *query.DB, ref string, details []*query.TurnDetail) (map[string]*query.AgentLog, error) {
