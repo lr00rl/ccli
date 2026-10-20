@@ -535,10 +535,14 @@ func ms(v int64) time.Time {
 }
 
 func clip(s string) string {
-	if len(s) > conv.MaxOutput {
-		return s[:conv.MaxOutput]
+	if len(s) <= conv.MaxOutput {
+		return s
 	}
-	return s
+	n := conv.MaxOutput
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func clipLine(s string, n int) string {
@@ -572,15 +576,20 @@ func linesOf(r io.Reader, base int64, res *transcript.Result) ([]lineRec, error)
 	var pending int64
 	for {
 		chunk, err := br.ReadSlice('\n')
+		// A line past MaxLine is counted and skipped, never held in memory.
 		if err == bufio.ErrBufferFull {
 			pending += int64(len(chunk))
-			buf = append(buf, chunk...)
+			if pending <= transcript.MaxLine {
+				buf = append(buf, chunk...)
+			}
 			continue
 		}
 		if err == io.EOF {
 			if len(chunk) > 0 || len(buf) > 0 {
-				buf = append(buf, chunk...)
 				pending += int64(len(chunk))
+				if pending <= transcript.MaxLine {
+					buf = append(buf, chunk...)
+				}
 				off := base + res.Consumed
 				res.Consumed += pending
 				res.Lines++
@@ -599,6 +608,11 @@ func linesOf(r io.Reader, base int64, res *transcript.Result) ([]lineRec, error)
 		off := base + res.Consumed
 		res.Consumed += pending
 		res.Lines++
+		if pending > transcript.MaxLine {
+			res.Skipped++
+			buf, pending = buf[:0], 0
+			continue
+		}
 		body := append(append([]byte{}, buf...), chunk...)
 		buf, pending = buf[:0], 0
 		if body = bytes.TrimSpace(body); len(body) > 0 {

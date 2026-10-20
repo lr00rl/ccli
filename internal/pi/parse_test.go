@@ -3,7 +3,9 @@ package pi
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/lr00rl/ccli/internal/conv"
 	"github.com/lr00rl/ccli/internal/transcript"
 )
 
@@ -47,5 +49,12 @@ func TestActiveBranchKeepsEveryReply(t *testing.T) {
 	}
 	if res.ToolCalls != 1 || res.Tools["bash"] != 1 {
 		t.Fatalf("tools %+v calls %d", res.Tools, res.ToolCalls)
+	}
+}
+
+func TestClipKeepsWholeCharacters(t *testing.T) {
+	s := strings.Repeat("中", conv.MaxOutput) // three bytes each
+	if got := clip(s); !utf8.ValidString(got) || len(got) > conv.MaxOutput {
+		t.Fatalf("clip: %d bytes, valid %t", len(got), utf8.ValidString(got))
 	}
 }

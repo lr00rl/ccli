@@ -331,14 +331,19 @@ func cursorWhen(text string) int64 {
 		return 0
 	}
 	s := strings.TrimSpace(m[1])
-	zone := time.UTC
-	if i := strings.LastIndex(s, "(UTC"); i >= 0 {
-		z := strings.Trim(s[i:], "() \t")
-		s = strings.TrimSpace(s[:i])
-		if off, ok := utcOffset(z); ok {
-			zone = time.FixedZone(z, off)
-		}
+	// Without a zone ccli can read, the hour is unknown: the caller falls
+	// back to the chat's own clock rather than guess UTC.
+	i := strings.LastIndex(s, "(")
+	if i < 0 {
+		return 0
 	}
+	z := strings.Trim(s[i:], "() \t")
+	s = strings.TrimSpace(s[:i])
+	off, ok := utcOffset(z)
+	if !ok || !strings.HasPrefix(z, "UTC") {
+		return 0
+	}
+	zone := time.FixedZone(z, off)
 	if i := strings.Index(s, ","); i >= 0 {
 		s = strings.TrimSpace(s[i+1:])
 	}

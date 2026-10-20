@@ -66,7 +66,12 @@ func workspacePath(user, id string) string {
 	if p := fileURI(v.Folder); p != "" {
 		return p
 	}
-	return fileURI(v.Workspace)
+	// A multi-root workspace names its .code-workspace file; the folder that
+	// holds it stands for the project.
+	if p := fileURI(v.Workspace); p != "" {
+		return filepath.Dir(p)
+	}
+	return ""
 }
 
 func fileURI(s string) string {
