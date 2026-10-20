@@ -126,6 +126,25 @@ func (a *app) peelGlobals(args []string) ([]string, error) {
 	return args[i:], nil
 }
 
+// joinDebugLevel writes "--debug 2" after a command as "--debug=2", so the
+// command's flags read the level as peelGlobals does before the command,
+// not as a bare --debug followed by an argument.
+func joinDebugLevel(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		s := args[i]
+		if s == "--" {
+			return append(out, args[i:]...)
+		}
+		if (s == "--debug" || s == "-debug") && i+1 < len(args) && len(args[i+1]) == 1 && args[i+1][0] >= '0' && args[i+1][0] <= '9' {
+			s += "=" + args[i+1]
+			i++
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // Main runs ccli and returns the exit code.
 func Main(args []string, out, errw io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -156,7 +175,7 @@ func Main(args []string, out, errw io.Writer) int {
 		return 2
 	}
 	a.logf(1, "command %s", cmd)
-	if err := run(ctx, a, rest); err != nil {
+	if err := run(ctx, a, joinDebugLevel(rest)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}

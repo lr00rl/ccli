@@ -99,12 +99,17 @@ func (a *app) writeFile(path string, write func(io.Writer) error) error {
 	if err != nil {
 		return err
 	}
+	// A link is written through: the file it points to is replaced.
 	real := resolveExisting(abs)
 	for _, ac := range a.accts {
 		if home := resolveExisting(ac.Dir); query.Under(real, home) {
 			return fmt.Errorf("%s is inside the %s home %s, and ccli does not write there", path, ac.Name, home)
 		}
 	}
+	if st, err := os.Stat(real); err == nil && !st.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	abs = real
 	f, err := os.CreateTemp(filepath.Dir(abs), ".ccli-export-*")
 	if err != nil {
 		return err

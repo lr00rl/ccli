@@ -213,7 +213,7 @@ func RefreshOption(ctx context.Context, dataDir string, opt Option) (*Ledger, er
 		return cur, nil
 	}
 	if fresh && opt.Force {
-		trace(ctx, "cursor usage: cache is %s old, fetching again", time.Since(cur.FetchedAt).Round(time.Second))
+		trace(ctx, "cursor usage: fetching again although the cache is fresh")
 	}
 	next, err := fetch(ctx, opt.Asking)
 	if err == nil {
@@ -266,7 +266,15 @@ func save(dataDir string, l *Ledger) error {
 	if err != nil {
 		return err
 	}
-	// A name of its own per write: another ccli may be saving at once.
+	// A name of its own per write: another ccli may be saving at once. One
+	// left an hour ago belongs to a run that stopped mid-save.
+	if left, _ := filepath.Glob(filepath.Join(dataDir, "cursor-usage-*.tmp")); len(left) > 0 {
+		for _, p := range left {
+			if st, err := os.Stat(p); err == nil && time.Since(st.ModTime()) > time.Hour {
+				os.Remove(p)
+			}
+		}
+	}
 	f, err := os.CreateTemp(dataDir, "cursor-usage-*.tmp")
 	if err != nil {
 		return err

@@ -36,6 +36,28 @@ func TestWriteFile(t *testing.T) {
 		t.Fatalf("mode = %v, want 0600", st.Mode().Perm())
 	}
 
+	// A link is written through, and stays a link.
+	target := filepath.Join(root, "real.md")
+	alias := filepath.Join(root, "link.md")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.writeFile(alias, text("through")); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Lstat(alias); st.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the link was replaced by a file")
+	}
+	if b, _ := os.ReadFile(target); string(b) != "through" {
+		t.Fatalf("target = %q", b)
+	}
+	if err := a.writeFile(root, text("x")); err == nil {
+		t.Fatal("a folder was accepted as the output file")
+	}
+
 	// A failed write keeps the old file and leaves no temporary file.
 	if err := a.writeFile(out, func(w io.Writer) error { io.WriteString(w, "half"); return errors.New("boom") }); err == nil {
 		t.Fatal("the write error was lost")

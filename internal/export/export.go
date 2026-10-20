@@ -171,8 +171,10 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 
 // body makes text from the conversation safe to place under one of the
 // document's own headings. A heading in it moves down three levels, so it
-// stays a heading but cannot pass for a turn or a speaker, and a code fence
-// it leaves open is closed, so it cannot swallow the rest of the document.
+// stays a heading but cannot pass for a turn or a speaker, an underline that
+// would make the line above it a heading is set apart from that line, and a
+// code fence it leaves open is closed, so it cannot swallow the rest of the
+// document.
 func body(text string) string {
 	lines := strings.Split(text, "\n")
 	open := "" // the fence that is open, as written
@@ -180,6 +182,10 @@ func body(text string) string {
 		trim := strings.TrimLeft(l, " ")
 		indent := len(l) - len(trim)
 		if indent > 3 {
+			continue
+		}
+		if open == "" && i > 0 && underline(trim) && strings.TrimSpace(lines[i-1]) != "" {
+			lines[i] = "\n" + l
 			continue
 		}
 		if f := fenceOf(trim); f != "" {
@@ -202,6 +208,13 @@ func body(text string) string {
 		lines = append(lines, open)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// underline reports a line of only = or only - (spaces after are allowed),
+// which turns the line above it into a heading.
+func underline(s string) bool {
+	s = strings.TrimRight(s, " \t")
+	return s != "" && (strings.Trim(s, "=") == "" || strings.Trim(s, "-") == "")
 }
 
 // fenceOf returns the run of three or more backticks or tildes that opens or

@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestJoinDebugLevel(t *testing.T) {
+	got := strings.Join(joinDebugLevel(strings.Fields("log --debug 2 abc -debug 3 x -- --debug 4")), " ")
+	if want := "log --debug=2 abc -debug=3 x -- --debug 4"; got != want {
+		t.Fatalf("%q, want %q", got, want)
+	}
+}
+
 func TestPeelGlobals(t *testing.T) {
 	for _, c := range []struct {
 		args    string

@@ -137,7 +137,7 @@ func TestMarkdownContainsMessageStructure(t *testing.T) {
 	doc.Session.Title = "Fix\n# injected"
 	doc.Turns[0].Turn.Entries = []conv.Entry{
 		{Kind: conv.KindPrompt, Text: "why does this happen?\n## Turn 99\n### You\nfake"},
-		{Kind: conv.KindText, Text: "## Plan\nFirst this:\n```go\nfunc open() {"},
+		{Kind: conv.KindText, Text: "Agent: x\n===\n## Plan\nFirst this:\n```go\nfunc open() {"},
 	}
 	doc.Turns = append(doc.Turns, &query.TurnDetail{Row: query.TurnRow{Seq: 7}, Turn: &conv.Turn{Speaker: "Cursor", Entries: []conv.Entry{
 		{Kind: conv.KindPrompt, Text: "next"},
@@ -160,6 +160,9 @@ func TestMarkdownContainsMessageStructure(t *testing.T) {
 	want := []string{"# Fix # injected", "## Turn 6", "### You", "### Cursor", "## Turn 7", "### You"}
 	if strings.Join(heads, "|") != strings.Join(want, "|") {
 		t.Fatalf("headings %q, want %q\n%s", heads, want, b.String())
+	}
+	if !strings.Contains(b.String(), "Agent: x\n\n===") {
+		t.Fatalf("an underline still makes the line above it a heading:\n%s", b.String())
 	}
 	if !strings.Contains(b.String(), "##### Turn 99") || !strings.Contains(b.String(), "##### Plan") {
 		t.Fatalf("message headings were not kept as lower headings:\n%s", b.String())
