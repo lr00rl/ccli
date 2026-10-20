@@ -3,9 +3,9 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -295,7 +295,7 @@ func TestDiscoverNewHomes(t *testing.T) {
 }
 
 // A Pi range is read from one parse of the file, and a turn the file no
-// longer has is an error rather than an empty turn.
+// longer has is reported, with the turns that could still be read.
 func TestPiTurnRange(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "pi-agent")
@@ -347,7 +347,8 @@ func TestPiTurnRange(t *testing.T) {
 	if err := os.WriteFile(path, []byte(head+one), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.TurnRange(context.Background(), id[:8], 2, 2, false); err == nil || !strings.Contains(err.Error(), "no longer in") {
-		t.Fatalf("err = %v, want the turn reported as gone", err)
+	got, err = q.TurnRange(context.Background(), id[:8], 1, 2, false)
+	if !errors.Is(err, query.ErrStale) || len(got) != 2 || got[0].Turn == nil || got[1].Turn != nil {
+		t.Fatalf("err = %v, %d turns; want turn 1 read and turn 2 reported as changed", err, len(got))
 	}
 }

@@ -102,7 +102,7 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		}
 		from, to := l.Turns[0].Seq, l.Turns[len(l.Turns)-1].Seq
 		details, err := svc.TurnRange(ctx, ref, from, to, *all)
-		if err != nil && !(errors.Is(err, query.ErrNoTranscript) && len(details) > 0) {
+		if err != nil && !(query.Partial(err) && len(details) > 0) {
 			return err
 		}
 		if err != nil {
@@ -133,7 +133,7 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	details, err := svc.TurnRange(ctx, ref, from, to, *all)
-	if err != nil && !(errors.Is(err, query.ErrNoTranscript) && len(details) > 0) {
+	if err != nil && !(query.Partial(err) && len(details) > 0) {
 		return err
 	}
 	if err != nil {

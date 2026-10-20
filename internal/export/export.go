@@ -96,7 +96,7 @@ func writeMD(w io.Writer, doc Doc, opt Options) error {
 
 func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 	if tr == nil {
-		b.WriteString("\nThe transcript for this part is gone.\n")
+		b.WriteString("\nThis part of the transcript could not be read.\n")
 		return
 	}
 	speaker := tr.Speaker

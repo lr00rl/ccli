@@ -326,6 +326,14 @@ func (d *DB) Turns(ctx context.Context, ref string) (*TurnList, error) {
 // ErrNoTranscript is returned when a turn's transcript is gone from disk.
 var ErrNoTranscript = errors.New("the transcript is gone from disk (ccli kept only the totals and prompts)")
 
+// ErrStale is returned with the turns that could be read when others
+// changed in the transcript after it was indexed: a Pi session moved to
+// another branch, or Cursor rewrote a chat.
+var ErrStale = errors.New("part of the transcript changed after it was indexed; run the command again to read it")
+
+// Partial reports an error that comes with the turns that could be read.
+func Partial(err error) bool { return errors.Is(err, ErrNoTranscript) || errors.Is(err, ErrStale) }
+
 // Turn reads one turn from the transcript. seq -1 means the last turn.
 func (d *DB) Turn(ctx context.Context, ref string, seq int) (*TurnDetail, error) {
 	ds, err := d.TurnRange(ctx, ref, seq, seq, true)
@@ -358,7 +366,7 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 		}
 	}
 	var out []*TurnDetail
-	var gone error
+	var gone, stale error
 	rd := &turnReader{d: d, acct: g.det.Account, path: g.main.Path}
 	for i := first; i <= last; i++ {
 		row := g.turns[i]
@@ -400,11 +408,18 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 				gone = ErrNoTranscript
 				continue
 			}
+			if errors.Is(err, ErrStale) {
+				stale = err
+				continue
+			}
 			return nil, err
 		}
 		det.Turn = tr
 	}
-	return out, gone
+	if gone != nil {
+		return out, gone
+	}
+	return out, stale
 }
 
 // agentTree nests the matching subagents under the subagents that started
@@ -765,9 +780,8 @@ func (r *turnReader) turn(from, to int64, seq int) (*conv.Turn, error) {
 	if t := find(r.all, from, seq); t != nil {
 		return t, nil
 	}
-	// The transcript changed after the index read it, or a Pi session moved
-	// to another branch. The next run re-reads it.
-	return nil, fmt.Errorf("turn %d is no longer in %s; run the command again to re-read it", seq, r.path)
+	// The transcript changed after the index read it. The next run re-reads it.
+	return nil, ErrStale
 }
 
 // readAgent reads a subagent's whole transcript.

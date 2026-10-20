@@ -60,7 +60,7 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 		}
 	}
 	details, err := svc.TurnRange(ctx, ref, from, to, *all)
-	if err != nil && !(errors.Is(err, query.ErrNoTranscript) && len(details) > 0) {
+	if err != nil && !(query.Partial(err) && len(details) > 0) {
 		return err
 	}
 	gone := err
