@@ -155,6 +155,11 @@ type SessionRow struct {
 	GitBranch    string       `json:"git_branch,omitempty"`
 	Entrypoint   string       `json:"entrypoint,omitempty"`
 	Version      string       `json:"version,omitempty"`
+
+	// A Cursor row's figures before billed usage was merged in. Account
+	// totals and the dashboard add billed usage under the same rule.
+	ownTokens Tokens
+	ownCost   Cost
 }
 
 // SessionPage is a filtered, sorted list of sessions.
