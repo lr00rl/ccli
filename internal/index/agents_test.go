@@ -157,14 +157,14 @@ func TestPiCursorAndIDE(t *testing.T) {
 		t.Fatalf("pi row %+v", piRow)
 	}
 	cur := byID[curID]
-	if cur.Cwd != "/work/app" || cur.Prompts < 1 || cur.Title != "Parser" || cur.Subagents != 2 || cur.ToolCalls < 1 {
+	if cur.Cwd != "/work/app" || cur.Prompts != 1 || cur.Title != "Parser" || cur.Subagents != 2 || cur.ToolCalls < 1 {
 		t.Fatalf("cursor row %+v", cur)
 	}
 	if _, ok := byID[ownSub]; ok {
 		t.Fatal("subagent transcript was indexed as its own session")
 	}
 	ide := byID[ideID]
-	if ide.Cwd != "/work/ide" || ide.Prompts < 1 || ide.Title != "IDE chat" || ide.Subagents != 1 || ide.Tokens.Input != 12 || ide.Tool != account.CursorIDE {
+	if ide.Cwd != "/work/ide" || ide.Prompts != 1 || ide.Title != "IDE chat" || ide.Subagents != 1 || ide.Tokens.Input != 12 || ide.Tool != account.CursorIDE {
 		t.Fatalf("ide row %+v", ide)
 	}
 	pro, err := q.Projects(context.Background(), query.Filter{})

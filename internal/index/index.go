@@ -653,6 +653,9 @@ func parseOne(j job) parsed {
 	if err != nil {
 		return parsed{err: err}
 	}
+	if j.tool == account.Cursor && j.file.Kind == "subagent" {
+		asSubagent(&res)
+	}
 	if j.tool == account.Cursor {
 		if res.Cwd == "" {
 			res.Cwd = j.cwd
@@ -699,6 +702,9 @@ func parseIDE(j job) parsed {
 	if res.Cwd == "" {
 		res.Cwd = j.cwd
 	}
+	if j.file.Kind == "subagent" {
+		asSubagent(&res)
+	}
 	up := store.Update{File: j.file, Reset: j.reset, From: from, Result: res, Ledger: j.ledger}
 	up.File.Offset = j.file.Size
 	up.File.Parser = fileParser(j.tool)
@@ -706,6 +712,14 @@ func parseIDE(j job) parsed {
 		up.Agent = &store.AgentMeta{AgentType: agent.Type, Description: agent.Description, ToolUseID: agent.ToolUseID}
 	}
 	return parsed{up: up, bytes: res.Consumed}
+}
+
+// asSubagent drops what a Cursor subagent's transcript would add to the
+// session's prompts. Its first message is the task the parent gave it, which
+// labels the subagent instead, as for Claude Code subagents.
+func asSubagent(res *transcript.Result) {
+	res.TypedPrompts, res.OtherPrompts = 0, 0
+	res.Turns, res.Commands = nil, nil
 }
 
 func readMeta(path string) *store.AgentMeta {
