@@ -25,3 +25,16 @@ func TestConversationReplyDropsSteps(t *testing.T) {
 		t.Fatalf("step leaked:\n%s", got)
 	}
 }
+
+func TestConversationDropsEscapes(t *testing.T) {
+	var b strings.Builder
+	term := Term{W: &b, Width: 80, Loc: time.UTC}
+	term.Conversation(&conv.Turn{Speaker: "Cursor", Entries: []conv.Entry{
+		{Kind: conv.KindPrompt, Text: "see \x1b]0;pwned\x07this"},
+		{Kind: conv.KindText, Text: "done\x1b[2J here"},
+	}}, LogOptions{Raw: true}, nil)
+	got := b.String()
+	if strings.Contains(got, "\x1b]") || strings.Contains(got, "\x1b[2J") || !strings.Contains(got, "seethis") && !strings.Contains(got, "see this") {
+		t.Fatalf("escapes reached the output: %q", got)
+	}
+}

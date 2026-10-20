@@ -26,7 +26,7 @@ type TurnRow struct {
 	At         time.Time `json:"at"`
 	End        time.Time `json:"end"`
 	DurationMS int64     `json:"duration_ms"` // Claude Code's own turn time, else active time
-	Prompt     string    `json:"prompt"`      // as recorded, capped
+	Prompt     string    `json:"prompt"`      // as recorded, capped, without terminal escapes
 	Headline   string    `json:"headline"`    // first line as displayed
 	Chars      int       `json:"chars"`
 	Images     int       `json:"images"`
@@ -287,6 +287,7 @@ func (d *DB) turnRows(ctx context.Context, fileID int64) ([]TurnRow, error) {
 			&t.Responses, &t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheWrite, &t.Cost); err != nil {
 			return nil, err
 		}
+		t.Prompt = conv.Printable(t.Prompt)
 		t.At, t.End = ms(at), ms(end)
 		if t.Seq == 0 {
 			// Before the first prompt: session start hooks and the like. Keep it
@@ -661,6 +662,7 @@ func (d *DB) Prompts(ctx context.Context, f Filter) (PromptPage, error) {
 			rows.Close()
 			return page, err
 		}
+		p.Prompt = conv.Printable(p.Prompt)
 		s, ok := meta[skey{p.Account, p.SessionID}]
 		if !ok {
 			continue // filtered out by account, project or model

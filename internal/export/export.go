@@ -108,6 +108,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 		entries = conv.ReplyEntries(entries)
 	}
 	for _, e := range entries {
+		e.Text = conv.Printable(e.Text)
 		switch e.Kind {
 		case conv.KindThinking:
 			if !opt.Thinking {

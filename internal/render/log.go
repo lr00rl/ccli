@@ -255,6 +255,7 @@ func (t Term) Conversation(tr *conv.Turn, opt LogOptions, agents []query.AgentNo
 	}
 	for i := 0; i < len(entries); i++ {
 		e := entries[i]
+		e.Text = conv.Printable(e.Text) // recorded text must not act on the terminal
 		switch e.Kind {
 		case conv.KindPrompt:
 			who := "You"
