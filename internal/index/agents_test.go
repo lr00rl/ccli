@@ -231,7 +231,7 @@ func TestCursorDuplicateIDKeepsNewer(t *testing.T) {
 	if err := os.Chtimes(newer, newT, newT); err != nil {
 		t.Fatal(err)
 	}
-	got, err := scanCursor(account.Account{Name: "cursor", Tool: account.Cursor, Dir: root})
+	got, err := scanCursor(account.Account{Name: "cursor", Tool: account.Cursor, Dir: root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

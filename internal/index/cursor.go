@@ -10,13 +10,14 @@ import (
 
 	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/cursorcli"
+	"github.com/lr00rl/ccli/internal/store"
 )
 
 // scanCursor lists Cursor CLI transcripts. A nested
 // <id>/<id>.jsonl is the conversation; subagents/<id>.jsonl belongs to it.
 // meta.json under chats/ supplies the real working directory when Cursor
 // wrote one. Without it, the project is the transcript's project directory.
-func scanCursor(a account.Account) ([]discovered, error) {
+func scanCursor(a account.Account, known map[string]store.File) ([]discovered, error) {
 	metas := cursorMetas(filepath.Join(a.Dir, "chats"))
 	root := filepath.Join(a.Dir, "projects")
 	var found []discovered
@@ -83,6 +84,13 @@ func scanCursor(a account.Account) ([]discovered, error) {
 					}
 					session = rootID
 				}
+			}
+		}
+		if own.unread {
+			// store.db could not be read this time: keep how the index filed
+			// the chat rather than call a subagent a session of its own.
+			if old, ok := known[path]; ok {
+				session, kind, agent = old.SessionID, old.Kind, old.AgentID
 			}
 		}
 		title := own.title
@@ -173,7 +181,7 @@ type cursorMeta struct {
 	cwd                      string
 	title, model             string
 	created, updated         int64
-	sub                      bool
+	sub, unread              bool
 	parent, root, tool, kind string
 	stamp                    int64 // newest mtime of meta.json, store.db and store.db-wal, Unix ms
 }
@@ -211,7 +219,7 @@ func cursorMetas(root string) map[string]cursorMeta {
 			cwd: v.Cwd, title: v.Title, model: info.Model,
 			created: v.Created, updated: v.Updated, sub: v.Subagent,
 			parent: info.Parent, root: info.Root, tool: info.ToolCall, kind: info.AgentType,
-			stamp: stamp,
+			stamp: stamp, unread: info.Unread,
 		}
 		return nil
 	})

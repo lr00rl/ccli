@@ -101,7 +101,7 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 		case account.Pi:
 			found, err = scanPi(a)
 		case account.Cursor:
-			found, err = scanCursor(a)
+			found, err = scanCursor(a, known)
 		case account.CursorIDE:
 			found, err = scanCursorIDE(a)
 		default:

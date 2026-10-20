@@ -108,6 +108,18 @@ func TestCursorSideDataChangeIsRead(t *testing.T) {
 	if r := got[root]; r.Subagents != 1 || r.Title != "Parser fix" {
 		t.Fatalf("root row: subagents %d, title %q", r.Subagents, r.Title)
 	}
+
+	// A store.db that cannot be read for a moment does not undo that.
+	storeDB := filepath.Join(home, "chats", "abc", sub, "store.db")
+	writeFile(t, storeDB, "not a database")
+	later = later.Add(time.Minute)
+	if err := os.Chtimes(storeDB, later, later); err != nil {
+		t.Fatal(err)
+	}
+	got = e.sessions()
+	if _, ok := got[sub]; ok || got[root].Subagents != 1 || got[root].Prompts != 1 {
+		t.Fatalf("unreadable store.db: %d sessions, root %+v", len(got), got[root])
+	}
 }
 
 // Cursor writes a reply's bubbles after it last moves the composer's
