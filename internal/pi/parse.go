@@ -57,20 +57,16 @@ func Parse(r io.Reader, session string, st transcript.State) (transcript.Result,
 	return res, err
 }
 
-// ReadTurn reads the active branch and returns the turn whose seq matches.
-// The byte range is the index's hint; the branch, not the bytes between two
-// prompts, decides what belongs to the turn.
-func ReadTurn(path string, _, _ int64, seq int) (*conv.Turn, error) {
-	turns, err := ReadRange(path)
-	if err != nil {
-		return nil, err
-	}
+// FindTurn returns the turn of ReadRange's result whose seq matches, or nil.
+// The index's byte offset is not used: the active branch, not the bytes
+// between two prompts, decides what belongs to a turn.
+func FindTurn(turns []conv.Turn, _ int64, seq int) *conv.Turn {
 	for i := range turns {
 		if turns[i].Seq == seq {
-			return &turns[i], nil
+			return &turns[i]
 		}
 	}
-	return &conv.Turn{Seq: seq, Speaker: Speaker}, nil
+	return nil
 }
 
 // ReadRange reads the active branch of a session as turns.

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -290,5 +291,63 @@ func TestDiscoverNewHomes(t *testing.T) {
 	}
 	if _, ok := got[account.Claude]; ok {
 		t.Fatalf("claude home leaked in: %+v", accts)
+	}
+}
+
+// A Pi range is read from one parse of the file, and a turn the file no
+// longer has is an error rather than an empty turn.
+func TestPiTurnRange(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "pi-agent")
+	const id = "44444444-4444-4444-8444-444444444444"
+	path := filepath.Join(home, "sessions", "--work-app--", "2026-08-01T00-00-00_"+id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	head := `{"type":"session","version":3,"id":"` + id + `","timestamp":"2026-08-01T00:00:00Z","cwd":"/work/app"}` + "\n"
+	msg := func(id, parent, role, ts, body string) string {
+		p := "null"
+		if parent != "" {
+			p = `"` + parent + `"`
+		}
+		return `{"type":"message","id":"` + id + `","parentId":` + p + `,"timestamp":"2026-08-01T00:00:` + ts + `Z","message":{"role":"` + role + `","content":` + body + `}}` + "\n"
+	}
+	one := msg("u1", "", "user", "01", `"first ask"`) + msg("a1", "u1", "assistant", "02", `[{"type":"text","text":"first answer"}]`)
+	two := msg("u2", "a1", "user", "03", `"second ask"`) + msg("a2", "u2", "assistant", "04", `[{"type":"text","text":"second answer"}]`)
+	if err := os.WriteFile(path, []byte(head+one+two), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	accts := []account.Account{{Name: "pi", Tool: account.Pi, Dir: home}}
+	st, err := store.Open(filepath.Join(root, "ccli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	prices, _ := pricing.Load("")
+	if _, err := Run(context.Background(), st, accts, prices, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	q := query.New(st, accts)
+	got, err := q.TurnRange(context.Background(), id[:8], 1, 2, false)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("range: %d turns, err %v", len(got), err)
+	}
+	for _, want := range []string{"first answer", "second answer"} {
+		found := false
+		for _, d := range got {
+			for _, e := range d.Turn.Entries {
+				found = found || e.Text == want
+			}
+		}
+		if !found {
+			t.Fatalf("%q missing from the range", want)
+		}
+	}
+	// The file loses its second turn after the index read it.
+	if err := os.WriteFile(path, []byte(head+one), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.TurnRange(context.Background(), id[:8], 2, 2, false); err == nil || !strings.Contains(err.Error(), "no longer in") {
+		t.Fatalf("err = %v, want the turn reported as gone", err)
 	}
 }

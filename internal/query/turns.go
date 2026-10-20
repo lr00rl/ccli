@@ -359,6 +359,7 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 	}
 	var out []*TurnDetail
 	var gone error
+	rd := &turnReader{d: d, acct: g.det.Account, path: g.main.Path}
 	for i := first; i <= last; i++ {
 		row := g.turns[i]
 		if i != first && !all && row.Kind != "human" {
@@ -393,7 +394,7 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 		if row.Seq == 0 {
 			start = 0
 		}
-		tr, err := d.readTurn(g.det.Account, g.main.Path, start, row.Next, row.Seq)
+		tr, err := rd.turn(start, row.Next, row.Seq)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				gone = ErrNoTranscript
@@ -730,19 +731,43 @@ func likeEscape(s string) string {
 
 // readTurn reads one turn of a session's main transcript, in the format of
 // the account's tool.
-func (d *DB) readTurn(acct, path string, from, to int64, seq int) (*conv.Turn, error) {
-	switch d.toolOf(acct) {
+// turnReader reads turns from one transcript. Claude Code and Codex turns
+// are byte ranges. Pi and Cursor have none, so their transcript is parsed
+// once, on the first turn asked for, and each turn is found in it.
+type turnReader struct {
+	d          *DB
+	acct, path string
+	all        []conv.Turn
+	parsed     bool
+}
+
+func (r *turnReader) turn(from, to int64, seq int) (*conv.Turn, error) {
+	var find func([]conv.Turn, int64, int) *conv.Turn
+	switch r.d.toolOf(r.acct) {
 	case account.Codex:
-		return codex.ReadTurn(path, from, to, seq)
+		return codex.ReadTurn(r.path, from, to, seq)
 	case account.Pi:
-		return pi.ReadTurn(path, from, to, seq)
+		find = pi.FindTurn
 	case account.Cursor:
-		return cursorcli.ReadTurn(path, from, to, seq)
+		find = cursorcli.FindTurn
 	case account.CursorIDE:
-		return cursoride.ReadTurn(path, from, to, seq)
+		find = cursoride.FindTurn
 	default:
-		return conv.ReadTurn(path, from, to, seq)
+		return conv.ReadTurn(r.path, from, to, seq)
 	}
+	if !r.parsed {
+		all, err := r.d.readAgent(r.acct, r.path)
+		if err != nil {
+			return nil, err
+		}
+		r.all, r.parsed = all, true
+	}
+	if t := find(r.all, from, seq); t != nil {
+		return t, nil
+	}
+	// The transcript changed after the index read it, or a Pi session moved
+	// to another branch. The next run re-reads it.
+	return nil, fmt.Errorf("turn %d is no longer in %s; run the command again to re-read it", seq, r.path)
 }
 
 // readAgent reads a subagent's whole transcript.

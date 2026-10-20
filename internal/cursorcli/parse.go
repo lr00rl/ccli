@@ -43,23 +43,19 @@ func Parse(r io.Reader, id string, side Side) (transcript.Result, error) {
 	return res, err
 }
 
-// ReadTurn reads one turn. Cursor transcripts are linear, so the byte range
-// is the turn.
-func ReadTurn(path string, from, to int64, seq int) (*conv.Turn, error) {
-	turns, err := readFile(path, Side{}, true)
-	if err != nil {
-		return nil, err
-	}
+// FindTurn returns the turn of ReadRange's result with this seq, or the one
+// that starts at the index's byte offset, or nil.
+func FindTurn(turns []conv.Turn, from int64, seq int) *conv.Turn {
 	for i := range turns {
 		if turns[i].Seq == seq || (from > 0 && turns[i].Offset == from) {
 			t := turns[i]
 			if t.Seq == 0 {
 				t.Seq = seq
 			}
-			return &t, nil
+			return &t
 		}
 	}
-	return &conv.Turn{Seq: seq, Offset: from, Speaker: Speaker}, nil
+	return nil
 }
 
 // ReadRange reads a whole transcript, a subagent's included, as turns.

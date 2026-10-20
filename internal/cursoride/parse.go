@@ -120,18 +120,14 @@ func Parse(path string) (transcript.Result, *Agent, error) {
 	return res, agent, err
 }
 
-// ReadTurn returns one turn of a composer. seq is the turn the index stored.
-func ReadTurn(path string, _, _ int64, seq int) (*conv.Turn, error) {
-	_, _, turns, err := load(path, true)
-	if err != nil {
-		return nil, err
-	}
+// FindTurn returns the turn of ReadRange's result whose seq matches, or nil.
+func FindTurn(turns []conv.Turn, _ int64, seq int) *conv.Turn {
 	for i := range turns {
 		if turns[i].Seq == seq {
-			return &turns[i], nil
+			return &turns[i]
 		}
 	}
-	return &conv.Turn{Seq: seq, Speaker: Speaker}, nil
+	return nil
 }
 
 // ReadRange reads a composer's bubbles as turns.
