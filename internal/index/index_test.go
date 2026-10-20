@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -594,5 +595,34 @@ func TestStaleLedgerUpdateForcesReread(t *testing.T) {
 	}
 	if n := e.int("SELECT COUNT(*) FROM transfers"); n != 0 {
 		t.Fatalf("%d ledger entries left after delete", n)
+	}
+}
+
+// A home that cannot be scanned is reported and skipped: the other accounts
+// are still indexed, and its own files are not marked missing.
+func TestUnreadableHomeDoesNotStopTheRun(t *testing.T) {
+	e := newEnv(t, "default")
+	e.write(0, "-p/s1.jsonl", prompt(0, "hello")+asst(1, "m1", 10))
+	ide := filepath.Join(filepath.Dir(e.accts[0].Dir), "Cursor", "User")
+	db := filepath.Join(ide, "globalStorage", "state.vscdb")
+	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(db, []byte("not a database, just bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.accts = append(e.accts, account.Account{Name: "cursor-ide", Tool: account.CursorIDE, Dir: ide})
+	if _, err := e.st.DB().Exec(`INSERT INTO files(path, account, session_id, project_key, kind) VALUES(?, 'cursor-ide', 'c1', '', 'main')`, db+"#c1"); err != nil {
+		t.Fatal(err)
+	}
+	s := e.run()
+	if s.Errors != 1 || !strings.HasPrefix(s.FirstError, "cursor-ide: ") {
+		t.Fatalf("errors = %d %q, want one from cursor-ide", s.Errors, s.FirstError)
+	}
+	if n := e.int("SELECT COUNT(*) FROM responses WHERE session_id='s1'"); n != 1 {
+		t.Fatalf("s1 responses = %d, want 1", n)
+	}
+	if n := e.int("SELECT missing FROM files WHERE path = ?", db+"#c1"); n != 0 {
+		t.Fatal("the unreadable home's composer was marked missing")
 	}
 }

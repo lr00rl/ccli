@@ -26,6 +26,7 @@ func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) {
 		if rows[i].Tool != account.Cursor && rows[i].Tool != account.CursorIDE {
 			continue
 		}
+		rows[i].ownTokens, rows[i].ownCost = rows[i].Tokens, rows[i].Cost
 		u := usageOf(led, rows[i].ID, kids[rows[i].ID], time.Time{}, time.Time{})
 		if u.Events == 0 {
 			continue
@@ -37,26 +38,33 @@ func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) {
 	}
 }
 
-// mergeBilled folds dashboard usage into a row. IDE tokens that the index
-// already stored are left in place.
+// mergeBilled folds dashboard usage into a row.
 func mergeBilled(tool account.Tool, tokens Tokens, cost Cost, u cursorusage.Use) (Tokens, Cost) {
 	if u.Events == 0 {
 		return tokens, cost
 	}
-	if tool == account.CursorIDE && tokens.All() > 0 {
-		if cost.USD == 0 {
-			cost.USD = u.USD
-			cost.Unpriced = 0
-		}
+	t, usd, ok := billedAdds(tool, tokens, cost, Tokens{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite}, u.USD)
+	if !ok {
 		return tokens, cost
 	}
-	tokens.Input += u.Input
-	tokens.Output += u.Output
-	tokens.CacheRead += u.CacheRead
-	tokens.CacheWrite += u.CacheWrite
-	cost.USD += u.USD
+	tokens.add(t)
+	cost.USD += usd
 	cost.Unpriced = 0
 	return tokens, cost
+}
+
+// billedAdds is the one rule for what billed usage adds to a Cursor
+// session's own figures, used by the session list, account totals and the
+// dashboard alike. A CLI transcript has neither tokens nor cost, so billed
+// usage is the whole figure, as it is for an IDE composer with no token
+// counts. An IDE composer whose bubbles carry tokens keeps them and takes
+// only the billed amount, and only when ccli could not price those tokens
+// itself (ok is false when it could).
+func billedAdds(tool account.Tool, ownTokens Tokens, ownCost Cost, tokens Tokens, usd float64) (Tokens, float64, bool) {
+	if tool == account.CursorIDE && ownTokens.All() > 0 {
+		return Tokens{}, usd, ownCost.USD == 0
+	}
+	return tokens, usd, true
 }
 
 func (d *DB) applyCursorDetail(ctx context.Context, det *SessionDetail) {
@@ -173,10 +181,9 @@ func (d *DB) cursorChildren(ctx context.Context) map[string][]string {
 }
 
 // addCursorAccountUsage adds billed Cursor usage onto account totals, and
-// only the events inside the filter. IDE token rows are already in the SQL
-// sum, so an IDE account takes the billed amount and not a second copy of
-// the tokens. CLI transcripts have no token rows, so the events are the
-// whole CLI figure.
+// only the events inside the filter, under the rule in billedAdds. IDE token
+// rows are already in the SQL sum, which is why billedAdds never adds a
+// second copy of them.
 func (d *DB) addCursorAccountUsage(ctx context.Context, f Filter, out []AccountSummary, idx map[string]int) error {
 	led := d.cursorLedger()
 	if len(led.Sessions) == 0 {
@@ -196,24 +203,19 @@ func (d *DB) addCursorAccountUsage(ctx context.Context, f Filter, out []AccountS
 		if u.Events == 0 {
 			continue
 		}
-		if s.Tool == account.CursorIDE {
-			out[i].Cost.USD += u.USD
-			out[i].Cost.Unpriced = 0
+		t, usd, ok := billedAdds(s.Tool, s.ownTokens, s.ownCost, Tokens{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite}, u.USD)
+		if !ok {
 			continue
 		}
-		out[i].Tokens.Input += u.Input
-		out[i].Tokens.Output += u.Output
-		out[i].Tokens.CacheRead += u.CacheRead
-		out[i].Tokens.CacheWrite += u.CacheWrite
-		out[i].Cost.USD += u.USD
+		out[i].Tokens.add(t)
+		out[i].Cost.USD += usd
 		out[i].Cost.Unpriced = 0
 	}
 	return nil
 }
 
-// addCursorOverview adds billed Cursor usage to the dashboard. Each event
-// lands on its own day. IDE bubble tokens are already in the SQL totals, so
-// those sessions contribute cost only.
+// addCursorOverview adds billed Cursor usage to the dashboard, under the
+// rule in billedAdds. Each event lands on its own day.
 func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Overview, days map[string]*Day, projects, models, accts map[string]*Share, projSess, modelSess, acctSess map[string]map[skey]bool, loc *time.Location) {
 	led := d.cursorLedger()
 	if len(led.Sessions) == 0 {
@@ -227,15 +229,14 @@ func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Ov
 			continue
 		}
 		k := skey{s.Account, s.ID}
-		ide := s.Tool == account.CursorIDE
 		for _, h := range hitsOf(led, s.ID, kids[s.ID], since, until) {
 			when := time.UnixMilli(h.At).In(loc)
-			t := Tokens{}
-			if !ide {
-				t = Tokens{Input: h.Input, Output: h.Output, CacheRead: h.CacheRead, CacheWrite: h.CacheWrite}
-				o.Tokens.add(t)
+			t, usd, ok := billedAdds(s.Tool, s.ownTokens, s.ownCost, Tokens{Input: h.Input, Output: h.Output, CacheRead: h.CacheRead, CacheWrite: h.CacheWrite}, h.USD)
+			if !ok {
+				break
 			}
-			o.Cost.USD += h.USD
+			o.Tokens.add(t)
+			o.Cost.USD += usd
 			date := when.Format("2006-01-02")
 			dd := days[date]
 			if dd == nil {
@@ -243,11 +244,11 @@ func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Ov
 				days[date] = dd
 			}
 			dd.Tokens.add(t)
-			dd.Cost += h.USD
-			addShare(projects, projSess, s.Project, k, t, h.USD)
-			addShare(accts, acctSess, s.Account, k, t, h.USD)
+			dd.Cost += usd
+			addShare(projects, projSess, s.Project, k, t, usd)
+			addShare(accts, acctSess, s.Account, k, t, usd)
 			if h.Model != "" {
-				addShare(models, modelSess, modelName(h.Model), k, t, h.USD)
+				addShare(models, modelSess, modelName(h.Model), k, t, usd)
 			}
 		}
 	}

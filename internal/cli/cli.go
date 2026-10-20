@@ -37,6 +37,8 @@ type app struct {
 	cursorOnce sync.Once
 	cursorLed  *cursorusage.Ledger
 	cursorErr  error
+
+	logMu sync.Mutex // quota checks log from several goroutines
 }
 
 // debugLevel is how much of ccli's own work to print on stderr.
@@ -46,23 +48,23 @@ type debugLevel int
 
 func (d *debugLevel) String() string   { return strconv.Itoa(int(*d)) }
 func (d *debugLevel) IsBoolFlag() bool { return true }
+
+// Set takes a bare --debug as at least level 1, and an explicit level, the
+// last one given, as that level.
 func (d *debugLevel) Set(s string) error {
-	if s == "false" {
+	switch s {
+	case "true":
+		*d = max(*d, 1)
 		return nil
-	}
-	if s == "true" {
-		if *d < 1 {
-			*d = 1
-		}
+	case "false":
+		*d = 0
 		return nil
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 || n > 4 {
-		return errors.New("--debug: use 1, 2, 3 or 4")
+		return errors.New("--debug: use --debug=N with N 0 to 4")
 	}
-	if debugLevel(n) > *d {
-		*d = debugLevel(n)
-	}
+	*d = debugLevel(n)
 	return nil
 }
 
@@ -70,11 +72,14 @@ func (a *app) logf(level int, format string, args ...any) {
 	if int(a.debug) < level {
 		return
 	}
-	text := fmt.Sprintf(format, args...)
-	text = strings.TrimRight(text, "\n")
+	text := strings.TrimRight(fmt.Sprintf(format, args...), "\n")
+	var b strings.Builder
 	for line := range strings.SplitSeq(text, "\n") {
-		fmt.Fprintf(a.errw, "debug: %s\n", line)
+		fmt.Fprintf(&b, "debug: %s\n", line)
 	}
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	io.WriteString(a.errw, b.String())
 }
 
 func (a *app) registerGlobals(fs *flag.FlagSet) {
@@ -82,31 +87,62 @@ func (a *app) registerGlobals(fs *flag.FlagSet) {
 	fs.BoolVar(&a.verbose, "verbose", a.verbose, "show more of what was requested: token split, paths, models, daily figures")
 }
 
-// peelGlobals takes --debug and --verbose that appear before the command.
+// peelGlobals takes --debug and --verbose that appear before the command,
+// with one dash or two. "--debug 2" is read as level 2: no command is a
+// number.
 func (a *app) peelGlobals(args []string) ([]string, error) {
 	i := 0
 	for i < len(args) {
-		s := args[i]
-		switch {
-		case s == "--":
-			return args, nil
-		case s == "--debug" || s == "-debug":
-			if err := a.debug.Set("true"); err != nil {
+		name, value, hasValue := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		if !strings.HasPrefix(args[i], "-") || args[i] == "--" {
+			break
+		}
+		switch name {
+		case "debug":
+			if !hasValue {
+				value = "true"
+				if i+1 < len(args) && len(args[i+1]) == 1 && args[i+1][0] >= '0' && args[i+1][0] <= '9' {
+					value = args[i+1]
+					i++
+				}
+			}
+			if err := a.debug.Set(value); err != nil {
 				return nil, err
 			}
-		case strings.HasPrefix(s, "--debug="):
-			if err := a.debug.Set(strings.TrimPrefix(s, "--debug=")); err != nil {
-				return nil, err
+		case "verbose":
+			on := true
+			if hasValue {
+				var err error
+				if on, err = strconv.ParseBool(value); err != nil {
+					return nil, fmt.Errorf("--verbose=%s: use true or false", value)
+				}
 			}
-		case s == "--verbose" || s == "-verbose" || s == "--verbose=true":
-			a.verbose = true
-		case s == "--verbose=false":
+			a.verbose = on
 		default:
 			return args[i:], nil
 		}
 		i++
 	}
 	return args[i:], nil
+}
+
+// joinDebugLevel writes "--debug 2" after a command as "--debug=2", so the
+// command's flags read the level as peelGlobals does before the command,
+// not as a bare --debug followed by an argument.
+func joinDebugLevel(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		s := args[i]
+		if s == "--" {
+			return append(out, args[i:]...)
+		}
+		if (s == "--debug" || s == "-debug") && i+1 < len(args) && len(args[i+1]) == 1 && args[i+1][0] >= '0' && args[i+1][0] <= '9' {
+			s += "=" + args[i+1]
+			i++
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // Main runs ccli and returns the exit code.
@@ -139,7 +175,7 @@ func Main(args []string, out, errw io.Writer) int {
 		return 2
 	}
 	a.logf(1, "command %s", cmd)
-	if err := run(ctx, a, rest); err != nil {
+	if err := run(ctx, a, joinDebugLevel(rest)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -164,8 +200,8 @@ Usage:
   ccli sessions [flags]              sessions with tokens and list-price cost (--dir . for this folder)
   ccli projects [folder]             folders sessions started in, at or below this one (/ for all)
   ccli show <id>                     one session: totals, models, subagents, links, files
-  ccli log <id> [turn|N-M|last]      the session turn by turn: each prompt, what it cost, what it did
-  ccli export <id> [turn|N-M|last]   write a readable transcript (md or jsonl) for handoff
+  ccli log <id> [turn|N-M|last]      the session turn by turn; --detail reply keeps the prompt and last reply
+  ccli export <id> [turn|N-M|last]   write a readable transcript (md or jsonl); --detail reply keeps the prompt and last reply
   ccli view [id]                     browse sessions, turns and agents interactively
   ccli prompts [flags]               your prompts across sessions, sortable by cost
   ccli stats [flags]                 overview: KPIs, daily chart, projects, models, hours, shape, skills
@@ -252,7 +288,7 @@ func (a *app) refresh(ctx context.Context, rebuild bool) (index.Stats, error) {
 		fmt.Fprint(a.errw, "\r\033[K")
 	}
 	if s.Errors > 0 {
-		fmt.Fprintf(a.errw, "ccli: %d transcript file(s) could not be read and will be retried (first: %s)\n", s.Errors, s.FirstError)
+		fmt.Fprintf(a.errw, "ccli: %d transcript file(s) or home(s) could not be read and will be retried (first: %s)\n", s.Errors, s.FirstError)
 	}
 	a.logf(1, "index: %d files, %d read, %d re-read, %d gone, %d errors, %s",
 		s.Files, s.Parsed, s.Reset, s.Missing, s.Errors, s.Duration.Round(time.Millisecond))

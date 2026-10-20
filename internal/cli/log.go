@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/lr00rl/ccli/internal/conv"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
 )
@@ -32,6 +33,7 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 	fs := newFlags("log", a, &c)
 	all := fs.Bool("all", false, "include turns started by tasks, other sessions and the system")
 	sortBy := fs.String("sort", "turn", "list order: turn or cost")
+	detail := fs.String("detail", "full", "full shows each step; reply shows your prompt and the turn's last reply")
 	fs.BoolVar(&opt.Tools, "tools", false, "show tool inputs and outputs")
 	fs.BoolVar(&opt.Thinking, "thinking", false, "show the model's thinking")
 	fs.BoolVar(&opt.Context, "context", false, "show text Claude Code added (skills, reminders, peer messages)")
@@ -44,9 +46,16 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	if len(pos) < 1 || len(pos) > 2 {
-		return errors.New("usage: ccli log <session> [turn | from-to | last] [--tools] [--thinking] [--agent id] [--run id]")
+		return errors.New("usage: ccli log <session> [turn | from-to | last] [--detail full|reply] [--tools] [--thinking] [--agent id] [--run id]")
 	}
-	if a.verbose {
+	switch strings.ToLower(strings.TrimSpace(*detail)) {
+	case "", "full", "reply":
+		opt.Detail = strings.ToLower(strings.TrimSpace(*detail))
+	default:
+		return fmt.Errorf("detail %q: use full or reply", *detail)
+	}
+	reply := opt.Detail == "reply"
+	if a.verbose && !reply {
 		opt.Tools = true
 	}
 	svc, err := a.prepare(ctx, c, nil)
@@ -83,6 +92,29 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 			return a.printJSON(map[string]any{"run": info, "agents": nodes, "status": status})
 		}
 		return a.page(t, *noPager, func(t render.Term) { t.RunAgents(info, nodes, status, ref) })
+	case len(pos) == 1 && reply:
+		l, err := svc.Turns(ctx, ref)
+		if err != nil {
+			return err
+		}
+		if len(l.Turns) == 0 {
+			return fmt.Errorf("session %s has no turns", query.ShortID(l.Session.ID))
+		}
+		from, to := l.Turns[0].Seq, l.Turns[len(l.Turns)-1].Seq
+		details, err := svc.TurnRange(ctx, ref, from, to, *all)
+		if err != nil && !(query.Partial(err) && len(details) > 0) {
+			return err
+		}
+		if err != nil {
+			fmt.Fprintln(a.errw, "ccli:", err)
+		}
+		if *sortBy == "cost" {
+			sort.SliceStable(details, func(i, j int) bool { return details[i].Row.Total() > details[j].Row.Total() })
+		}
+		if c.json {
+			return a.printJSON(replyOnly(details))
+		}
+		return a.pageTurns(t, *noPager, details, opt)
 	case len(pos) == 1:
 		l, err := svc.Turns(ctx, ref)
 		if err != nil {
@@ -101,19 +133,43 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	details, err := svc.TurnRange(ctx, ref, from, to, *all)
-	if err != nil && !(errors.Is(err, query.ErrNoTranscript) && len(details) > 0) {
+	if err != nil && !(query.Partial(err) && len(details) > 0) {
 		return err
 	}
 	if err != nil {
 		fmt.Fprintln(a.errw, "ccli:", err)
 	}
 	if c.json {
+		if reply {
+			details = replyOnly(details)
+		}
 		if len(details) == 1 {
 			return a.printJSON(details[0])
 		}
 		return a.printJSON(details)
 	}
-	return a.page(t, *noPager, func(t render.Term) {
+	return a.pageTurns(t, *noPager, details, opt)
+}
+
+// replyOnly trims each turn to what --detail reply prints: the prompts and
+// the last reply, without the agents and workflows it started.
+func replyOnly(details []*query.TurnDetail) []*query.TurnDetail {
+	out := make([]*query.TurnDetail, len(details))
+	for i, d := range details {
+		c := *d
+		if d.Turn != nil {
+			tr := *d.Turn
+			tr.Entries = conv.ReplyEntries(tr.Entries)
+			c.Turn = &tr
+		}
+		c.Agents, c.Runs = nil, nil
+		out[i] = &c
+	}
+	return out
+}
+
+func (a *app) pageTurns(t render.Term, noPager bool, details []*query.TurnDetail, opt render.LogOptions) error {
+	return a.page(t, noPager, func(t render.Term) {
 		for i, d := range details {
 			if i > 0 {
 				fmt.Fprintln(t.W)

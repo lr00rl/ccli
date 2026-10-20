@@ -90,6 +90,7 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	var jobs []job
 	var runs []store.Run
 	seen := map[string]bool{}
+	failed := map[string]bool{} // accounts whose scan failed keep their files as they were
 	for _, a := range accts {
 		var found []discovered
 		var rs []store.Run
@@ -100,14 +101,20 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 		case account.Pi:
 			found, err = scanPi(a)
 		case account.Cursor:
-			found, err = scanCursor(a)
+			found, err = scanCursor(a, known)
 		case account.CursorIDE:
 			found, err = scanCursorIDE(a)
 		default:
 			found, rs, err = scan(a, knownRuns, opt.Rebuild)
 		}
 		if err != nil {
-			return stats, err
+			// One unreadable home must not stop the others.
+			failed[a.Name] = true
+			stats.Errors++
+			if stats.FirstError == "" {
+				stats.FirstError = a.Name + ": " + err.Error()
+			}
+			continue
 		}
 		for _, m := range moves {
 			if err := st.MovePath(ctx, m.ID, m.To); err != nil {
@@ -141,7 +148,7 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	// Files that vanished keep their history; mark them missing.
 	accSet := map[string]bool{}
 	for _, a := range accts {
-		accSet[a.Name] = true
+		accSet[a.Name] = !failed[a.Name]
 	}
 	var gone []int64
 	for p, f := range known {
@@ -197,6 +204,7 @@ type discovered struct {
 	started, ended     int64
 	agentType, toolUse string
 	parentAgent        string
+	side               int64 // Cursor CLI: newest change to the chat's meta.json or store.db, Unix ms
 }
 
 // scan lists an account's transcript files, and reads the workflow journals
@@ -400,7 +408,7 @@ func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	// Pi and Cursor CLI rewrite or branch in place. A changed file is read
 	// again from the start so an abandoned branch is not left in the index
 	// as if it were still the conversation.
-	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset ||
+	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset || refiled(d.tool, f, old) ||
 		(fullReread(d.tool) && (f.Size != old.Offset || f.MTime != old.MTime)) {
 		j.reset = true
 		return j, true
@@ -440,17 +448,27 @@ func fileParser(t account.Tool) int {
 }
 
 // planIDE keys a composer on its lastUpdatedAt, stored as the file's size
-// and mtime. The path is not a real file, so there is no head hash to check.
+// and mtime, and on its bubble count and newest bubble row, stored as the
+// head hash: Cursor writes a reply's bubbles minutes after it last moves
+// lastUpdatedAt. The path is not a real file, so there is nothing to hash.
 func planIDE(j job, old store.File, rebuild bool) (job, bool) {
 	if old.ID == 0 {
 		return j, true
 	}
 	j.file.ID = old.ID
-	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || j.file.Size != old.Size || j.file.MTime != old.MTime {
+	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || refiled(j.tool, j.file, old) ||
+		j.file.Size != old.Size || j.file.MTime != old.MTime || j.file.HeadHash != old.HeadHash {
 		j.reset = true
 		return j, true
 	}
 	return j, false
+}
+
+// refiled reports a Cursor transcript that its side data now files under
+// another session or kind, as when store.db or a composer header shows late
+// that a chat is a subagent. The file is read again so all its rows move.
+func refiled(t account.Tool, f, old store.File) bool {
+	return (t == account.Cursor || t == account.CursorIDE) && (f.SessionID != old.SessionID || f.Kind != old.Kind)
 }
 
 // continueFrom is the parse state an incremental parse of a file starts with.
@@ -635,6 +653,9 @@ func parseOne(j job) parsed {
 	if err != nil {
 		return parsed{err: err}
 	}
+	if j.tool == account.Cursor && j.file.Kind == "subagent" {
+		asSubagent(&res)
+	}
 	if j.tool == account.Cursor {
 		if res.Cwd == "" {
 			res.Cwd = j.cwd
@@ -681,6 +702,9 @@ func parseIDE(j job) parsed {
 	if res.Cwd == "" {
 		res.Cwd = j.cwd
 	}
+	if j.file.Kind == "subagent" {
+		asSubagent(&res)
+	}
 	up := store.Update{File: j.file, Reset: j.reset, From: from, Result: res, Ledger: j.ledger}
 	up.File.Offset = j.file.Size
 	up.File.Parser = fileParser(j.tool)
@@ -688,6 +712,14 @@ func parseIDE(j job) parsed {
 		up.Agent = &store.AgentMeta{AgentType: agent.Type, Description: agent.Description, ToolUseID: agent.ToolUseID}
 	}
 	return parsed{up: up, bytes: res.Consumed}
+}
+
+// asSubagent drops what a Cursor subagent's transcript would add to the
+// session's prompts. Its first message is the task the parent gave it, which
+// labels the subagent instead, as for Claude Code subagents.
+func asSubagent(res *transcript.Result) {
+	res.TypedPrompts, res.OtherPrompts = 0, 0
+	res.Turns, res.Commands = nil, nil
 }
 
 func readMeta(path string) *store.AgentMeta {

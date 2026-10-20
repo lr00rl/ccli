@@ -2,6 +2,7 @@ package cursoride
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -45,5 +46,19 @@ func TestBubbleOrderFollowsHeaders(t *testing.T) {
 	}
 	if res.Turns[0].Text != "first" || res.Turns[1].Text != "second" {
 		t.Fatalf("order %q then %q", res.Turns[0].Text, res.Turns[1].Text)
+	}
+}
+
+func TestMultiRootWorkspaceIsItsFolder(t *testing.T) {
+	user := t.TempDir()
+	dir := filepath.Join(user, "workspaceStorage", "ws2")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace.json"), []byte(`{"workspace":"file:///work/mono/mono.code-workspace"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := workspacePath(user, "ws2"); got != "/work/mono" {
+		t.Fatalf("cwd %q, want /work/mono", got)
 	}
 }

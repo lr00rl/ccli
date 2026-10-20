@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -156,14 +157,14 @@ func TestPiCursorAndIDE(t *testing.T) {
 		t.Fatalf("pi row %+v", piRow)
 	}
 	cur := byID[curID]
-	if cur.Cwd != "/work/app" || cur.Prompts < 1 || cur.Title != "Parser" || cur.Subagents != 2 || cur.ToolCalls < 1 {
+	if cur.Cwd != "/work/app" || cur.Prompts != 1 || cur.Title != "Parser" || cur.Subagents != 2 || cur.ToolCalls < 1 {
 		t.Fatalf("cursor row %+v", cur)
 	}
 	if _, ok := byID[ownSub]; ok {
 		t.Fatal("subagent transcript was indexed as its own session")
 	}
 	ide := byID[ideID]
-	if ide.Cwd != "/work/ide" || ide.Prompts < 1 || ide.Title != "IDE chat" || ide.Subagents != 1 || ide.Tokens.Input != 12 || ide.Tool != account.CursorIDE {
+	if ide.Cwd != "/work/ide" || ide.Prompts != 1 || ide.Title != "IDE chat" || ide.Subagents != 1 || ide.Tokens.Input != 12 || ide.Tool != account.CursorIDE {
 		t.Fatalf("ide row %+v", ide)
 	}
 	pro, err := q.Projects(context.Background(), query.Filter{})
@@ -230,7 +231,7 @@ func TestCursorDuplicateIDKeepsNewer(t *testing.T) {
 	if err := os.Chtimes(newer, newT, newT); err != nil {
 		t.Fatal(err)
 	}
-	got, err := scanCursor(account.Account{Name: "cursor", Tool: account.Cursor, Dir: root})
+	got, err := scanCursor(account.Account{Name: "cursor", Tool: account.Cursor, Dir: root}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,5 +291,64 @@ func TestDiscoverNewHomes(t *testing.T) {
 	}
 	if _, ok := got[account.Claude]; ok {
 		t.Fatalf("claude home leaked in: %+v", accts)
+	}
+}
+
+// A Pi range is read from one parse of the file, and a turn the file no
+// longer has is reported, with the turns that could still be read.
+func TestPiTurnRange(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "pi-agent")
+	const id = "44444444-4444-4444-8444-444444444444"
+	path := filepath.Join(home, "sessions", "--work-app--", "2026-08-01T00-00-00_"+id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	head := `{"type":"session","version":3,"id":"` + id + `","timestamp":"2026-08-01T00:00:00Z","cwd":"/work/app"}` + "\n"
+	msg := func(id, parent, role, ts, body string) string {
+		p := "null"
+		if parent != "" {
+			p = `"` + parent + `"`
+		}
+		return `{"type":"message","id":"` + id + `","parentId":` + p + `,"timestamp":"2026-08-01T00:00:` + ts + `Z","message":{"role":"` + role + `","content":` + body + `}}` + "\n"
+	}
+	one := msg("u1", "", "user", "01", `"first ask"`) + msg("a1", "u1", "assistant", "02", `[{"type":"text","text":"first answer"}]`)
+	two := msg("u2", "a1", "user", "03", `"second ask"`) + msg("a2", "u2", "assistant", "04", `[{"type":"text","text":"second answer"}]`)
+	if err := os.WriteFile(path, []byte(head+one+two), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	accts := []account.Account{{Name: "pi", Tool: account.Pi, Dir: home}}
+	st, err := store.Open(filepath.Join(root, "ccli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	prices, _ := pricing.Load("")
+	if _, err := Run(context.Background(), st, accts, prices, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	q := query.New(st, accts)
+	got, err := q.TurnRange(context.Background(), id[:8], 1, 2, false)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("range: %d turns, err %v", len(got), err)
+	}
+	for _, want := range []string{"first answer", "second answer"} {
+		found := false
+		for _, d := range got {
+			for _, e := range d.Turn.Entries {
+				found = found || e.Text == want
+			}
+		}
+		if !found {
+			t.Fatalf("%q missing from the range", want)
+		}
+	}
+	// The file loses its second turn after the index read it.
+	if err := os.WriteFile(path, []byte(head+one), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = q.TurnRange(context.Background(), id[:8], 1, 2, false)
+	if !errors.Is(err, query.ErrStale) || len(got) != 2 || got[0].Turn == nil || got[1].Turn != nil {
+		t.Fatalf("err = %v, %d turns; want turn 1 read and turn 2 reported as changed", err, len(got))
 	}
 }

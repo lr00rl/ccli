@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -278,4 +279,101 @@ func TestIncludedZeroStaysZero(t *testing.T) {
 func fmtJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func loginDB(t *testing.T, token string) string {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "state.vscdb")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE ItemTable (key TEXT, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		if _, err := db.Exec(`INSERT INTO ItemTable (key, value) VALUES ('cursorAuth/accessToken', ?)`, token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dbPath
+}
+
+// A failed events read keeps the complete event list the cache had, takes
+// the new billing cycle, and is not retried by the next command.
+func TestFailedEventsKeepCachedSessions(t *testing.T) {
+	dir := t.TempDir()
+	old := &Ledger{Version: ledgerVersion, FetchedAt: time.Now().Add(-time.Hour), EventCount: 1,
+		Sessions: map[string]*Use{"conv-1": {USD: 1.5, Events: 1}}}
+	if err := save(dir, old); err != nil {
+		t.Fatal(err)
+	}
+	var asked int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		if strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents") {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+		fmtJSON(w, map[string]any{"planUsage": map[string]any{"includedSpend": 100, "limit": 2000}})
+	}))
+	defer srv.Close()
+	oldBase, oldDo, oldDB := apiBase, httpDo, stateDBOverride
+	apiBase, httpDo, stateDBOverride = srv.URL+"/", srv.Client(), loginDB(t, "tok")
+	t.Cleanup(func() { apiBase, httpDo, stateDBOverride = oldBase, oldDo, oldDB })
+
+	led, err := Refresh(context.Background(), dir)
+	if err == nil {
+		t.Fatal("the failed events read was not reported")
+	}
+	if led.Sessions["conv-1"] == nil || led.Sessions["conv-1"].USD != 1.5 || led.Period == nil {
+		t.Fatalf("ledger after a failed events read: %+v", led)
+	}
+	if saved := Load(dir); saved.Sessions["conv-1"] == nil || saved.FailedAt.IsZero() {
+		t.Fatalf("saved %+v", saved)
+	}
+	n := asked
+	if !Fresh(dir) {
+		t.Fatal("a failure a moment ago should not be retried yet")
+	}
+	if _, err := Refresh(context.Background(), dir); err != nil || asked != n {
+		t.Fatalf("second refresh: err %v, %d more requests", err, asked-n)
+	}
+}
+
+// With no IDE login nothing is asked, the error says so, and the next
+// command does not try again at once.
+func TestNoLoginIsRememberedQuietly(t *testing.T) {
+	dir := t.TempDir()
+	oldDB := stateDBOverride
+	stateDBOverride = loginDB(t, "")
+	t.Cleanup(func() { stateDBOverride = oldDB })
+	asked := false
+	_, err := RefreshOption(context.Background(), dir, Option{Asking: func() { asked = true }})
+	if !errors.Is(err, ErrNoLogin) || asked {
+		t.Fatalf("err %v, asked %t", err, asked)
+	}
+	if !Fresh(dir) {
+		t.Fatal("no login was not remembered")
+	}
+}
+
+// The token goes to the API host only: a redirect is not followed.
+func TestRedirectIsNotFollowed(t *testing.T) {
+	var followed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			followed = true
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	oldBase, oldDB := apiBase, stateDBOverride
+	apiBase, stateDBOverride = srv.URL+"/", loginDB(t, "tok")
+	t.Cleanup(func() { apiBase, stateDBOverride = oldBase, oldDB })
+	if _, err := FetchPeriod(context.Background(), Option{}); err == nil || followed {
+		t.Fatalf("err %v, followed %t", err, followed)
+	}
 }

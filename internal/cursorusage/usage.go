@@ -7,12 +7,11 @@ package cursorusage
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,21 +21,23 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/cursoride"
-
-	_ "modernc.org/sqlite"
+	"github.com/lr00rl/ccli/internal/sqlitero"
 )
 
 const (
 	maxPages      = 200
 	pageSize      = 100
 	freshFor      = 15 * time.Minute
+	retryAfter    = 5 * time.Minute // after a failed read, before asking again
 	ledgerVersion = 2
 )
 
 var (
 	refreshMu sync.Mutex
 	apiBase   = "https://api2.cursor.sh/aiserver.v1.DashboardService/"
-	httpDo    = http.DefaultClient
+	// httpDo never follows a redirect, so the token goes to apiBase's host
+	// and nowhere else. A 3xx is an error like any other status.
+	httpDo = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	// stateDBOverride is the state.vscdb tests point at. Empty uses the IDE's.
 	stateDBOverride string
 )
@@ -141,8 +142,14 @@ type Ledger struct {
 	EventCount int             `json:"event_count,omitempty"`
 	Truncated  bool            `json:"truncated,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	FailedAt   time.Time       `json:"failed_at,omitzero"` // the last read that failed; no new read until retryAfter
 	FromCache  bool            `json:"-"`
+
+	eventsFailed bool // the event list is incomplete
 }
+
+// ErrNoLogin means the Cursor IDE has no stored login to read usage with.
+var ErrNoLogin = errors.New("cursor usage: no local login")
 
 // Load reads the cache. A missing file is an empty ledger, not an error.
 func Load(dataDir string) *Ledger {
@@ -169,12 +176,21 @@ type Option struct {
 	// Body receives the request JSON and the response JSON. It must not
 	// retain the access token. The response is not logged by Trace.
 	Body func(format string, args ...any)
+	// Asking is called once a login was found, just before the first request.
+	Asking func()
 }
 
-// Fresh reports whether the cached ledger is still new enough to use.
+// Fresh reports whether the cache can be used without asking Cursor: it is
+// recent, or a read failed a short while ago and is not retried yet.
 func Fresh(dataDir string) bool {
 	cur := Load(dataDir)
-	return cur.Version == ledgerVersion && cur.Error == "" && !cur.FetchedAt.IsZero() && time.Since(cur.FetchedAt) < freshFor && (len(cur.Sessions) > 0 || cur.Period != nil)
+	if cur.Version != ledgerVersion {
+		return false
+	}
+	if !cur.FailedAt.IsZero() && time.Since(cur.FailedAt) < retryAfter {
+		return true
+	}
+	return cur.Error == "" && !cur.FetchedAt.IsZero() && time.Since(cur.FetchedAt) < freshFor && (len(cur.Sessions) > 0 || cur.Period != nil)
 }
 
 // A network or auth failure keeps the previous cache. Callers can still
@@ -197,28 +213,32 @@ func RefreshOption(ctx context.Context, dataDir string, opt Option) (*Ledger, er
 		return cur, nil
 	}
 	if fresh && opt.Force {
-		trace(ctx, "cursor usage: cache is %s old, fetching again", time.Since(cur.FetchedAt).Round(time.Second))
+		trace(ctx, "cursor usage: fetching again although the cache is fresh")
 	}
-	next, err := fetch(ctx)
+	next, err := fetch(ctx, opt.Asking)
+	if err == nil {
+		return next, save(dataDir, next)
+	}
+	// A failure is remembered so the next commands do not ask again at
+	// once, and a part that failed keeps what the cache had for it.
+	now := time.Now().UTC()
+	if cur.Version != ledgerVersion {
+		cur = &Ledger{Version: ledgerVersion, Sessions: map[string]*Use{}}
+	}
 	if next != nil && (len(next.Sessions) > 0 || next.Period != nil) {
-		if err != nil {
-			next.Error = err.Error()
+		if next.eventsFailed && len(cur.Sessions) > 0 {
+			next.Sessions, next.EventCount, next.Truncated = cur.Sessions, cur.EventCount, cur.Truncated
 		}
-		if saveErr := save(dataDir, next); saveErr != nil && err == nil {
-			err = saveErr
+		if next.Period == nil {
+			next.Period = cur.Period
 		}
-		return next, err
+		cur = next
 	}
-	if err != nil {
-		if cur.FetchedAt.IsZero() {
-			cur.Error = err.Error()
-		}
-		return cur, err
+	cur.Error, cur.FailedAt = err.Error(), now
+	if saveErr := save(dataDir, cur); saveErr != nil {
+		trace(ctx, "cursor usage: could not save the cache: %v", saveErr)
 	}
-	if err := save(dataDir, next); err != nil {
-		return next, err
-	}
-	return next, nil
+	return cur, err
 }
 
 // FetchPeriod reads the billing cycle. It does not download usage events
@@ -246,18 +266,39 @@ func save(dataDir string, l *Ledger) error {
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dataDir, "cursor-usage.json")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// A name of its own per write: another ccli may be saving at once. One
+	// left an hour ago belongs to a run that stopped mid-save.
+	if left, _ := filepath.Glob(filepath.Join(dataDir, "cursor-usage-*.tmp")); len(left) > 0 {
+		for _, p := range left {
+			if st, err := os.Stat(p); err == nil && time.Since(st.ModTime()) > time.Hour {
+				os.Remove(p)
+			}
+		}
+	}
+	f, err := os.CreateTemp(dataDir, "cursor-usage-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), filepath.Join(dataDir, "cursor-usage.json"))
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
-func fetch(ctx context.Context) (*Ledger, error) {
+func fetch(ctx context.Context, asking func()) (*Ledger, error) {
 	token, err := accessToken()
 	if err != nil {
 		return nil, err
+	}
+	if asking != nil {
+		asking()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -287,6 +328,7 @@ func fetch(ctx context.Context) (*Ledger, error) {
 		addEvent(u, e)
 	}
 	if evErr != nil {
+		led.eventsFailed = true
 		return led, evErr
 	}
 	if led.Period == nil && len(led.Sessions) == 0 {
@@ -487,7 +529,9 @@ func period(ctx context.Context, token string) (*Period, error) {
 			PlanName string `json:"planName"`
 		} `json:"planInfo"`
 	}
-	_ = post(ctx, token, "GetPlanInfo", map[string]any{}, &plan)
+	if err := post(ctx, token, "GetPlanInfo", map[string]any{}, &plan); err != nil {
+		trace(ctx, "cursor usage: plan name unknown: %v", err)
+	}
 	p := fillPeriod(
 		float64(usage.PlanUsage.IncludedSpend),
 		float64(usage.PlanUsage.BonusSpend),
@@ -585,7 +629,7 @@ func post(ctx context.Context, token, method string, body, dest any) error {
 	resp, err := httpDo.Do(req)
 	if err != nil {
 		trace(ctx, "POST %s failed after %s", url, time.Since(started).Round(time.Millisecond))
-		return fmt.Errorf("cursor usage: %s", method)
+		return fmt.Errorf("cursor usage: %s: %w", method, err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -599,7 +643,7 @@ func post(ctx context.Context, token, method string, body, dest any) error {
 		return nil
 	}
 	if err := json.Unmarshal(raw, dest); err != nil {
-		return fmt.Errorf("cursor usage: %s", method)
+		return fmt.Errorf("cursor usage: %s: %w", method, err)
 	}
 	return nil
 }
@@ -610,15 +654,14 @@ func accessToken() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	u := url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&immutable=1"}
-	db, err := sql.Open("sqlite", u.String())
+	db, err := sqlitero.Open(dbPath)
 	if err != nil {
-		return "", fmt.Errorf("cursor usage: no local login")
+		return "", ErrNoLogin
 	}
 	defer db.Close()
 	var raw []byte
 	if err := db.QueryRow(`SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'`).Scan(&raw); err != nil || len(raw) == 0 {
-		return "", fmt.Errorf("cursor usage: no local login")
+		return "", ErrNoLogin
 	}
 	tok := strings.TrimSpace(string(raw))
 	if strings.HasPrefix(tok, `"`) {
@@ -628,7 +671,7 @@ func accessToken() (string, error) {
 		}
 	}
 	if tok == "" {
-		return "", fmt.Errorf("cursor usage: no local login")
+		return "", ErrNoLogin
 	}
 	return tok, nil
 }
@@ -651,11 +694,11 @@ func stateDB() (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("cursor usage: no local login")
+		return "", ErrNoLogin
 	}
 	p := cursoride.DBPath(cursorUser(home))
 	if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
-		return "", fmt.Errorf("cursor usage: no local login")
+		return "", ErrNoLogin
 	}
 	return p, nil
 }

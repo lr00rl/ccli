@@ -57,20 +57,16 @@ func Parse(r io.Reader, session string, st transcript.State) (transcript.Result,
 	return res, err
 }
 
-// ReadTurn reads the active branch and returns the turn whose seq matches.
-// The byte range is the index's hint; the branch, not the bytes between two
-// prompts, decides what belongs to the turn.
-func ReadTurn(path string, _, _ int64, seq int) (*conv.Turn, error) {
-	turns, err := ReadRange(path)
-	if err != nil {
-		return nil, err
-	}
+// FindTurn returns the turn of ReadRange's result whose seq matches, or nil.
+// The index's byte offset is not used: the active branch, not the bytes
+// between two prompts, decides what belongs to a turn.
+func FindTurn(turns []conv.Turn, _ int64, seq int) *conv.Turn {
 	for i := range turns {
 		if turns[i].Seq == seq {
-			return &turns[i], nil
+			return &turns[i]
 		}
 	}
-	return &conv.Turn{Seq: seq, Speaker: Speaker}, nil
+	return nil
 }
 
 // ReadRange reads the active branch of a session as turns.
@@ -539,10 +535,14 @@ func ms(v int64) time.Time {
 }
 
 func clip(s string) string {
-	if len(s) > conv.MaxOutput {
-		return s[:conv.MaxOutput]
+	if len(s) <= conv.MaxOutput {
+		return s
 	}
-	return s
+	n := conv.MaxOutput
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func clipLine(s string, n int) string {
@@ -576,15 +576,20 @@ func linesOf(r io.Reader, base int64, res *transcript.Result) ([]lineRec, error)
 	var pending int64
 	for {
 		chunk, err := br.ReadSlice('\n')
+		// A line past MaxLine is counted and skipped, never held in memory.
 		if err == bufio.ErrBufferFull {
 			pending += int64(len(chunk))
-			buf = append(buf, chunk...)
+			if pending <= transcript.MaxLine {
+				buf = append(buf, chunk...)
+			}
 			continue
 		}
 		if err == io.EOF {
 			if len(chunk) > 0 || len(buf) > 0 {
-				buf = append(buf, chunk...)
 				pending += int64(len(chunk))
+				if pending <= transcript.MaxLine {
+					buf = append(buf, chunk...)
+				}
 				off := base + res.Consumed
 				res.Consumed += pending
 				res.Lines++
@@ -603,6 +608,11 @@ func linesOf(r io.Reader, base int64, res *transcript.Result) ([]lineRec, error)
 		off := base + res.Consumed
 		res.Consumed += pending
 		res.Lines++
+		if pending > transcript.MaxLine {
+			res.Skipped++
+			buf, pending = buf[:0], 0
+			continue
+		}
 		body := append(append([]byte{}, buf...), chunk...)
 		buf, pending = buf[:0], 0
 		if body = bytes.TrimSpace(body); len(body) > 0 {

@@ -143,7 +143,9 @@ func (a *app) needsCursor(names []string, tools []account.Tool) bool {
 // fetched again. Debug only reports that choice.
 func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledger, error) {
 	a.cursorOnce.Do(func() {
-		opt := cursorusage.Option{}
+		opt := cursorusage.Option{Asking: func() {
+			fmt.Fprintln(a.errw, "Reading Cursor usage. This asks Cursor and can take a little while.")
+		}}
 		if a.debug >= 2 {
 			opt.Trace = func(format string, args ...any) { a.logf(2, format, args...) }
 		}
@@ -156,9 +158,6 @@ func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledg
 }
 
 func (a *app) refreshCursor(ctx context.Context) {
-	if !cursorusage.Fresh(store.DataDir()) {
-		fmt.Fprintln(a.errw, "Reading Cursor usage. This asks Cursor and can take a little while.")
-	}
 	led, err := a.pullCursor(ctx, store.DataDir())
 	if led != nil {
 		from := "fetched"
@@ -170,6 +169,9 @@ func (a *app) refreshCursor(ctx context.Context) {
 			note = ", truncated"
 		}
 		a.logf(1, "cursor usage: %s, %d conversations, %d events%s", from, len(led.Sessions), led.EventCount, note)
+		if led.Truncated && !led.FromCache && err == nil {
+			fmt.Fprintf(a.errw, "ccli: Cursor's usage list stopped at %d events, so Cursor figures for the last year are incomplete\n", led.EventCount)
+		}
 		if p := led.Period; p != nil {
 			a.logf(2, "cursor cycle: %s included $%.2f of $%.2f (%.1f%%), API %.1f%%, total %.1f%%",
 				p.Plan, p.UsedUSD, p.LimitUSD, p.Percent, p.APIPercent, p.TotalPercent)
@@ -178,7 +180,8 @@ func (a *app) refreshCursor(ctx context.Context) {
 	if err != nil {
 		a.logf(1, "cursor usage: %s", err)
 	}
-	if err == nil || led == nil {
+	// Without an IDE login there is nothing to ask; that is not an error.
+	if err == nil || led == nil || errors.Is(err, cursorusage.ErrNoLogin) {
 		return
 	}
 	if len(led.Sessions) > 0 || led.Period != nil {

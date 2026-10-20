@@ -26,7 +26,7 @@ type TurnRow struct {
 	At         time.Time `json:"at"`
 	End        time.Time `json:"end"`
 	DurationMS int64     `json:"duration_ms"` // Claude Code's own turn time, else active time
-	Prompt     string    `json:"prompt"`      // as recorded, capped
+	Prompt     string    `json:"prompt"`      // as recorded, capped, without terminal escapes
 	Headline   string    `json:"headline"`    // first line as displayed
 	Chars      int       `json:"chars"`
 	Images     int       `json:"images"`
@@ -287,6 +287,7 @@ func (d *DB) turnRows(ctx context.Context, fileID int64) ([]TurnRow, error) {
 			&t.Responses, &t.Tokens.Input, &t.Tokens.Output, &t.Tokens.CacheRead, &t.Tokens.CacheWrite, &t.Cost); err != nil {
 			return nil, err
 		}
+		t.Prompt = conv.Printable(t.Prompt)
 		t.At, t.End = ms(at), ms(end)
 		if t.Seq == 0 {
 			// Before the first prompt: session start hooks and the like. Keep it
@@ -326,6 +327,14 @@ func (d *DB) Turns(ctx context.Context, ref string) (*TurnList, error) {
 // ErrNoTranscript is returned when a turn's transcript is gone from disk.
 var ErrNoTranscript = errors.New("the transcript is gone from disk (ccli kept only the totals and prompts)")
 
+// ErrStale is returned with the turns that could be read when others
+// changed in the transcript after it was indexed: a Pi session moved to
+// another branch, or Cursor rewrote a chat.
+var ErrStale = errors.New("part of the transcript changed after it was indexed; run the command again to read it")
+
+// Partial reports an error that comes with the turns that could be read.
+func Partial(err error) bool { return errors.Is(err, ErrNoTranscript) || errors.Is(err, ErrStale) }
+
 // Turn reads one turn from the transcript. seq -1 means the last turn.
 func (d *DB) Turn(ctx context.Context, ref string, seq int) (*TurnDetail, error) {
 	ds, err := d.TurnRange(ctx, ref, seq, seq, true)
@@ -358,7 +367,8 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 		}
 	}
 	var out []*TurnDetail
-	var gone error
+	var gone, stale error
+	rd := &turnReader{d: d, acct: g.det.Account, path: g.main.Path}
 	for i := first; i <= last; i++ {
 		row := g.turns[i]
 		if i != first && !all && row.Kind != "human" {
@@ -393,17 +403,24 @@ func (d *DB) TurnRange(ctx context.Context, ref string, from, to int, all bool) 
 		if row.Seq == 0 {
 			start = 0
 		}
-		tr, err := d.readTurn(g.det.Account, g.main.Path, start, row.Next, row.Seq)
+		tr, err := rd.turn(start, row.Next, row.Seq)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				gone = ErrNoTranscript
+				continue
+			}
+			if errors.Is(err, ErrStale) {
+				stale = err
 				continue
 			}
 			return nil, err
 		}
 		det.Turn = tr
 	}
-	return out, gone
+	if gone != nil {
+		return out, gone
+	}
+	return out, stale
 }
 
 // agentTree nests the matching subagents under the subagents that started
@@ -645,6 +662,7 @@ func (d *DB) Prompts(ctx context.Context, f Filter) (PromptPage, error) {
 			rows.Close()
 			return page, err
 		}
+		p.Prompt = conv.Printable(p.Prompt)
 		s, ok := meta[skey{p.Account, p.SessionID}]
 		if !ok {
 			continue // filtered out by account, project or model
@@ -730,19 +748,42 @@ func likeEscape(s string) string {
 
 // readTurn reads one turn of a session's main transcript, in the format of
 // the account's tool.
-func (d *DB) readTurn(acct, path string, from, to int64, seq int) (*conv.Turn, error) {
-	switch d.toolOf(acct) {
+// turnReader reads turns from one transcript. Claude Code and Codex turns
+// are byte ranges. Pi and Cursor have none, so their transcript is parsed
+// once, on the first turn asked for, and each turn is found in it.
+type turnReader struct {
+	d          *DB
+	acct, path string
+	all        []conv.Turn
+	parsed     bool
+}
+
+func (r *turnReader) turn(from, to int64, seq int) (*conv.Turn, error) {
+	var find func([]conv.Turn, int64, int) *conv.Turn
+	switch r.d.toolOf(r.acct) {
 	case account.Codex:
-		return codex.ReadTurn(path, from, to, seq)
+		return codex.ReadTurn(r.path, from, to, seq)
 	case account.Pi:
-		return pi.ReadTurn(path, from, to, seq)
+		find = pi.FindTurn
 	case account.Cursor:
-		return cursorcli.ReadTurn(path, from, to, seq)
+		find = cursorcli.FindTurn
 	case account.CursorIDE:
-		return cursoride.ReadTurn(path, from, to, seq)
+		find = cursoride.FindTurn
 	default:
-		return conv.ReadTurn(path, from, to, seq)
+		return conv.ReadTurn(r.path, from, to, seq)
 	}
+	if !r.parsed {
+		all, err := r.d.readAgent(r.acct, r.path)
+		if err != nil {
+			return nil, err
+		}
+		r.all, r.parsed = all, true
+	}
+	if t := find(r.all, from, seq); t != nil {
+		return t, nil
+	}
+	// The transcript changed after the index read it. The next run re-reads it.
+	return nil, ErrStale
 }
 
 // readAgent reads a subagent's whole transcript.

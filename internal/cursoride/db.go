@@ -10,16 +10,15 @@ import (
 	"strings"
 	"sync"
 
-	_ "modernc.org/sqlite"
+	"github.com/lr00rl/ccli/internal/sqlitero"
 )
 
 // one reader at a time: the database is a few gigabytes, and several
-// immutable connections at once cost more than they save.
+// connections at once cost more than they save.
 var gate sync.Mutex
 
 func open(dbPath string) (*sql.DB, error) {
-	u := url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&immutable=1"}
-	db, err := sql.Open("sqlite", u.String())
+	db, err := sqlitero.Open(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +66,12 @@ func workspacePath(user, id string) string {
 	if p := fileURI(v.Folder); p != "" {
 		return p
 	}
-	return fileURI(v.Workspace)
+	// A multi-root workspace names its .code-workspace file; the folder that
+	// holds it stands for the project.
+	if p := fileURI(v.Workspace); p != "" {
+		return filepath.Dir(p)
+	}
+	return ""
 }
 
 func fileURI(s string) string {

@@ -401,6 +401,26 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 			return err
 		}
 	}
+	if u.Reset {
+		// A re-read may file the transcript elsewhere, as when Cursor's side
+		// data shows late that a chat is a subagent. Every row of the file is
+		// rewritten below, and the session it left is recomputed too.
+		var was string
+		if err := tx.QueryRowContext(ctx, "SELECT session_id FROM files WHERE id = ?", f.ID).Scan(&was); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE files SET session_id = ?, kind = ?,
+			project_key = CASE WHEN ? <> '' THEN ? ELSE project_key END,
+			agent_id = CASE WHEN ? <> '' THEN ? ELSE agent_id END WHERE id = ?`,
+			f.SessionID, f.Kind, f.ProjectKey, f.ProjectKey, f.AgentID, f.AgentID, f.ID); err != nil {
+			return err
+		}
+		if was != f.SessionID {
+			if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO dirty(account, session_id) VALUES(?, ?)", f.Account, was); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO dirty(account, session_id) VALUES(?, ?)", f.Account, f.SessionID); err != nil {
 		return err
 	}

@@ -147,7 +147,9 @@ session under the right account.
 
 ```sh
 ccli log 7a93706c             # every prompt you typed, with what its turn cost
+ccli log 7a93706c --detail reply   # the whole session: your prompt and each turn's last reply
 ccli log 7a93706c 3           # one turn in full; 3-6 for a range, last for the latest
+ccli log 7a93706c 3 --detail reply # that turn without the tool calls
 ccli log 7a93706c 3 --tools   # with tool inputs and outputs
 ccli log 7a93706c --sort cost # the costliest turns first
 ccli log 7a93706c --agent a24cd2c9   # a subagent's own transcript
@@ -167,6 +169,9 @@ messages from other sessions and the system are hidden unless you add `--all`.
 One turn prints your prompt and the model's replies rendered as markdown, a
 line per tool call (with `--tools`, its input and output), the prompt each
 subagent was given, and the agents and workflow runs the turn started.
+`--detail reply` leaves the tool calls and the earlier replies out, and
+prints the prompt with the turn's last reply. Without a turn number it
+prints the whole session that way.
 `--thinking` adds the model's thinking and `--context` the text Claude Code
 added on its own: skill bodies, reminders and messages from other sessions.
 Long output goes through your pager.
@@ -208,6 +213,7 @@ open with `ccli log`.
 ```sh
 ccli export 7a93706c
 ccli export 7a93706c 3-6 --out handoff.md
+ccli export 7a93706c --detail reply
 ccli export 7a93706c --format jsonl --agents
 ```
 
@@ -216,15 +222,20 @@ The file is for a person or another agent to read. Its first lines say it is
 not a transcript any tool can resume. `copy` and `move` still work only
 between Claude Code accounts.
 
-A turn keeps the order of the conversation: your prompt, the reply, then each
-tool call with its name, input and output. Thinking, and text the tool added
-on its own, stay out unless you pass `--thinking` and `--context`. A subagent
-is one line unless `--agents`, which writes that agent's turns after the turn
-that started it. `--all` includes turns started by tasks, other sessions and
-the system, as `log --all` does.
+`--detail full` (the default) keeps the order of the conversation: your
+prompt, each reply, then each tool call with its name, input and output.
+`--detail reply` keeps your prompt and the turn's last reply. A reply the
+model wrote before its tool calls still counts. Text from earlier in the
+turn, tool calls, subagents and workflow lines stay out. Thinking, and text
+the tool added on its own, stay out of a full export unless you pass
+`--thinking` and `--context`. A subagent is one line unless `--agents`,
+which writes that agent's turns after the turn that started it. `--all`
+includes turns started by tasks, other sessions and the system, as
+`log --all` does.
 
-`--out` writes only the path you name, and replaces that file if it exists.
-Without it the text goes to stdout. Tool output stops at 32 KiB, the same cap
+`--out` writes only the path you name, readable by you alone, and replaces
+that file if it exists. It refuses a path inside an agent's home. Without it,
+or with `--out -`, the text goes to stdout. Tool output stops at 32 KiB, the same cap
 as `log --tools`, and the file says how many bytes were left out. If the
 transcript is gone, export still writes the turns it kept and says so.
 
@@ -372,8 +383,8 @@ the usage page, as [How it counts](#how-it-counts) describes.
 | `ccli sessions` | sessions with tokens and cost; filter by account, days, folder (`--dir`), agent (`--tool`), project, model, title; `--hidden` for hidden ones |
 | `ccli projects [folder]` | the folders sessions started in, at or below a folder (the current one by default), with sessions, tokens and cost |
 | `ccli show <id>` | one session: models, cost split, agent tree, workflow runs, tools, resume command |
-| `ccli log <id> [turn\|N-M\|last]` | the session turn by turn, or turns in full; `--agent` and `--run` for agents |
-| `ccli export <id> [turn\|N-M\|last]` | a readable transcript for handoff (`--format jsonl`, `--agents`, `--out file`); not a file any tool can resume |
+| `ccli log <id> [turn\|N-M\|last]` | the session turn by turn, or turns in full; `--detail reply` for the prompt and last reply; `--agent` and `--run` for agents |
+| `ccli export <id> [turn\|N-M\|last]` | a readable transcript for handoff (`--detail reply` for prompt and last reply, `--format jsonl`, `--agents`, `--out file`); not a file any tool can resume |
 | `ccli prompts` | your prompts across sessions; sort by cost, tools, duration, tokens or length |
 | `ccli view [id]` | interactive browser; `t` expands tools in the turn, `]` opens one call |
 | `ccli stats` | dashboard: totals, daily chart, projects, models, accounts, hours, skills |
@@ -444,7 +455,9 @@ ccli reads transcripts and keeps its own index in
 `~/.local/share/ccli/ccli.db`. It never reads the Keychain, never writes
 `settings.json` or `.claude.json`, and never calls a model. In a Codex home
 it reads only the session logs: never `auth.json`, `config.toml` or Codex's
-own databases.
+own databases. Cursor is the one exception for logins: Cursor's transcripts
+have no usage figures, so ccli reads the login the Cursor IDE stored and
+sends it to Cursor, and nowhere else, to fetch them.
 
 `quota` starts Claude Code and Codex to ask for your limits. They update
 their own caches as on any start. `--offline` starts nothing. For Cursor,
@@ -456,12 +469,14 @@ Cursor account. A `--tool` filter that leaves Cursor out, or `-a` naming only
 other accounts, does not ask. The list is cached for 15 minutes in
 `~/.local/share/ccli/cursor-usage.json`. The login is not written there, nor
 into the debug log. When the cache is stale, ccli says it is reading Cursor
-usage before it asks. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
+usage before it asks. After a failed read it uses what it has and waits five
+minutes before asking again, and with no IDE login it does not ask at all. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
 `fork`, `statusline` and `index` do not ask Cursor.
 
 Only `copy`, `move`, `fork` and `resume --sync` write into an account, and
 only the files of the session involved. `hide` and `tag` write only to ccli's
-own index. `export --out` writes only the path you give. A transcript that
+own index. `export --out` writes only the path you give, never inside an
+agent's home. A transcript that
 cannot be read is reported and retried on the next run.
 [DESIGN.md](DESIGN.md) has the full contract, the transcript fields used and
 the store schema.

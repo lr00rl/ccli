@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/conv"
 	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/store"
 )
@@ -155,6 +156,11 @@ type SessionRow struct {
 	GitBranch    string       `json:"git_branch,omitempty"`
 	Entrypoint   string       `json:"entrypoint,omitempty"`
 	Version      string       `json:"version,omitempty"`
+
+	// A Cursor row's figures before billed usage was merged in. Account
+	// totals and the dashboard add billed usage under the same rule.
+	ownTokens Tokens
+	ownCost   Cost
 }
 
 // SessionPage is a filtered, sorted list of sessions.
@@ -239,9 +245,10 @@ func title(custom, ai, summary, prompt string) (string, string) {
 }
 
 // oneLine folds a title onto one line. A prompt pasted as a title can carry
-// newlines; one of those breaks a table row.
+// newlines, which break a table row, and terminal escapes, which act on the
+// terminal that prints it.
 func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	return strings.Join(strings.Fields(conv.Printable(s)), " ")
 }
 
 // ShortID is the first 8 characters of a session id, or all of a shorter one.

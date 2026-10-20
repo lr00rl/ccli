@@ -18,6 +18,7 @@ import (
 // Options selects how much of the conversation is written.
 type Options struct {
 	Format   string // md or jsonl. Empty means md.
+	Detail   string // full (default) or reply. reply keeps each turn's prompt and its last reply.
 	Thinking bool   // include the model's thinking
 	Context  bool   // include text the tool added (skills, reminders, peer messages)
 	Agents   bool   // inline a subagent's conversation after the turn that started it
@@ -37,6 +38,11 @@ func Write(w io.Writer, doc Doc, opt Options) error {
 	if opt.Loc == nil {
 		opt.Loc = time.Local
 	}
+	switch strings.ToLower(strings.TrimSpace(opt.Detail)) {
+	case "", "full", "reply":
+	default:
+		return fmt.Errorf("export detail %q: use full or reply", opt.Detail)
+	}
 	switch strings.ToLower(opt.Format) {
 	case "", "md", "markdown":
 		return writeMD(w, doc, opt)
@@ -49,14 +55,14 @@ func Write(w io.Writer, doc Doc, opt Options) error {
 
 func writeMD(w io.Writer, doc Doc, opt Options) error {
 	var b strings.Builder
-	title := strings.TrimSpace(doc.Session.Title)
+	title := oneLine(doc.Session.Title)
 	if title == "" {
 		title = "(untitled)"
 	}
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "%s · %s · %s\n\n", doc.Session.Tool, doc.Session.Account, doc.Session.ID)
-	if doc.Session.Cwd != "" {
-		fmt.Fprintf(&b, "%s\n\n", doc.Session.Cwd)
+	if cwd := oneLine(doc.Session.Cwd); cwd != "" {
+		fmt.Fprintf(&b, "%s\n\n", cwd)
 	}
 	if !doc.Session.Started.IsZero() {
 		end := doc.Session.Last.In(opt.Loc).Format("2006-01-02 15:04")
@@ -72,6 +78,9 @@ func writeMD(w io.Writer, doc Doc, opt Options) error {
 		}
 		fmt.Fprintf(&b, "\n## Turn %d\n", d.Row.Seq)
 		writeTurnMD(&b, d.Turn, opt, "")
+		if opt.reply() {
+			continue
+		}
 		writeAgentsMD(&b, d.Agents, doc.Agents, opt)
 		for _, r := range d.Runs {
 			name := r.Name
@@ -87,20 +96,25 @@ func writeMD(w io.Writer, doc Doc, opt Options) error {
 
 func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 	if tr == nil {
-		b.WriteString("\nThe transcript for this part is gone.\n")
+		b.WriteString("\nThis part of the transcript could not be read.\n")
 		return
 	}
 	speaker := tr.Speaker
 	if speaker == "" {
 		speaker = "Assistant"
 	}
-	for _, e := range tr.Entries {
+	entries := tr.Entries
+	if opt.reply() {
+		entries = conv.ReplyEntries(entries)
+	}
+	for _, e := range entries {
+		e.Text = conv.Printable(e.Text)
 		switch e.Kind {
 		case conv.KindThinking:
 			if !opt.Thinking {
 				continue
 			}
-			fmt.Fprintf(b, "\n### %s, thinking\n\n%s\n", speaker, strings.TrimSpace(e.Text))
+			fmt.Fprintf(b, "\n### %s, thinking\n\n%s\n", speaker, body(strings.TrimSpace(e.Text)))
 		case conv.KindContext:
 			if !opt.Context {
 				continue
@@ -109,7 +123,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if label == "" {
 				label = "context"
 			}
-			fmt.Fprintf(b, "\n### Context: %s\n\n%s\n", label, strings.TrimSpace(e.Text))
+			fmt.Fprintf(b, "\n### Context: %s\n\n%s\n", oneLine(label), body(strings.TrimSpace(e.Text)))
 		case conv.KindPrompt, conv.KindQueued:
 			who := "You"
 			if e.Kind == conv.KindQueued {
@@ -123,7 +137,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(b, "\n### %s\n\n%s\n", who, text)
+			fmt.Fprintf(b, "\n### %s\n\n%s\n", who, body(text))
 			if agent != "" {
 				fmt.Fprintf(b, "\n")
 			}
@@ -136,7 +150,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if who == "" {
 				who = speaker
 			}
-			fmt.Fprintf(b, "\n### %s\n\n%s\n", who, text)
+			fmt.Fprintf(b, "\n### %s\n\n%s\n", oneLine(who), body(text))
 		case conv.KindTool:
 			if e.Call == nil {
 				continue
@@ -150,10 +164,76 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(b, "\n### Note\n\n%s\n", text)
+			fmt.Fprintf(b, "\n### Note\n\n%s\n", body(text))
 		}
 	}
 }
+
+// body makes text from the conversation safe to place under one of the
+// document's own headings. A heading in it moves down three levels, so it
+// stays a heading but cannot pass for a turn or a speaker, an underline that
+// would make the line above it a heading is set apart from that line, and a
+// code fence it leaves open is closed, so it cannot swallow the rest of the
+// document.
+func body(text string) string {
+	lines := strings.Split(text, "\n")
+	open := "" // the fence that is open, as written
+	for i, l := range lines {
+		trim := strings.TrimLeft(l, " ")
+		indent := len(l) - len(trim)
+		if indent > 3 {
+			continue
+		}
+		if open == "" && i > 0 && underline(trim) && strings.TrimSpace(lines[i-1]) != "" {
+			lines[i] = "\n" + l
+			continue
+		}
+		if f := fenceOf(trim); f != "" {
+			if open == "" {
+				open = f
+			} else if f[0] == open[0] && len(f) >= len(open) && strings.TrimSpace(trim[len(f):]) == "" {
+				open = ""
+			}
+			continue
+		}
+		if open != "" || !strings.HasPrefix(trim, "#") {
+			continue
+		}
+		n := len(trim) - len(strings.TrimLeft(trim, "#"))
+		if n <= 6 && (n == len(trim) || trim[n] == ' ' || trim[n] == '\t') {
+			lines[i] = l[:indent] + strings.Repeat("#", min(n+3, 6)) + trim[n:]
+		}
+	}
+	if open != "" {
+		lines = append(lines, open)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// underline reports a line of only = or only - (spaces after are allowed),
+// which turns the line above it into a heading.
+func underline(s string) bool {
+	s = strings.TrimRight(s, " \t")
+	return s != "" && (strings.Trim(s, "=") == "" || strings.Trim(s, "-") == "")
+}
+
+// fenceOf returns the run of three or more backticks or tildes that opens or
+// closes a code block on this line, or "".
+func fenceOf(s string) string {
+	if len(s) < 3 || (s[0] != '`' && s[0] != '~') {
+		return ""
+	}
+	n := 0
+	for n < len(s) && s[n] == s[0] {
+		n++
+	}
+	if n < 3 || (s[0] == '`' && strings.Contains(s[n:], "`")) {
+		return ""
+	}
+	return s[:n]
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func writeToolMD(b *strings.Builder, c *conv.Call) {
 	head := c.Name
@@ -168,11 +248,11 @@ func writeToolMD(b *strings.Builder, c *conv.Call) {
 		fmt.Fprintf(b, "\n%s\n", s)
 	}
 	if c.Prompt != "" {
-		fmt.Fprintf(b, "\n%s\n", fence(strings.TrimSpace(c.Prompt)))
+		fmt.Fprintf(b, "\n%s\n", fence(strings.TrimSpace(conv.Printable(c.Prompt))))
 	} else if in := inputText(c.Input); in != "" {
-		fmt.Fprintf(b, "\n%s\n", fence(in))
+		fmt.Fprintf(b, "\n%s\n", fence(conv.Printable(in)))
 	}
-	out := strings.TrimRight(c.Output, "\n")
+	out := strings.TrimRight(conv.Printable(c.Output), "\n")
 	if out != "" {
 		fmt.Fprintf(b, "\n%s\n", fence(out))
 		if c.OutputLen > len(c.Output) {
@@ -184,11 +264,11 @@ func writeToolMD(b *strings.Builder, c *conv.Call) {
 func writeAgentsMD(b *strings.Builder, nodes []query.AgentNode, logs map[string]*query.AgentLog, opt Options) {
 	for _, n := range nodes {
 		if !opt.Agents {
-			fmt.Fprintf(b, "\nStarted agent %s.\n", n.Label)
+			fmt.Fprintf(b, "\nStarted agent %s.\n", oneLine(n.Label))
 			writeAgentsMD(b, n.Children, logs, opt)
 			continue
 		}
-		fmt.Fprintf(b, "\n### Agent: %s\n\n%s\n", n.Label, n.AgentID)
+		fmt.Fprintf(b, "\n### Agent: %s\n\n%s\n", oneLine(n.Label), n.AgentID)
 		log := logs[n.AgentID]
 		if log == nil || len(log.Turns) == 0 {
 			b.WriteString("\nThe transcript for this agent is gone.\n")
@@ -231,6 +311,9 @@ func writeJSONL(w io.Writer, doc Doc, opt Options) error {
 		if err := writeTurnJSONL(enc, d.Row.Seq, d.Turn, "", opt); err != nil {
 			return err
 		}
+		if opt.reply() {
+			continue
+		}
 		if err := writeAgentsJSONL(enc, d.Row.Seq, d.Agents, doc.Agents, opt); err != nil {
 			return err
 		}
@@ -246,7 +329,11 @@ func writeTurnJSONL(enc *json.Encoder, seq int, tr *conv.Turn, agent string, opt
 	if speaker == "" {
 		speaker = "Assistant"
 	}
-	for _, e := range tr.Entries {
+	entries := tr.Entries
+	if opt.reply() {
+		entries = conv.ReplyEntries(entries)
+	}
+	for _, e := range entries {
 		var line map[string]any
 		switch e.Kind {
 		case conv.KindThinking:
@@ -346,6 +433,10 @@ func writeAgentsJSONL(enc *json.Encoder, seq int, nodes []query.AgentNode, logs 
 		}
 	}
 	return nil
+}
+
+func (opt Options) reply() bool {
+	return strings.EqualFold(strings.TrimSpace(opt.Detail), "reply")
 }
 
 func entryLine(seq int, kind, agent, text string, tool map[string]any) map[string]any {
