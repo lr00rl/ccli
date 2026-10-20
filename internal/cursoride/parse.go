@@ -31,6 +31,11 @@ type Head struct {
 	AgentType, ToolCall   string
 	Sub                   bool
 	Created, Updated      int64
+	// Bubbles is how many messages the composer has, and LastRow the highest
+	// row id among them. cursorDiskKV replaces a row on a repeated key, so a
+	// bubble written again gets a new row id. The pair moves on every message
+	// even when Cursor has not yet moved lastUpdatedAt.
+	Bubbles, LastRow int64
 }
 
 // List reads composer headers and the workspace folder each one names.
@@ -43,6 +48,10 @@ func List(user string) ([]Head, error) {
 		return nil, err
 	}
 	defer db.Close()
+	marks, err := bubbleMarks(db)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(`SELECT composerId, createdAt, lastUpdatedAt, isSubagent, value FROM composerHeaders`)
 	if err != nil {
 		return nil, err
@@ -60,12 +69,34 @@ func List(user string) ([]Head, error) {
 		if id == "" {
 			continue
 		}
-		h := Head{ID: id, Sub: sub != 0, Created: created.Int64, Updated: updated.Int64}
+		m := marks[id]
+		h := Head{ID: id, Sub: sub != 0, Created: created.Int64, Updated: updated.Int64, Bubbles: m[0], LastRow: m[1]}
 		fillHead(&h, value)
 		if h.Cwd == "" {
 			h.Cwd = workspacePath(user, workspaceID(value))
 		}
 		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// bubbleMarks counts each composer's bubbles and finds its newest row, in
+// one pass over the key index ("bubbleId:<composer>:<bubble>").
+func bubbleMarks(db *sql.DB) (map[string][2]int64, error) {
+	rows, err := db.Query(`SELECT substr(key, 10, instr(substr(key, 10), ':') - 1), count(*), max(rowid)
+		FROM cursorDiskKV WHERE key >= 'bubbleId:' AND key < 'bubbleId;' GROUP BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][2]int64{}
+	for rows.Next() {
+		var id string
+		var n, last int64
+		if err := rows.Scan(&id, &n, &last); err != nil {
+			return nil, err
+		}
+		out[id] = [2]int64{n, last}
 	}
 	return out, rows.Err()
 }

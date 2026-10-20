@@ -103,14 +103,21 @@ func scanCursor(a account.Account) ([]discovered, error) {
 		found = append(found, discovered{
 			tool: account.Cursor, cwd: cwd, title: title, model: model, started: started, ended: ended,
 			agentType: agentType, toolUse: toolUse, parentAgent: parentAgent,
-			file: storeFile(a, path, session, kind, agent, st),
+			file: storeFile(a, path, session, kind, agent, st), side: max(own.stamp, metas[session].stamp),
 		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return dedupeCursor(found), nil
+	out := dedupeCursor(found)
+	// The title, folder, model and subagent link come from the side files,
+	// so a change there counts as a change to the transcript. This runs
+	// after dedupe, which compares the transcripts' own times.
+	for i := range out {
+		out[i].file.MTime = max(out[i].file.MTime, out[i].side)
+	}
+	return out, nil
 }
 
 // dedupeCursor keeps one main transcript per conversation id. Cursor
@@ -168,6 +175,7 @@ type cursorMeta struct {
 	created, updated         int64
 	sub                      bool
 	parent, root, tool, kind string
+	stamp                    int64 // newest mtime of meta.json, store.db and store.db-wal, Unix ms
 }
 
 func cursorMetas(root string) map[string]cursorMeta {
@@ -191,11 +199,19 @@ func cursorMetas(root string) map[string]cursorMeta {
 			return nil
 		}
 		dir := filepath.Dir(path)
-		info := cursorcli.ReadStore(filepath.Join(dir, "store.db"))
+		storeDB := filepath.Join(dir, "store.db")
+		info := cursorcli.ReadStore(storeDB)
+		var stamp int64
+		for _, p := range []string{path, storeDB, storeDB + "-wal"} {
+			if st, err := os.Stat(p); err == nil {
+				stamp = max(stamp, st.ModTime().UnixMilli())
+			}
+		}
 		out[filepath.Base(dir)] = cursorMeta{
 			cwd: v.Cwd, title: v.Title, model: info.Model,
 			created: v.Created, updated: v.Updated, sub: v.Subagent,
 			parent: info.Parent, root: info.Root, tool: info.ToolCall, kind: info.AgentType,
+			stamp: stamp,
 		}
 		return nil
 	})

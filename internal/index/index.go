@@ -204,6 +204,7 @@ type discovered struct {
 	started, ended     int64
 	agentType, toolUse string
 	parentAgent        string
+	side               int64 // Cursor CLI: newest change to the chat's meta.json or store.db, Unix ms
 }
 
 // scan lists an account's transcript files, and reads the workflow journals
@@ -407,7 +408,7 @@ func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	// Pi and Cursor CLI rewrite or branch in place. A changed file is read
 	// again from the start so an abandoned branch is not left in the index
 	// as if it were still the conversation.
-	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset ||
+	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset || refiled(d.tool, f, old) ||
 		(fullReread(d.tool) && (f.Size != old.Offset || f.MTime != old.MTime)) {
 		j.reset = true
 		return j, true
@@ -447,17 +448,27 @@ func fileParser(t account.Tool) int {
 }
 
 // planIDE keys a composer on its lastUpdatedAt, stored as the file's size
-// and mtime. The path is not a real file, so there is no head hash to check.
+// and mtime, and on its bubble count and newest bubble row, stored as the
+// head hash: Cursor writes a reply's bubbles minutes after it last moves
+// lastUpdatedAt. The path is not a real file, so there is nothing to hash.
 func planIDE(j job, old store.File, rebuild bool) (job, bool) {
 	if old.ID == 0 {
 		return j, true
 	}
 	j.file.ID = old.ID
-	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || j.file.Size != old.Size || j.file.MTime != old.MTime {
+	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || refiled(j.tool, j.file, old) ||
+		j.file.Size != old.Size || j.file.MTime != old.MTime || j.file.HeadHash != old.HeadHash {
 		j.reset = true
 		return j, true
 	}
 	return j, false
+}
+
+// refiled reports a Cursor transcript that its side data now files under
+// another session or kind, as when store.db or a composer header shows late
+// that a chat is a subagent. The file is read again so all its rows move.
+func refiled(t account.Tool, f, old store.File) bool {
+	return (t == account.Cursor || t == account.CursorIDE) && (f.SessionID != old.SessionID || f.Kind != old.Kind)
 }
 
 // continueFrom is the parse state an incremental parse of a file starts with.
