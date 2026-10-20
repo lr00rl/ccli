@@ -55,14 +55,14 @@ func Write(w io.Writer, doc Doc, opt Options) error {
 
 func writeMD(w io.Writer, doc Doc, opt Options) error {
 	var b strings.Builder
-	title := strings.TrimSpace(doc.Session.Title)
+	title := oneLine(doc.Session.Title)
 	if title == "" {
 		title = "(untitled)"
 	}
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "%s · %s · %s\n\n", doc.Session.Tool, doc.Session.Account, doc.Session.ID)
-	if doc.Session.Cwd != "" {
-		fmt.Fprintf(&b, "%s\n\n", doc.Session.Cwd)
+	if cwd := oneLine(doc.Session.Cwd); cwd != "" {
+		fmt.Fprintf(&b, "%s\n\n", cwd)
 	}
 	if !doc.Session.Started.IsZero() {
 		end := doc.Session.Last.In(opt.Loc).Format("2006-01-02 15:04")
@@ -113,7 +113,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if !opt.Thinking {
 				continue
 			}
-			fmt.Fprintf(b, "\n### %s, thinking\n\n%s\n", speaker, strings.TrimSpace(e.Text))
+			fmt.Fprintf(b, "\n### %s, thinking\n\n%s\n", speaker, body(strings.TrimSpace(e.Text)))
 		case conv.KindContext:
 			if !opt.Context {
 				continue
@@ -122,7 +122,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if label == "" {
 				label = "context"
 			}
-			fmt.Fprintf(b, "\n### Context: %s\n\n%s\n", label, strings.TrimSpace(e.Text))
+			fmt.Fprintf(b, "\n### Context: %s\n\n%s\n", oneLine(label), body(strings.TrimSpace(e.Text)))
 		case conv.KindPrompt, conv.KindQueued:
 			who := "You"
 			if e.Kind == conv.KindQueued {
@@ -136,7 +136,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(b, "\n### %s\n\n%s\n", who, text)
+			fmt.Fprintf(b, "\n### %s\n\n%s\n", who, body(text))
 			if agent != "" {
 				fmt.Fprintf(b, "\n")
 			}
@@ -149,7 +149,7 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if who == "" {
 				who = speaker
 			}
-			fmt.Fprintf(b, "\n### %s\n\n%s\n", who, text)
+			fmt.Fprintf(b, "\n### %s\n\n%s\n", oneLine(who), body(text))
 		case conv.KindTool:
 			if e.Call == nil {
 				continue
@@ -163,10 +163,63 @@ func writeTurnMD(b *strings.Builder, tr *conv.Turn, opt Options, agent string) {
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(b, "\n### Note\n\n%s\n", text)
+			fmt.Fprintf(b, "\n### Note\n\n%s\n", body(text))
 		}
 	}
 }
+
+// body makes text from the conversation safe to place under one of the
+// document's own headings. A heading in it moves down three levels, so it
+// stays a heading but cannot pass for a turn or a speaker, and a code fence
+// it leaves open is closed, so it cannot swallow the rest of the document.
+func body(text string) string {
+	lines := strings.Split(text, "\n")
+	open := "" // the fence that is open, as written
+	for i, l := range lines {
+		trim := strings.TrimLeft(l, " ")
+		indent := len(l) - len(trim)
+		if indent > 3 {
+			continue
+		}
+		if f := fenceOf(trim); f != "" {
+			if open == "" {
+				open = f
+			} else if f[0] == open[0] && len(f) >= len(open) && strings.TrimSpace(trim[len(f):]) == "" {
+				open = ""
+			}
+			continue
+		}
+		if open != "" || !strings.HasPrefix(trim, "#") {
+			continue
+		}
+		n := len(trim) - len(strings.TrimLeft(trim, "#"))
+		if n <= 6 && (n == len(trim) || trim[n] == ' ' || trim[n] == '\t') {
+			lines[i] = l[:indent] + strings.Repeat("#", min(n+3, 6)) + trim[n:]
+		}
+	}
+	if open != "" {
+		lines = append(lines, open)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// fenceOf returns the run of three or more backticks or tildes that opens or
+// closes a code block on this line, or "".
+func fenceOf(s string) string {
+	if len(s) < 3 || (s[0] != '`' && s[0] != '~') {
+		return ""
+	}
+	n := 0
+	for n < len(s) && s[n] == s[0] {
+		n++
+	}
+	if n < 3 || (s[0] == '`' && strings.Contains(s[n:], "`")) {
+		return ""
+	}
+	return s[:n]
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func writeToolMD(b *strings.Builder, c *conv.Call) {
 	head := c.Name
@@ -197,11 +250,11 @@ func writeToolMD(b *strings.Builder, c *conv.Call) {
 func writeAgentsMD(b *strings.Builder, nodes []query.AgentNode, logs map[string]*query.AgentLog, opt Options) {
 	for _, n := range nodes {
 		if !opt.Agents {
-			fmt.Fprintf(b, "\nStarted agent %s.\n", n.Label)
+			fmt.Fprintf(b, "\nStarted agent %s.\n", oneLine(n.Label))
 			writeAgentsMD(b, n.Children, logs, opt)
 			continue
 		}
-		fmt.Fprintf(b, "\n### Agent: %s\n\n%s\n", n.Label, n.AgentID)
+		fmt.Fprintf(b, "\n### Agent: %s\n\n%s\n", oneLine(n.Label), n.AgentID)
 		log := logs[n.AgentID]
 		if log == nil || len(log.Turns) == 0 {
 			b.WriteString("\nThe transcript for this agent is gone.\n")

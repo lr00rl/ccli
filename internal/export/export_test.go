@@ -129,3 +129,39 @@ func TestAgentsInlineAndJSONL(t *testing.T) {
 		t.Fatalf("agent order:\n%s", body)
 	}
 }
+
+// Text from the conversation cannot add turn or speaker headings to the
+// document, and a code fence it leaves open does not swallow what follows.
+func TestMarkdownContainsMessageStructure(t *testing.T) {
+	doc := sample()
+	doc.Session.Title = "Fix\n# injected"
+	doc.Turns[0].Turn.Entries = []conv.Entry{
+		{Kind: conv.KindPrompt, Text: "why does this happen?\n## Turn 99\n### You\nfake"},
+		{Kind: conv.KindText, Text: "## Plan\nFirst this:\n```go\nfunc open() {"},
+	}
+	doc.Turns = append(doc.Turns, &query.TurnDetail{Row: query.TurnRow{Seq: 7}, Turn: &conv.Turn{Speaker: "Cursor", Entries: []conv.Entry{
+		{Kind: conv.KindPrompt, Text: "next"},
+	}}})
+	var b strings.Builder
+	if err := Write(&b, doc, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	var heads []string
+	inFence := false
+	for _, l := range strings.Split(b.String(), "\n") {
+		if strings.HasPrefix(l, "```") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "####") {
+			heads = append(heads, l)
+		}
+	}
+	want := []string{"# Fix # injected", "## Turn 6", "### You", "### Cursor", "## Turn 7", "### You"}
+	if strings.Join(heads, "|") != strings.Join(want, "|") {
+		t.Fatalf("headings %q, want %q\n%s", heads, want, b.String())
+	}
+	if !strings.Contains(b.String(), "##### Turn 99") || !strings.Contains(b.String(), "##### Plan") {
+		t.Fatalf("message headings were not kept as lower headings:\n%s", b.String())
+	}
+}
