@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/lr00rl/ccli/internal/conv"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
 )
@@ -107,8 +108,11 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		if err != nil {
 			fmt.Fprintln(a.errw, "ccli:", err)
 		}
+		if *sortBy == "cost" {
+			sort.SliceStable(details, func(i, j int) bool { return details[i].Row.Total() > details[j].Row.Total() })
+		}
 		if c.json {
-			return a.printJSON(details)
+			return a.printJSON(replyOnly(details))
 		}
 		return a.pageTurns(t, *noPager, details, opt)
 	case len(pos) == 1:
@@ -136,12 +140,32 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		fmt.Fprintln(a.errw, "ccli:", err)
 	}
 	if c.json {
+		if reply {
+			details = replyOnly(details)
+		}
 		if len(details) == 1 {
 			return a.printJSON(details[0])
 		}
 		return a.printJSON(details)
 	}
 	return a.pageTurns(t, *noPager, details, opt)
+}
+
+// replyOnly trims each turn to what --detail reply prints: the prompts and
+// the last reply, without the agents and workflows it started.
+func replyOnly(details []*query.TurnDetail) []*query.TurnDetail {
+	out := make([]*query.TurnDetail, len(details))
+	for i, d := range details {
+		c := *d
+		if d.Turn != nil {
+			tr := *d.Turn
+			tr.Entries = conv.ReplyEntries(tr.Entries)
+			c.Turn = &tr
+		}
+		c.Agents, c.Runs = nil, nil
+		out[i] = &c
+	}
+	return out
 }
 
 func (a *app) pageTurns(t render.Term, noPager bool, details []*query.TurnDetail, opt render.LogOptions) error {
