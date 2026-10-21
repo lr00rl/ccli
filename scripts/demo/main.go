@@ -219,8 +219,50 @@ func (g *gen) run(livePID int) error {
 		}))
 	}
 	g.codex()
+	g.empties()
 	fmt.Printf("wrote %d sessions under %s\n", len(all), g.home)
 	return nil
+}
+
+// empties writes sessions with nothing in them, for ccli clean: two that
+// stopped after their first metadata line, one whose prompt never got a
+// reply, and a Codex thread that never got a message. Each file carries the
+// time its session stopped, so it counts as idle. They draw from a source of
+// their own, so every session above keeps its id.
+func (g *gen) empties() {
+	outer := g.rng
+	g.rng = rand.New(rand.NewPCG(29, 31))
+	defer func() { g.rng = outer }()
+	for _, e := range []struct {
+		p      project
+		days   int
+		prompt string
+	}{
+		{projects[5], 12, ""},
+		{projects[0], 9, ""},
+		{projects[1], 4, "Can you check why the staging deploy is stuck?"},
+	} {
+		s := g.session(e.p, e.days)
+		body := g.line(map[string]any{"type": "permission-mode", "permissionMode": "default", "sessionId": s.id})
+		if e.prompt != "" {
+			body += g.line(map[string]any{"type": "user", "timestamp": ts(s.start), "sessionId": s.id, "cwd": s.cwd,
+				"promptSource": "typed", "message": map[string]any{"role": "user", "content": e.prompt}})
+		}
+		path := filepath.Join(g.dir(s.acct), "projects", key(s.cwd), s.id+".jsonl")
+		g.must(os.MkdirAll(filepath.Dir(path), 0o755))
+		g.must(os.WriteFile(path, []byte(body), 0o644))
+		g.must(os.Chtimes(path, s.start, s.start))
+	}
+	start := g.now.AddDate(0, 0, -6).Add(-3 * time.Hour)
+	id := g.uuid()
+	meta := g.line(map[string]any{"timestamp": ts(start), "type": "session_meta", "payload": map[string]any{
+		"id": id, "timestamp": ts(start), "cwd": filepath.Join(g.home, projects[0].dir), "originator": "codex_cli_rs",
+		"cli_version": "0.146.0", "model_provider": "openai", "source": "cli"}})
+	dir := filepath.Join(g.home, ".codex", "sessions", start.Format("2006/01/02"))
+	path := filepath.Join(dir, "rollout-"+start.Format("2006-01-02T15-04-05")+"-"+id+".jsonl")
+	g.must(os.MkdirAll(dir, 0o755))
+	g.must(os.WriteFile(path, []byte(meta), 0o644))
+	g.must(os.Chtimes(path, start, start))
 }
 
 type session struct {

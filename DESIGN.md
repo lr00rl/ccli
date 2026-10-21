@@ -28,7 +28,10 @@ ccli is a reader. The only things it writes are:
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
   its new id), and for `move`, an archive of the source under
-  `$XDG_DATA_HOME/ccli/archive/` before the source files are removed.
+  `$XDG_DATA_HOME/ccli/archive/` before the source files are removed;
+- for `clean` only: an empty Claude Code session's files, moved from its
+  account into `$XDG_DATA_HOME/ccli/archive/clean/<stamp>/<account>/` with
+  a `manifest.json` of the run, and moved back by `clean --undo`.
 
 In a Codex home it reads only the rollout files under `sessions/` and
 `archived_sessions/`, and writes nothing itself (a `quota` live check starts
@@ -465,6 +468,8 @@ ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N
 ccli fork <id> --to acct [--from acct]   copy under a new session id
 ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
+ccli clean [-a acct] [--dir folder] [--tool t] [--unanswered] [--idle 1h] [--apply]   set aside empty sessions
+ccli clean --undo <stamp>          put back what one clean run archived and hid
 ccli tag <id> <tag> / --clear       label a session in ccli, or remove the label
 ccli index [--rebuild]
 ```
@@ -487,6 +492,35 @@ Claude Code put them, so `claude --resume` and `ccli resume` keep working.
   them by id.
 - A session a Claude Code process is running is refused: its next line would
   show it again.
+
+## Cleaning empty sessions
+
+`clean` finds sessions that hold nothing and sets them aside once you agree.
+
+- A session is empty when it has no prompt, no reply, no tool call, no
+  tokens or cost, no subagent or workflow run, and no name from a person or
+  the tool, is not running, and was last active at least `--idle` (1h) ago.
+  A name means there is something ccli cannot see, such as a Cursor chat
+  whose messages it cannot read. `--unanswered` adds sessions whose prompts
+  never got a reply; it is opt in because those hold text a person typed.
+  Unused Cursor IDE drafts are left out, since lists already leave them out.
+- A transcript with no line that names its folder takes the folder another
+  session under the same project key recorded, so `--dir` finds it.
+- Without `--apply`, `clean` prints the plan and asks on a terminal. With no
+  terminal, or with `--json`, it changes nothing.
+- A Claude Code session moves to the archive with the same path checks as
+  `move`, transcript last, and its rows leave the index. A Claude Code
+  session whose transcript is already gone only leaves the index. Codex, Pi
+  and Cursor sessions are hidden, because ccli does not write their homes.
+  An already hidden one is left out of the plan.
+- Just before each change, the session is checked again: one that is
+  running, or whose transcript moved or changed size or time since the plan,
+  is left as it was, with a note. A failure stops the run, and the sessions
+  after it are marked not done.
+- `--undo <stamp>` moves the run's transcripts back (a path the account has
+  again stays in the archive) and unhides the sessions it hid. The index
+  picks the transcripts up at once. Each run's folder is named for the
+  second it started; a second run in the same second is refused.
 
 ## Tagging sessions
 

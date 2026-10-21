@@ -6,8 +6,9 @@ separate accounts: the same conversation is not merged across them. It shows
 what each session used and what that cost, turn by turn: every prompt you
 typed, what the model did with it, which subagents and workflow runs it
 started and what they cost. It also shows where your subscription limits
-stand, and it moves a Claude Code session from one account to another and
-back without mixing up whose usage is whose.
+stand, moves a Claude Code session from one account to another and back
+without mixing up whose usage is whose, and clears out sessions that hold
+nothing.
 
 ![ccli stats: totals, daily usage, projects, models, accounts, active hours, session shape and skills](docs/images/stats.png)
 
@@ -343,6 +344,33 @@ and forth. ccli records every byte range it copies into an account, and a
 response that came in with a copy never counts toward the account it was
 copied into. A forked session starts at $0 in its new account.
 
+### Clearing out empty sessions
+
+```sh
+ccli clean                           # list the empty sessions, then ask
+ccli clean --unanswered              # also sessions whose prompt never got a reply
+ccli clean --undo 20261020-201340    # put one run back
+```
+
+![ccli clean](docs/images/clean.png)
+
+A session is empty when it has no prompt, no reply, no tool call, no tokens
+or cost, no subagent or workflow run and no name, is not running, and was
+last active more than an hour ago (`--idle` changes that). `clean` prints the
+plan and asks before it changes anything. Without a terminal to ask on, or
+with `--json`, it only prints the plan, and `--apply` skips the question.
+
+Nothing is deleted. A Claude Code transcript moves to
+`~/.local/share/ccli/archive/clean/<stamp>/<account>/`, with the same checks
+`move` uses, and leaves the index. Sessions of Codex, Pi and Cursor are hidden
+instead, because ccli does not write their homes. Each session is checked
+again just before it moves, and one that started running or changed since
+the plan stays where it is. `--undo <stamp>` puts the transcripts back and
+brings the hidden sessions back.
+
+`--unanswered` is opt in, because those sessions hold a prompt you typed.
+`-a`, `--dir` and `--tool` narrow `clean` the way they narrow `sessions`.
+
 Every command takes `--json` and prints the same structures, for scripts and
 for a web view that can be added later on top of the same query layer. The
 tutorial has [examples with jq](docs/tutorial.md#script-it).
@@ -395,6 +423,7 @@ the usage page, as [How it counts](#how-it-counts) describes.
 | `ccli resume <id> [-a <acct> --sync]` | resume with that session's tool (`claude`, `codex`, `pi` or `agent`); `-a` is Claude Code only |
 | `ccli hide\|unhide <id>...` | leave sessions out of lists, or bring them back; totals still count them |
 | `ccli tag <id> <tag>` | label a session, shown next to its title; `--clear` removes the tag |
+| `ccli clean` | set aside empty sessions after asking: Claude Code transcripts go to ccli's archive, others are hidden; `--undo <stamp>` puts them back |
 | `ccli statusline -- <cmd>` | status line wrapper that records the rate limits |
 | `ccli index [--rebuild]` | update the index (every other command does this first) |
 
@@ -473,8 +502,9 @@ usage before it asks. After a failed read it uses what it has and waits five
 minutes before asking again, and with no IDE login it does not ask at all. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
 `fork`, `statusline` and `index` do not ask Cursor.
 
-Only `copy`, `move`, `fork` and `resume --sync` write into an account, and
-only the files of the session involved. `hide` and `tag` write only to ccli's
+Only `copy`, `move`, `fork`, `resume --sync` and `clean` write into an
+account, and only the files of the session involved: `clean` moves an empty
+Claude Code transcript into ccli's archive, and `clean --undo` moves it back. `hide` and `tag` write only to ccli's
 own index. `export --out` writes only the path you give, never inside an
 agent's home. A transcript that
 cannot be read is reported and retried on the next run.
