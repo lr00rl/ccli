@@ -503,24 +503,36 @@ Claude Code put them, so `claude --resume` and `ccli resume` keep working.
   A name means there is something ccli cannot see, such as a Cursor chat
   whose messages it cannot read. `--unanswered` adds sessions whose prompts
   never got a reply; it is opt in because those hold text a person typed.
-  Unused Cursor IDE drafts are left out, since lists already leave them out.
+  Sessions a person hid or tagged are left alone, and so are unused Cursor
+  IDE drafts, which lists already leave out. Billed Cursor usage is read
+  first and counts as content. A Codex, Pi or Cursor session with no
+  recorded time is not taken as idle; for Claude Code the transcript's own
+  time decides.
 - A transcript with no line that names its folder takes the folder another
   session under the same project key recorded, so `--dir` finds it.
 - Without `--apply`, `clean` prints the plan and asks on a terminal. With no
-  terminal, or with `--json`, it changes nothing.
+  terminal, or with `--json`, it changes nothing. `--no-index` is refused:
+  the plan must come from what the transcripts hold now.
 - A Claude Code session moves to the archive with the same path checks as
   `move`, transcript last, and its rows leave the index. A Claude Code
   session whose transcript is already gone only leaves the index. Codex, Pi
-  and Cursor sessions are hidden, because ccli does not write their homes.
-  An already hidden one is left out of the plan.
+  and Cursor sessions are hidden, because ccli does not write their homes. A
+  hidden session that is used again shows again by itself.
 - Just before each change, the session is checked again: one that is
   running, or whose transcript moved or changed size or time since the plan,
-  is left as it was, with a note. A failure stops the run, and the sessions
-  after it are marked not done.
-- `--undo <stamp>` moves the run's transcripts back (a path the account has
-  again stays in the archive) and unhides the sessions it hid. The index
-  picks the transcripts up at once. Each run's folder is named for the
-  second it started; a second run in the same second is refused.
+  is left as it was, with a note. A failure or an interrupt stops the run,
+  and the sessions after it are marked not done.
+- The run claims its folder, named for the second it started, with an
+  exclusive mkdir, so a second run in the same second is refused. Its
+  `manifest.json` lists the plan before the first change and is rewritten
+  after each session, marking which are done. A run that changed nothing
+  removes its folder.
+- `--undo <stamp>` works from the folder, so a run that stopped part way can
+  be undone even without its record. It moves the transcripts back with a
+  link where it can, so a path the account has again is never replaced and
+  stays in the archive, as does anything that is not a session. It unhides
+  the sessions the record marks as hidden, and updates the index, even when
+  one account fails.
 
 ## Tagging sessions
 

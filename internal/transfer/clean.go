@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,11 +26,13 @@ func Archive(src Files, archiveDir string, now time.Time) (string, []string, err
 	return root, moved, err
 }
 
-// Restore moves what Archive put under root back into the account. It
-// takes only session paths (projects/<key>/<id>.jsonl, projects/<key>/<id>/
-// and file-history/<id>/) and refuses anything else under root. A path the
-// account already has is left where it is and reported as a conflict.
-func Restore(root string, a account.Account) (restored, conflicts []string, err error) {
+// Restore moves what Archive put under root back into the account. It moves
+// only session paths (projects/<key>/<id>.jsonl, projects/<key>/<id>/ and
+// file-history/<id>/). Anything else under root, such as a file another
+// program left there, stays and is reported in left. A path the account has
+// again is not replaced: it stays in the archive and is reported as a
+// conflict.
+func Restore(root string, a account.Account) (restored, conflicts, left []string, err error) {
 	var dirs, transcripts []string
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -53,7 +56,7 @@ func Restore(root string, a account.Account) (restored, conflicts []string, err 
 			strings.HasSuffix(parts[2], ".jsonl") && validID(strings.TrimSuffix(parts[2], ".jsonl")):
 			transcripts = append(transcripts, rel)
 		default:
-			return fmt.Errorf("restore %s: %s is not part of an archived session", root, rel)
+			left = append(left, path)
 		}
 		if d.IsDir() {
 			return filepath.SkipDir
@@ -61,7 +64,7 @@ func Restore(root string, a account.Account) (restored, conflicts []string, err 
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, left, err
 	}
 	// Folders first, so a restored transcript has its subagents beside it.
 	sort.Strings(dirs)
@@ -69,19 +72,45 @@ func Restore(root string, a account.Account) (restored, conflicts []string, err 
 	for _, rel := range append(dirs, transcripts...) {
 		dst, err := joinWithin(a.Dir, rel)
 		if err != nil {
-			return restored, conflicts, fmt.Errorf("restore %s: %w", rel, err)
+			return restored, conflicts, left, fmt.Errorf("restore %s: %w", rel, err)
 		}
-		if _, err := os.Lstat(dst); err == nil {
+		if err := checkParents(a.Dir, dst); err != nil {
+			return restored, conflicts, left, err
+		}
+		ok, err := moveBack(filepath.Join(root, rel), dst)
+		if err != nil {
+			return restored, conflicts, left, err
+		}
+		if !ok {
 			conflicts = append(conflicts, dst)
 			continue
-		}
-		if err := relocate(filepath.Join(root, rel), dst); err != nil {
-			return restored, conflicts, err
 		}
 		restored = append(restored, dst)
 	}
 	removeEmpty(root)
-	return restored, conflicts, nil
+	return restored, conflicts, left, nil
+}
+
+// moveBack moves src to dst unless dst exists, and reports whether it did.
+// A file is hard-linked into place first: unlike a rename, a link fails if
+// the tool wrote dst in the meantime.
+func moveBack(src, dst string) (bool, error) {
+	if _, err := os.Lstat(dst); err == nil {
+		return false, nil
+	}
+	if st, err := os.Lstat(src); err == nil && st.Mode().IsRegular() {
+		if err := mkdirAll(filepath.Dir(dst)); err != nil {
+			return false, fmt.Errorf("restore %s: %w", dst, err)
+		}
+		switch err := os.Link(src, dst); {
+		case err == nil:
+			return true, os.Remove(src)
+		case errors.Is(err, os.ErrExist):
+			return false, nil
+		}
+		// Another device, or no hard links: a plain move.
+	}
+	return true, relocate(src, dst)
 }
 
 // removeEmpty removes root and the folders under it that Restore emptied.

@@ -40,9 +40,9 @@ func TestArchiveAndRestore(t *testing.T) {
 		t.Fatal("another session was touched")
 	}
 
-	restored, conflicts, err := Restore(dir, a)
-	if err != nil || len(conflicts) != 0 {
-		t.Fatalf("restore: %v, conflicts %v", err, conflicts)
+	restored, conflicts, left, err := Restore(dir, a)
+	if err != nil || len(conflicts) != 0 || len(left) != 0 {
+		t.Fatalf("restore: %v, conflicts %v, left %v", err, conflicts, left)
 	}
 	mustContain(t, restored, tr)
 	if readStr(t, filepath.Join(a.Dir, "projects", "-p", id1, "subagents", "agent-x.jsonl")) != "{}\n" ||
@@ -54,28 +54,46 @@ func TestArchiveAndRestore(t *testing.T) {
 	}
 }
 
-// A transcript the account has again is left in the archive, and a folder
-// holding anything but archived sessions is refused before anything moves.
+// A transcript the account has again stays in the archive, and anything in
+// the archive that is not a session stays there too, while the sessions
+// beside it move back.
 func TestRestoreConflictsAndForeignFiles(t *testing.T) {
 	root := t.TempDir()
 	a := makeAcct(t, root, "work")
 	dir := filepath.Join(root, "archive", "20261020-153000", "work")
 	writeFile(t, filepath.Join(dir, "projects", "-p", id1+".jsonl"), "archived\n", time.Time{})
 	writeFile(t, transcriptPath(a, "-p", id1), "newer\n", time.Time{})
-	restored, conflicts, err := Restore(dir, a)
-	if err != nil || len(restored) != 0 || len(conflicts) != 1 {
-		t.Fatalf("restored %v conflicts %v err %v", restored, conflicts, err)
+	writeFile(t, filepath.Join(dir, ".DS_Store"), "x", time.Time{})
+	writeFile(t, filepath.Join(dir, "projects", "-p", id2+".jsonl"), "x\n", time.Time{})
+	restored, conflicts, left, err := Restore(dir, a)
+	if err != nil || len(restored) != 1 || len(conflicts) != 1 || len(left) != 1 || !strings.HasSuffix(left[0], ".DS_Store") {
+		t.Fatalf("restored %v conflicts %v left %v err %v", restored, conflicts, left, err)
 	}
 	if readStr(t, transcriptPath(a, "-p", id1)) != "newer\n" || readStr(t, filepath.Join(dir, "projects", "-p", id1+".jsonl")) != "archived\n" {
 		t.Fatal("a conflict changed a file")
 	}
-
-	writeFile(t, filepath.Join(dir, "settings.json"), "{}", time.Time{})
-	writeFile(t, filepath.Join(dir, "projects", "-p", id2+".jsonl"), "x\n", time.Time{})
-	if _, _, err := Restore(dir, a); err == nil || !strings.Contains(err.Error(), "settings.json") {
-		t.Fatalf("err = %v, want settings.json refused", err)
+	if readStr(t, transcriptPath(a, "-p", id2)) != "x\n" {
+		t.Fatal("the session beside the foreign file did not move back")
 	}
-	if _, err := os.Stat(transcriptPath(a, "-p", id2)); err == nil {
-		t.Fatal("a session moved although the folder was refused")
+}
+
+// A project folder in the account that is a link is not written through.
+func TestRestoreRefusesALinkedProjectFolder(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "work")
+	elsewhere := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(a.Dir, "projects", "-p")); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "archive", "20261020-153000", "work")
+	writeFile(t, filepath.Join(dir, "projects", "-p", id1+".jsonl"), "x\n", time.Time{})
+	if _, _, _, err := Restore(dir, a); err == nil {
+		t.Fatal("restored through a linked project folder")
+	}
+	if ents, _ := os.ReadDir(elsewhere); len(ents) != 0 {
+		t.Fatal("a file was written through the link")
 	}
 }

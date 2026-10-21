@@ -369,7 +369,8 @@ the plan stays where it is. `--undo <stamp>` puts the transcripts back and
 brings the hidden sessions back.
 
 `--unanswered` is opt in, because those sessions hold a prompt you typed.
-`-a`, `--dir` and `--tool` narrow `clean` the way they narrow `sessions`.
+Sessions you hid or tagged are left alone. `-a`, `--dir` and `--tool` narrow
+`clean` the way they narrow `sessions`.
 
 Every command takes `--json` and prints the same structures, for scripts and
 for a web view that can be added later on top of the same query layer. The

@@ -70,6 +70,9 @@ func cmdClean(ctx context.Context, a *app, args []string) error {
 	if *idle < 0 {
 		return errors.New("--idle: use a duration such as 1h or 30m")
 	}
+	if c.noIndex {
+		return errors.New("--no-index: clean decides from what the transcripts hold now, so it always updates the index first")
+	}
 	f.Accounts = accts
 	svc, err := a.prepare(ctx, c, accts)
 	if err != nil {
@@ -79,6 +82,8 @@ func cmdClean(ctx context.Context, a *app, args []string) error {
 	if *undo != "" {
 		return a.cleanUndo(ctx, c, *undo)
 	}
+	// Billed Cursor usage counts as content, as it does in every list.
+	a.refreshCursorFor(ctx, f.Accounts, f.Tools)
 	now := time.Now()
 	rows, err := svc.Empty(ctx, f, *unanswered, *idle, now)
 	if err != nil {
@@ -88,9 +93,9 @@ func cmdClean(ctx context.Context, a *app, args []string) error {
 	t := a.term(c)
 	if !*apply {
 		if c.json {
-			return a.printJSON(cleanRows(plan, false))
+			return a.printJSON(cleanOut{Sessions: cleanRows(plan)})
 		}
-		t.CleanPlan(cleanRows(plan, false))
+		t.CleanPlan(cleanRows(plan))
 		if len(plan) == 0 {
 			return nil
 		}
@@ -105,13 +110,20 @@ func cmdClean(ctx context.Context, a *app, args []string) error {
 	}
 	stamp, err := a.cleanApply(ctx, plan, now)
 	if c.json {
-		if jerr := a.printJSON(map[string]any{"sessions": cleanRows(plan, true), "undo": stamp}); err == nil {
+		if jerr := a.printJSON(cleanOut{Sessions: cleanRows(plan), Undo: stamp}); err == nil {
 			err = jerr
 		}
 		return err
 	}
-	t.CleanDone(cleanRows(plan, true), stamp)
+	t.CleanDone(cleanRows(plan), stamp)
 	return err
+}
+
+// cleanOut is what clean prints with --json: the plan, or after --apply
+// what was done and the stamp --undo takes.
+type cleanOut struct {
+	Sessions []render.CleanRow `json:"sessions"`
+	Undo     string            `json:"undo,omitempty"`
 }
 
 // cleanPlan decides what to do with each empty session. A Claude Code
@@ -131,9 +143,6 @@ func (a *app) cleanPlan(rows []query.SessionRow, idle time.Duration, now time.Ti
 			it.Cwd = s.ProjectKey // a transcript with no line that names its folder
 		}
 		if acct.Kind() != account.Claude {
-			if s.Hidden {
-				continue
-			}
 			it.Action = "hide"
 			out = append(out, it)
 			continue
@@ -161,12 +170,24 @@ func (a *app) cleanPlan(rows []query.SessionRow, idle time.Duration, now time.Ti
 
 // cleanApply carries out a plan, checking each session again first: it must
 // not be running, and a transcript must be where and as the plan saw it. A
-// session that fails a check is left as it was, with a note. It returns the
-// stamp --undo takes, or "" when nothing can be undone.
+// session that fails a check is left as it was, with a note. The run's
+// folder is claimed before anything moves, and its record is written before
+// the first change and after each one, so a run that stops part way can be
+// undone. It returns the stamp --undo takes, or "" when nothing changed.
 func (a *app) cleanApply(ctx context.Context, plan []cleanItem, now time.Time) (string, error) {
-	// Each run gets a folder of its own, named for the second it started.
-	if _, err := os.Stat(filepath.Join(cleanDir(), now.Format(stampLayout))); err == nil {
-		return "", errors.New("another clean run started this second; run it again")
+	stamp := now.Format(stampLayout)
+	dir := filepath.Join(cleanDir(), stamp)
+	if err := os.MkdirAll(cleanDir(), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", errors.New("another clean run started this second; run it again")
+		}
+		return "", err
+	}
+	if err := writeManifest(dir, plan, now); err != nil {
+		return "", err
 	}
 	live := map[string]bool{}
 	for _, l := range account.LiveSessions(a.accts) {
@@ -178,19 +199,39 @@ func (a *app) cleanApply(ctx context.Context, plan []cleanItem, now time.Time) (
 		switch {
 		case err != nil:
 			it.Note = "not done: stopped at an earlier error"
+		case ctx.Err() != nil:
+			it.Note = "not done: interrupted"
 		case live[it.ID]:
 			it.Note = "running now; left as it was"
 		default:
 			if err = a.cleanOne(ctx, it, now); err != nil {
 				it.Note = err.Error()
 			}
+			it.Done = err == nil && it.Note == ""
+		}
+		if werr := writeManifest(dir, plan, now); werr != nil && err == nil {
+			err = werr
 		}
 	}
-	stamp, merr := a.writeManifest(plan, now)
-	if err == nil {
-		err = merr
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	// Nothing to put back: no file moved into the folder and nothing hidden.
+	if ents, rerr := os.ReadDir(dir); rerr == nil && len(ents) == 1 && !hidAny(plan) {
+		os.Remove(filepath.Join(dir, "manifest.json"))
+		os.Remove(dir)
+		return "", err
 	}
 	return stamp, err
+}
+
+func hidAny(plan []cleanItem) bool {
+	for _, it := range plan {
+		if it.Done && it.Action == "hide" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *app) cleanOne(ctx context.Context, it *cleanItem, now time.Time) error {
@@ -221,52 +262,43 @@ func (a *app) cleanOne(ctx context.Context, it *cleanItem, now time.Time) error 
 	return err
 }
 
-// writeManifest records what was done beside the archive. Forgotten
-// sessions have nothing to put back, so a run that only forgot gets no stamp.
-func (a *app) writeManifest(plan []cleanItem, now time.Time) (string, error) {
-	done := cleanRows(plan, true)
-	undoable := false
-	for _, r := range done {
-		if r.Note == "" && r.Action != "forget" {
-			undoable = true
-		}
-	}
-	if !undoable {
-		return "", nil
-	}
-	stamp := now.Format(stampLayout)
-	dir := filepath.Join(cleanDir(), stamp)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	b, err := json.MarshalIndent(cleanManifest{At: now, Sessions: done}, "", "  ")
+// writeManifest records the run beside its archive: every session of the
+// plan, and which are done.
+func writeManifest(dir string, plan []cleanItem, now time.Time) error {
+	b, err := json.MarshalIndent(cleanManifest{At: now, Sessions: cleanRows(plan)}, "", "  ")
 	if err != nil {
-		return "", err
+		return err
 	}
-	return stamp, os.WriteFile(filepath.Join(dir, "manifest.json"), b, 0o600)
+	tmp := filepath.Join(dir, "manifest.json.tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "manifest.json"))
 }
 
 // cleanUndo puts a run's archived transcripts back into their accounts and
-// brings back the sessions it hid. A transcript an account has again since
-// stays in the archive.
+// brings back the sessions it hid. It works from the run's folder, so a run
+// that stopped before its record was complete can still be undone. A path
+// an account has again, and anything that is not a session, stay in the
+// archive. Sessions are unhidden and the index is updated even when one
+// account fails.
 func (a *app) cleanUndo(ctx context.Context, c common, stamp string) error {
 	if _, err := time.Parse(stampLayout, stamp); err != nil {
 		return fmt.Errorf("--undo %q: give the stamp clean printed, such as 20261020-153000", stamp)
 	}
 	dir := filepath.Join(cleanDir(), stamp)
-	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("no clean run %s in %s", stamp, cleanDir())
 	}
 	var m cleanManifest
-	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("read the record of clean run %s: %w", stamp, err)
+	if b, err := os.ReadFile(filepath.Join(dir, "manifest.json")); err == nil {
+		if err := json.Unmarshal(b, &m); err != nil {
+			return fmt.Errorf("read the record of clean run %s: %w", stamp, err)
+		}
 	}
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	var restored, conflicts []string
+	var restored, kept []string
+	var errs []error
 	for _, e := range ents {
 		if !e.IsDir() {
 			continue
@@ -274,31 +306,39 @@ func (a *app) cleanUndo(ctx context.Context, c common, stamp string) error {
 		root := filepath.Join(dir, e.Name())
 		acct, ok := a.accountNamed(e.Name())
 		if !ok || acct.Kind() != account.Claude {
-			conflicts = append(conflicts, root)
+			kept = append(kept, root)
 			fmt.Fprintf(a.errw, "ccli: no Claude Code account is named %s now; its sessions stay in %s\n", e.Name(), root)
 			continue
 		}
-		r, cf, err := transfer.Restore(root, acct)
-		restored, conflicts = append(restored, r...), append(conflicts, cf...)
+		r, conflicts, left, err := transfer.Restore(root, acct)
+		restored = append(restored, r...)
+		for _, p := range conflicts {
+			fmt.Fprintf(a.errw, "ccli: %s is in the account again; the archived copy stays in %s\n", p, root)
+		}
+		for _, p := range left {
+			fmt.Fprintf(a.errw, "ccli: %s is not part of a session and stays where it is\n", p)
+		}
+		kept = append(kept, conflicts...)
+		kept = append(kept, left...)
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
 		}
 	}
 	var hidden []string
 	for _, r := range m.Sessions {
-		if r.Action == "hide" && r.Note == "" {
+		if r.Action == "hide" && r.Done {
 			hidden = append(hidden, r.ID)
 		}
 	}
 	if err := a.st.Unhide(ctx, hidden); err != nil {
-		return err
+		errs = append(errs, err)
 	}
-	if len(conflicts) == 0 {
+	if len(kept) == 0 && len(errs) == 0 {
 		os.Remove(filepath.Join(dir, "manifest.json"))
 		os.Remove(dir)
 	}
 	if _, err := a.refresh(ctx, false); err != nil {
-		return err
+		errs = append(errs, err)
 	}
 	transcripts := 0
 	for _, p := range restored {
@@ -307,23 +347,19 @@ func (a *app) cleanUndo(ctx context.Context, c common, stamp string) error {
 		}
 	}
 	if c.json {
-		return a.printJSON(map[string]any{"restored": restored, "unhidden": hidden, "left_in_archive": conflicts})
+		if err := a.printJSON(map[string]any{"restored": restored, "unhidden": hidden, "left_in_archive": kept}); err != nil {
+			errs = append(errs, err)
+		}
+	} else {
+		fmt.Fprintf(a.out, "Put back %s and brought back %s.\n", render.Plural(transcripts, "transcript"), render.Plural(len(hidden), "hidden session"))
 	}
-	fmt.Fprintf(a.out, "Put back %s and brought back %s.\n", render.Plural(transcripts, "transcript"), render.Plural(len(hidden), "hidden session"))
-	for _, p := range conflicts {
-		fmt.Fprintf(a.out, "  left in the archive, the account has it again: %s\n", p)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
-// cleanRows is the plan as rows; done keeps the notes apply left.
-func cleanRows(plan []cleanItem, done bool) []render.CleanRow {
+func cleanRows(plan []cleanItem) []render.CleanRow {
 	out := make([]render.CleanRow, len(plan))
 	for i, it := range plan {
 		out[i] = it.CleanRow
-		if !done {
-			out[i].Note = ""
-		}
 	}
 	return out
 }

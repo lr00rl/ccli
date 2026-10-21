@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -71,15 +72,17 @@ func runCLI(t *testing.T, args ...string) []byte {
 
 func planIDs(t *testing.T, b []byte) map[string]string {
 	t.Helper()
-	var rows []struct {
-		Action string `json:"action"`
-		ID     string `json:"session_id"`
+	var plan struct {
+		Sessions []struct {
+			Action string `json:"action"`
+			ID     string `json:"session_id"`
+		} `json:"sessions"`
 	}
-	if err := json.Unmarshal(b, &rows); err != nil {
+	if err := json.Unmarshal(b, &plan); err != nil {
 		t.Fatalf("%v\n%s", err, b)
 	}
 	out := map[string]string{}
-	for _, r := range rows {
+	for _, r := range plan.Sessions {
 		out[r.ID] = r.Action
 	}
 	return out
@@ -106,17 +109,23 @@ func TestCleanPlanApplyUndo(t *testing.T) {
 		t.Fatalf("--dir plan %v", plan)
 	}
 
+	// A tagged session is left alone.
+	runCLI(t, "tag", cleanAsked, "keep")
+	if plan := planIDs(t, runCLI(t, "clean", "--json", "--unanswered")); len(plan) != 1 {
+		t.Fatalf("plan with a tagged session %v", plan)
+	}
+
 	var done struct {
 		Undo     string `json:"undo"`
 		Sessions []struct {
 			ID   string `json:"session_id"`
-			Note string `json:"note"`
+			Done bool   `json:"done"`
 		} `json:"sessions"`
 	}
 	if err := json.Unmarshal(runCLI(t, "clean", "--apply", "--json"), &done); err != nil {
 		t.Fatal(err)
 	}
-	if done.Undo == "" || len(done.Sessions) != 1 || done.Sessions[0].Note != "" {
+	if done.Undo == "" || len(done.Sessions) != 1 || !done.Sessions[0].Done {
 		t.Fatalf("apply: %+v", done)
 	}
 	archived := filepath.Join(root, "data", "ccli", "archive", "clean", done.Undo, "default", "projects", "-work-app", cleanEmpty+".jsonl")
@@ -130,6 +139,10 @@ func TestCleanPlanApplyUndo(t *testing.T) {
 		t.Fatalf("sessions after clean:\n%s", b)
 	}
 
+	// The record beside the archive is lost; the folder is enough.
+	if err := os.Remove(filepath.Join(root, "data", "ccli", "archive", "clean", done.Undo, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
 	runCLI(t, "clean", "--undo", done.Undo)
 	if _, err := os.Stat(transcript); err != nil {
 		t.Fatalf("undo did not put the transcript back: %v", err)
@@ -139,6 +152,14 @@ func TestCleanPlanApplyUndo(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "data", "ccli", "archive", "clean", done.Undo)); err == nil {
 		t.Fatal("the emptied archive folder was kept")
+	}
+}
+
+func TestCleanRefusesNoIndex(t *testing.T) {
+	cleanHome(t)
+	var out, errw bytes.Buffer
+	if code := Main([]string{"clean", "--no-index"}, &out, &errw); code == 0 {
+		t.Fatal("clean ran on an index it did not update")
 	}
 }
 
@@ -176,5 +197,38 @@ func TestCleanLeavesATranscriptThatChanged(t *testing.T) {
 	}
 	if _, err := os.Stat(transcript); err != nil {
 		t.Fatal("the changed transcript was moved")
+	}
+}
+
+// An interrupted run stops before the next session and says so.
+func TestCleanStopsWhenInterrupted(t *testing.T) {
+	root := cleanHome(t)
+	a := &app{out: io.Discard, errw: io.Discard}
+	if err := a.open(); err != nil {
+		t.Fatal(err)
+	}
+	defer a.close()
+	if _, err := a.refresh(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	rows, err := query.New(a.st, a.accts).Empty(context.Background(), query.Filter{}, true, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := a.cleanPlan(rows, time.Hour, now)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stamp, err := a.cleanApply(ctx, plan, now)
+	if !errors.Is(err, context.Canceled) || stamp != "" {
+		t.Fatalf("stamp %q err %v", stamp, err)
+	}
+	for _, it := range plan {
+		if it.Done || it.Note != "not done: interrupted" {
+			t.Fatalf("%s: done %t note %q", it.ID, it.Done, it.Note)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude", "projects", "-work-app", cleanEmpty+".jsonl")); err != nil {
+		t.Fatal("a transcript moved after the interrupt")
 	}
 }

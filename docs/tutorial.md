@@ -325,8 +325,8 @@ Put back 2 transcripts and brought back 1 hidden session.
 
 Sessions where you typed a prompt that never got an answer, often a run that
 failed to start, count only with `--unanswered`, because they hold your own
-text. `--dir .` limits the search to the current project and `--tool codex`
-to one agent. In a script, `ccli clean` without a terminal prints the plan
+text. Sessions you hid or tagged are left alone. `--dir .` limits the search
+to the current project and `--tool codex` to one agent. In a script, `ccli clean` without a terminal prints the plan
 and changes nothing; add `--apply` to carry it out.
 
 ## Tag sessions

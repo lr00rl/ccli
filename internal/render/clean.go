@@ -16,7 +16,8 @@ type CleanRow struct {
 	Cwd     string    `json:"cwd,omitempty"`
 	Last    time.Time `json:"last"`
 	Prompts int       `json:"prompts,omitempty"`
-	Note    string    `json:"note,omitempty"` // why it was skipped when applied
+	Done    bool      `json:"done,omitempty"` // applied
+	Note    string    `json:"note,omitempty"` // why it was not done, when applied
 }
 
 // CleanPlan prints the sessions `clean` found and what it does with each.
@@ -61,9 +62,10 @@ func (t Term) CleanDone(rows []CleanRow, undo string) {
 	for _, r := range rows {
 		if r.Note != "" {
 			t.printf("%s %s %s\n", t.warn("·"), query.ShortID(r.ID), t.warn(r.Note))
-			continue
 		}
-		n[r.Action]++
+		if r.Done {
+			n[r.Action]++
+		}
 	}
 	t.printf("%s %d archived, %d hidden, %d forgotten\n", t.money("✓"), n["archive"], n["hide"], n["forget"])
 	if undo != "" {
