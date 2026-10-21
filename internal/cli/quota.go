@@ -182,7 +182,7 @@ type liveCheck struct {
 // and saves each answer as the account's latest snapshot. The tools run in
 // an empty folder of ccli's own (see quota.Checker).
 func checkLive(ctx context.Context, a *app, accts []account.Account, dataDir string) map[string]liveCheck {
-	c := quota.Checker{WorkDir: filepath.Join(dataDir, "tool-runs"), Client: Version}
+	c := quota.Checker{WorkDir: filepath.Join(dataDir, "tool-runs"), Client: version()}
 	if a.debug >= 4 {
 		c.Trace = func(format string, args ...any) { a.logf(4, format, args...) }
 	}
