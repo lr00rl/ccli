@@ -380,6 +380,15 @@ func (s *Store) Apply(ctx context.Context, ups []Update, cost CostFunc) error {
 	return tx.Commit()
 }
 
+// responseKind is the kind a response is stored with: its file's, or
+// "model" for a row that only records a model.
+func responseKind(fileKind string, marker bool) string {
+	if marker {
+		return "model"
+	}
+	return fileKind
+}
+
 func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 	f := &u.File
 	if f.ID == 0 {
@@ -518,7 +527,7 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 			  turn=CASE WHEN ? THEN responses.turn ELSE excluded.turn END, imported=excluded.imported
 			WHERE responses.file_id = excluded.file_id OR excluded.imported < responses.imported
 			  OR (excluded.imported = responses.imported AND excluded.born > 0 AND (responses.born = 0 OR excluded.born < responses.born))`,
-			resp.Key, f.ID, f.Account, f.SessionID, f.Kind, resp.TS, resp.Model, resp.Speed,
+			resp.Key, f.ID, f.Account, f.SessionID, responseKind(f.Kind, resp.Marker), resp.TS, resp.Model, resp.Speed,
 			us.Input, us.Output, us.CacheRead, us.Cache5m, us.Cache1h, us.WebSearch, c, boolInt(resp.HasCost), f.Born, resp.Turn, boolInt(resp.Imported), resp.Replay); err != nil {
 			return err
 		}

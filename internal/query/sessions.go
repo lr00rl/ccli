@@ -36,7 +36,7 @@ r AS (
   SELECT account, session_id,
     SUM(input) AS i, SUM(output) AS o, SUM(cache_read) AS cr, SUM(cache_5m + cache_1h) AS cw, SUM(web_search) AS ws,
     SUM(COALESCE(cost, 0)) AS cost,
-    SUM(cost IS NULL AND kind <> 'adjustment') AS unpriced,
+    SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0) AS unpriced,
     SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END) AS unlogged,
     SUM(kind = 'main') AS replies
   FROM responses %[1]s GROUP BY account, session_id
@@ -249,7 +249,7 @@ func (d *DB) Accounts(ctx context.Context, f Filter) ([]AccountSummary, error) {
 	}
 	rows.Close()
 	rows, err = d.sql().QueryContext(ctx, `SELECT account, SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(web_search),
-		SUM(COALESCE(cost, 0)), SUM(cost IS NULL AND kind <> 'adjustment'), SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END)
+		SUM(COALESCE(cost, 0)), SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END)
 		FROM responses WHERE ts BETWEEN ? AND ? GROUP BY account`, f.sinceMS(), f.untilMS())
 	if err != nil {
 		return nil, err
@@ -311,6 +311,9 @@ func (d *DB) sessionModels(ctx context.Context, only *skey) (map[skey][]string, 
 		if err := rows.Scan(&k.account, &k.id, &m); err != nil {
 			return nil, err
 		}
+		if m == "" {
+			continue
+		}
 		m = modelName(m)
 		dup := false
 		for _, x := range out[k] {
@@ -331,7 +334,7 @@ func (d *DB) Usage(ctx context.Context, acct string, since time.Time) (Tokens, C
 	var c Cost
 	err := d.sql().QueryRowContext(ctx, `SELECT COALESCE(SUM(input), 0), COALESCE(SUM(output), 0), COALESCE(SUM(cache_read), 0),
 		COALESCE(SUM(cache_5m + cache_1h), 0), COALESCE(SUM(COALESCE(cost, 0)), 0),
-		COALESCE(SUM(cost IS NULL AND kind <> 'adjustment'), 0)
+		COALESCE(SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), 0)
 		FROM responses WHERE account = ? AND ts >= ?`, acct, since.UnixMilli()).
 		Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &c.USD, &c.Unpriced)
 	return t, c, err

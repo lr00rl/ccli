@@ -271,7 +271,7 @@ func turnIndex(turns []TurnRow, seq int) int {
 func (d *DB) turnRows(ctx context.Context, fileID int64) ([]TurnRow, error) {
 	rows, err := d.sql().QueryContext(ctx, `SELECT t.seq, t.offset, t.ts, t.last_ts, t.kind, t.text, t.chars, t.images, t.tool_calls, t.agents, CASE WHEN t.duration_ms > 0 THEN t.duration_ms ELSE t.active_ms END,
 		COALESCE(r.n, 0), COALESCE(r.i, 0), COALESCE(r.o, 0), COALESCE(r.cr, 0), COALESCE(r.cw, 0), COALESCE(r.cost, 0)
-		FROM turns t LEFT JOIN (SELECT turn, COUNT(*) AS n, SUM(input) AS i, SUM(output) AS o, SUM(cache_read) AS cr,
+		FROM turns t LEFT JOIN (SELECT turn, SUM(kind <> 'model') AS n, SUM(input) AS i, SUM(output) AS o, SUM(cache_read) AS cr,
 			SUM(cache_5m + cache_1h) AS cw, SUM(COALESCE(cost, 0)) AS cost
 			FROM responses WHERE file_id = ? AND kind <> 'adjustment' GROUP BY turn) r ON r.turn = t.seq
 		WHERE t.file_id = ? ORDER BY t.seq`, fileID, fileID)
@@ -640,7 +640,7 @@ func (d *DB) Prompts(ctx context.Context, f Filter) (PromptPage, error) {
 	q := `SELECT f.account, f.session_id, t.seq, t.offset, t.ts, t.last_ts, t.kind, t.text, t.chars, t.images, t.tool_calls, t.agents, CASE WHEN t.duration_ms > 0 THEN t.duration_ms ELSE t.active_ms END,
 		COALESCE(r.n, 0), COALESCE(r.i, 0), COALESCE(r.o, 0), COALESCE(r.cr, 0), COALESCE(r.cw, 0), COALESCE(r.cost, 0)
 		FROM turns t JOIN files f ON f.id = t.file_id AND f.kind = 'main'
-		LEFT JOIN (SELECT file_id, turn, COUNT(*) AS n, SUM(input) AS i, SUM(output) AS o, SUM(cache_read) AS cr,
+		LEFT JOIN (SELECT file_id, turn, SUM(kind <> 'model') AS n, SUM(input) AS i, SUM(output) AS o, SUM(cache_read) AS cr,
 			SUM(cache_5m + cache_1h) AS cw, SUM(COALESCE(cost, 0)) AS cost
 			FROM responses WHERE kind <> 'adjustment' AND file_id IN (SELECT id FROM files WHERE kind = 'main') GROUP BY file_id, turn) r ON r.file_id = t.file_id AND r.turn = t.seq
 		WHERE t.kind = 'human' AND t.ts BETWEEN ? AND ?`

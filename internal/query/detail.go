@@ -318,7 +318,7 @@ func (d *DB) fillFiles(ctx context.Context, det *SessionDetail) error {
 }
 
 func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
-	rows, err := d.sql().QueryContext(ctx, `SELECT model, COUNT(*), SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(COALESCE(cost, 0))
+	rows, err := d.sql().QueryContext(ctx, `SELECT model, SUM(kind <> 'model'), SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(COALESCE(cost, 0))
 		FROM responses WHERE account = ? AND session_id = ? GROUP BY model ORDER BY 7 DESC`, det.Account, det.ID)
 	if err != nil {
 		return err
@@ -329,6 +329,9 @@ func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
 		if err := rows.Scan(&s.Name, &s.Sessions, &s.Tokens.Input, &s.Tokens.Output, &s.Tokens.CacheRead, &s.Tokens.CacheWrite, &s.Cost); err != nil {
 			rows.Close()
 			return err
+		}
+		if s.Name == "" && s.Tokens.All() == 0 && s.Cost == 0 {
+			continue // Cursor replies whose model is not known
 		}
 		s.Name = modelName(s.Name)
 		if i, ok := byName[s.Name]; ok {

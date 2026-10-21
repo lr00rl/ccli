@@ -441,7 +441,7 @@ func fullReread(t account.Tool) bool {
 func fileParser(t account.Tool) int {
 	switch t {
 	case account.Cursor, account.CursorIDE:
-		return 5
+		return 6
 	default:
 		return ParserVersion
 	}
@@ -637,7 +637,11 @@ func parseOne(j job) parsed {
 		if j.file.Kind == "main" {
 			side.Model = j.model
 		}
-		res, err = cursorcli.Parse(f, j.file.SessionID, side)
+		thread := j.file.SessionID
+		if j.file.Kind == "subagent" && j.file.AgentID != "" {
+			thread = j.file.AgentID
+		}
+		res, err = cursorcli.Parse(f, thread, side)
 		if err == nil && j.file.Kind == "subagent" {
 			agent = &store.AgentMeta{AgentType: j.agentType, ToolUseID: j.toolUse, ParentAgent: j.parentAgent}
 			if agent.AgentType == "" {

@@ -89,7 +89,7 @@ func (d *DB) Overview(ctx context.Context, f Filter) (*Overview, error) {
 	// Usage by hour, session and model.
 	rows, err := d.sql().QueryContext(ctx, `SELECT ts / 3600000, account, session_id, model,
 		SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(web_search),
-		SUM(COALESCE(cost, 0)), SUM(cost IS NULL AND kind <> 'adjustment'), SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END)
+		SUM(COALESCE(cost, 0)), SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END)
 		FROM responses WHERE ts BETWEEN ? AND ? GROUP BY 1, 2, 3, 4`, f.sinceMS(), f.untilMS())
 	if err != nil {
 		return nil, err

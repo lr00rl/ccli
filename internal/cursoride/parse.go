@@ -250,7 +250,8 @@ func load(path string, view bool) (transcript.Result, *Agent, []conv.Turn, error
 			model = h.Model
 		}
 		noteModel(model)
-		if b.tokens.in+b.tokens.out+b.tokens.cr+b.tokens.cw > 0 {
+		// Each reply bubble is a reply, with its token counts when it has them.
+		if b.kind == 2 || b.tokens.in+b.tokens.out+b.tokens.cr+b.tokens.cw > 0 {
 			res.Responses = append(res.Responses, transcript.Response{
 				Key: "ide:" + id + ":" + b.id, TS: b.at, Model: model, Turn: cur,
 				Usage: transcript.Usage{Input: b.tokens.in, Output: b.tokens.out, CacheRead: b.tokens.cr, Cache5m: b.tokens.cw},
@@ -328,7 +329,7 @@ func load(path string, view bool) (transcript.Result, *Agent, []conv.Turn, error
 			continue
 		}
 		res.Responses = append(res.Responses, transcript.Response{
-			Key: "ide:" + id + ":model:" + m, Model: m, TS: res.FirstTS, Turn: 1,
+			Key: "ide:" + id + ":model:" + m, Model: m, TS: res.FirstTS, Turn: 1, Marker: true,
 		})
 	}
 	if !view {
