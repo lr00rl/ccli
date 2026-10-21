@@ -12,7 +12,14 @@ out="$repo/docs/images"
 work="$(mktemp -d)"
 live=""
 sock="ccli-shots-$$"
-trap '[ -n "$live" ] && { kill "$live"; wait "$live"; } 2>/dev/null; tmux -L "$sock" kill-server 2>/dev/null; rm -rf "$work"' EXIT
+# set -e must not stop the cleanup: wait on the killed sleep returns 143.
+cleanup() {
+	set +e
+	[ -n "$live" ] && { kill "$live"; wait "$live"; } 2>/dev/null
+	tmux -L "$sock" kill-server 2>/dev/null
+	rm -rf "$work"
+}
+trap cleanup EXIT
 
 home="$work/home"
 mkdir -p "$out"
@@ -91,6 +98,7 @@ shot accounts accounts
 shot quota quota --offline
 shot diff diff default work --project web-dashboard --all
 shot copy copy "${ahead:0:8}" --from work --to default
+COLS=100 shot clean clean
 
 # The interactive browser, driven in a private tmux server.
 tmux -L "$sock" -f /dev/null new-session -d -s v -x 150 -y 38 \

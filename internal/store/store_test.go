@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lr00rl/ccli/internal/transcript"
 )
@@ -148,5 +149,42 @@ func TestTitlesBecomeTagsOnceWhenOpenedTogether(t *testing.T) {
 				t.Fatalf("round %d, open %d: %v", round, i, err)
 			}
 		}
+	}
+}
+
+func TestForgetRemovesOneSession(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "c.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	cost := func(string, string, transcript.Usage) (float64, bool) { return 1, true }
+	resp := func(key string) transcript.Result {
+		return transcript.Result{Responses: []transcript.Response{{Key: key, Model: "m", Usage: transcript.Usage{Input: 5}}}}
+	}
+	for _, u := range []Update{
+		{File: File{Path: "/a/s1.jsonl", Account: "a", SessionID: "s1", Kind: "main"}, Result: resp("k1")},
+		{File: File{Path: "/a/s1/subagents/x.jsonl", Account: "a", SessionID: "s1", Kind: "subagent"}, Result: resp("k2")},
+		{File: File{Path: "/b/s1.jsonl", Account: "b", SessionID: "s1", Kind: "main"}, Result: resp("k3")},
+		{File: File{Path: "/a/s2.jsonl", Account: "a", SessionID: "s2", Kind: "main"}, Result: resp("k4")},
+	} {
+		if err := st.Apply(ctx, []Update{u}, cost); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Hide(ctx, map[string]time.Time{"s1": time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.Forget(ctx, "a", "s1")
+	if err != nil || n != 2 {
+		t.Fatalf("forgot %d files, err %v; want 2", n, err)
+	}
+	var files, responses, hidden int
+	st.DB().QueryRow("SELECT COUNT(*) FROM files").Scan(&files)
+	st.DB().QueryRow("SELECT COUNT(*) FROM responses").Scan(&responses)
+	st.DB().QueryRow("SELECT COUNT(*) FROM hidden").Scan(&hidden)
+	if files != 2 || responses != 2 || hidden != 1 {
+		t.Fatalf("files %d responses %d hidden %d, want 2, 2 and 1", files, responses, hidden)
 	}
 }

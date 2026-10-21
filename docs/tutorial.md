@@ -76,10 +76,10 @@ the folder each started in, at or below the current folder, over all time:
 
 ```
 $ ccli projects ~ --depth 1
-LAST     SESSIONS  PROMPTS  TOKENS    COST  ACCOUNTS      PROJECT
-22m ago        33      423    1.7M  $71.22  default,work  acme
-3d ago         15      180  747.3K  $27.24  default       code
-2 projects under ~, all time · 48 sessions · 2.4M tokens · $98.47 list price
+LAST     SESSIONS  PROMPTS  TOKENS    COST  ACCOUNTS            PROJECT
+23m ago        35      424    1.7M  $71.22  codex,default,work  acme
+4d ago         15      180  747.3K  $27.24  default             code
+2 projects under ~, all time · 50 sessions · 2.4M tokens · $98.47 list price
 ccli sessions --dir <folder> lists a project's sessions
 ```
 
@@ -294,6 +294,40 @@ To see what you hid, use `ccli sessions --hidden` or `H` in `view`. Bring a
 session back with `ccli unhide <id>` or `u` in that list. A hidden session
 that you resume and use again shows again by itself. A session that is running
 cannot be hidden: hide it once it has ended.
+
+## Clear out empty sessions
+
+Sessions you opened and closed without asking anything, or that stopped
+before the first reply, add rows that say nothing. `ccli clean` finds them:
+
+```
+$ ccli clean
+LAST     ACCOUNT  ID        DO       PROJECT
+11d ago  default  f33442ad  archive  ~/code/photo-sync
+9d ago   work     5a9c2637  archive  ~/acme/checkout-service
+6d ago   codex    9e947588  hide     ~/acme/checkout-service
+Archive 2 sessions, hide 1 session? [y/N] y
+✓ 2 archived, 1 hidden, 0 forgotten
+Undo with: ccli clean --undo 20261020-201340
+```
+
+A session counts as empty when it has no prompt, no reply, no tool call, no
+tokens or cost, no subagents and no name, is not running, and has been idle
+for an hour or more. Claude Code transcripts move to ccli's archive under
+`~/.local/share/ccli/archive/clean/`; Codex, Pi and Cursor sessions are
+hidden, since ccli does not write into their homes. Nothing is deleted, and
+the run can be put back:
+
+```
+$ ccli clean --undo 20261020-201340
+Put back 2 transcripts and brought back 1 hidden session.
+```
+
+Sessions where you typed a prompt that never got an answer, often a run that
+failed to start, count only with `--unanswered`, because they hold your own
+text. Sessions you hid or tagged are left alone. `--dir .` limits the search
+to the current project and `--tool codex` to one agent. In a script, `ccli clean` without a terminal prints the plan
+and changes nothing; add `--apply` to carry it out.
 
 ## Tag sessions
 

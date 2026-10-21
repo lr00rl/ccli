@@ -226,6 +226,7 @@ Usage:
   ccli resume <id> -a <acct> --sync  resume in another account, bringing its copy up to date first
   ccli hide|unhide <id>...           leave sessions out of lists, or bring them back (totals still count them)
   ccli tag <id> <tag>                label a session in ccli, shown next to its title (--clear removes it)
+  ccli clean [flags]                 set aside empty sessions after asking (--undo <stamp> puts them back)
   ccli statusline -- <cmd> [args]    status line wrapper that records rate limits
   ccli index [--rebuild]             update the index (other commands do this first)
   ccli version

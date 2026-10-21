@@ -28,7 +28,10 @@ ccli is a reader. The only things it writes are:
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
   its new id), and for `move`, an archive of the source under
-  `$XDG_DATA_HOME/ccli/archive/` before the source files are removed.
+  `$XDG_DATA_HOME/ccli/archive/` before the source files are removed;
+- for `clean` only: an empty Claude Code session's files, moved from its
+  account into `$XDG_DATA_HOME/ccli/archive/clean/<stamp>/<account>/` with
+  a `manifest.json` of the run, and moved back by `clean --undo`.
 
 In a Codex home it reads only the rollout files under `sessions/` and
 `archived_sessions/`, and writes nothing itself (a `quota` live check starts
@@ -465,6 +468,8 @@ ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N
 ccli fork <id> --to acct [--from acct]   copy under a new session id
 ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
+ccli clean [-a acct] [--dir folder] [--tool t] [--unanswered] [--idle 1h] [--apply]   set aside empty sessions
+ccli clean --undo <stamp>          put back what one clean run archived and hid
 ccli tag <id> <tag> / --clear       label a session in ccli, or remove the label
 ccli index [--rebuild]
 ```
@@ -487,6 +492,47 @@ Claude Code put them, so `claude --resume` and `ccli resume` keep working.
   them by id.
 - A session a Claude Code process is running is refused: its next line would
   show it again.
+
+## Cleaning empty sessions
+
+`clean` finds sessions that hold nothing and sets them aside once you agree.
+
+- A session is empty when it has no prompt, no reply, no tool call, no
+  tokens or cost, no subagent or workflow run, and no name from a person or
+  the tool, is not running, and was last active at least `--idle` (1h) ago.
+  A name means there is something ccli cannot see, such as a Cursor chat
+  whose messages it cannot read. `--unanswered` adds sessions whose prompts
+  never got a reply; it is opt in because those hold text a person typed.
+  Sessions a person hid or tagged are left alone, and so are unused Cursor
+  IDE drafts, which lists already leave out. Billed Cursor usage is read
+  first and counts as content. A Codex, Pi or Cursor session with no
+  recorded time is not taken as idle; for Claude Code the transcript's own
+  time decides.
+- A transcript with no line that names its folder takes the folder another
+  session under the same project key recorded, so `--dir` finds it.
+- Without `--apply`, `clean` prints the plan and asks on a terminal. With no
+  terminal, or with `--json`, it changes nothing. `--no-index` is refused:
+  the plan must come from what the transcripts hold now.
+- A Claude Code session moves to the archive with the same path checks as
+  `move`, transcript last, and its rows leave the index. A Claude Code
+  session whose transcript is already gone only leaves the index. Codex, Pi
+  and Cursor sessions are hidden, because ccli does not write their homes. A
+  hidden session that is used again shows again by itself.
+- Just before each change, the session is checked again: one that is
+  running, or whose transcript moved or changed size or time since the plan,
+  is left as it was, with a note. A failure or an interrupt stops the run,
+  and the sessions after it are marked not done.
+- The run claims its folder, named for the second it started, with an
+  exclusive mkdir, so a second run in the same second is refused. Its
+  `manifest.json` lists the plan before the first change and is rewritten
+  after each session, marking which are done. A run that changed nothing
+  removes its folder.
+- `--undo <stamp>` works from the folder, so a run that stopped part way can
+  be undone even without its record. It moves the transcripts back with a
+  link where it can, so a path the account has again is never replaced and
+  stays in the archive, as does anything that is not a session. It unhides
+  the sessions the record marks as hidden, and updates the index, even when
+  one account fails.
 
 ## Tagging sessions
 

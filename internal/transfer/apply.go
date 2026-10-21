@@ -620,7 +620,14 @@ func copyEntry(src, dst string) error {
 		}
 		return nil
 	case st.Mode().IsRegular():
-		return copyRegular(src, dst)
+		if err := copyRegular(src, dst); err != nil {
+			return err
+		}
+		// A moved file keeps its mode and time, as a rename would.
+		if err := os.Chmod(dst, st.Mode().Perm()); err != nil {
+			return fmt.Errorf("archive %s: %w", dst, err)
+		}
+		return os.Chtimes(dst, st.ModTime(), st.ModTime())
 	default:
 		return fmt.Errorf("archive %s: not a regular file or directory", src)
 	}
