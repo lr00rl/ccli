@@ -408,7 +408,7 @@ func plan(d discovered, old store.File, rebuild bool) (job, bool) {
 	// Pi and Cursor CLI rewrite or branch in place. A changed file is read
 	// again from the start so an abandoned branch is not left in the index
 	// as if it were still the conversation.
-	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset || refiled(d.tool, f, old) ||
+	if rebuild || old.Parser != fileParser(d.tool) || f.Size < old.Offset || refiled(d.tool, f, old) || old.Account != f.Account ||
 		(fullReread(d.tool) && (f.Size != old.Offset || f.MTime != old.MTime)) {
 		j.reset = true
 		return j, true
@@ -456,7 +456,7 @@ func planIDE(j job, old store.File, rebuild bool) (job, bool) {
 		return j, true
 	}
 	j.file.ID = old.ID
-	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || refiled(j.tool, j.file, old) ||
+	if rebuild || old.Parser != fileParser(j.tool) || old.Missing || refiled(j.tool, j.file, old) || old.Account != j.file.Account ||
 		j.file.Size != old.Size || j.file.MTime != old.MTime || j.file.HeadHash != old.HeadHash {
 		j.reset = true
 		return j, true
