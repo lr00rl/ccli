@@ -345,6 +345,10 @@ func addEvent(u *Use, e event) {
 	out := int64(e.TokenUsage.Output)
 	cr := int64(e.TokenUsage.CacheRead)
 	cw := int64(e.TokenUsage.CacheWrite)
+	// The API speaks Connect JSON, which leaves out a field whose value is
+	// zero, so an event charged nothing and one with no charge look the same.
+	// Both take totalCents, the event's full price, which is also what ccli
+	// shows for other tools: list price.
 	usd := float64(e.ChargedCents)
 	if usd == 0 {
 		usd = float64(e.TokenUsage.TotalCents)
