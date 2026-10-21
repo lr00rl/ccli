@@ -163,6 +163,10 @@ func TestPiCursorAndIDE(t *testing.T) {
 	if _, ok := byID[ownSub]; ok {
 		t.Fatal("subagent transcript was indexed as its own session")
 	}
+	// One reply each: Cursor's model-only rows are not replies.
+	if cur.Replies != 1 || byID[ideID].Replies != 1 {
+		t.Fatalf("replies: cursor %d, ide %d, want 1 and 1", cur.Replies, byID[ideID].Replies)
+	}
 	ide := byID[ideID]
 	if ide.Cwd != "/work/ide" || ide.Prompts != 1 || ide.Title != "IDE chat" || ide.Subagents != 1 || ide.Tokens.Input != 12 || ide.Tool != account.CursorIDE {
 		t.Fatalf("ide row %+v", ide)

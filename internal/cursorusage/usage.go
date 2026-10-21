@@ -151,14 +151,16 @@ type Ledger struct {
 // ErrNoLogin means the Cursor IDE has no stored login to read usage with.
 var ErrNoLogin = errors.New("cursor usage: no local login")
 
-// Load reads the cache. A missing file is an empty ledger, not an error.
+// Load reads the cache. A missing file is an empty ledger, not an error, and
+// so is one an older ccli wrote: it lacks fields this one needs, such as the
+// per-event times that day and range figures use.
 func Load(dataDir string) *Ledger {
 	b, err := os.ReadFile(filepath.Join(dataDir, "cursor-usage.json"))
 	if err != nil {
 		return &Ledger{}
 	}
 	var l Ledger
-	if json.Unmarshal(b, &l) != nil {
+	if json.Unmarshal(b, &l) != nil || l.Version != ledgerVersion {
 		return &Ledger{}
 	}
 	if l.Sessions == nil {
@@ -345,6 +347,10 @@ func addEvent(u *Use, e event) {
 	out := int64(e.TokenUsage.Output)
 	cr := int64(e.TokenUsage.CacheRead)
 	cw := int64(e.TokenUsage.CacheWrite)
+	// The API speaks Connect JSON, which leaves out a field whose value is
+	// zero, so an event charged nothing and one with no charge look the same.
+	// Both take totalCents, the event's full price, which is also what ccli
+	// shows for other tools: list price.
 	usd := float64(e.ChargedCents)
 	if usd == 0 {
 		usd = float64(e.TokenUsage.TotalCents)

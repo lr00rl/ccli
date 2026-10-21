@@ -39,7 +39,7 @@ func scanCursorIDE(a account.Account) ([]discovered, error) {
 			file: store.File{
 				Path: cursoride.Path(db, h.ID), Account: a.Name, SessionID: session, ProjectKey: h.Cwd,
 				Kind: kind, AgentID: agent, Size: stamp, MTime: stamp, Born: h.Created,
-				HeadHash: fmt.Sprintf("%d:%d", h.Bubbles, h.LastRow),
+				HeadHash: fmt.Sprintf("%d:%d:%d", h.Bubbles, h.LastRow, h.Bytes),
 			},
 		})
 	}

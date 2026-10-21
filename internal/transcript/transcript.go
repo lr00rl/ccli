@@ -80,6 +80,9 @@ type Response struct {
 	// reprice Usage from the list-price table.
 	Cost    float64
 	HasCost bool
+	// Marker records only which model a conversation used: it is stored
+	// with kind "model" and counts as neither a reply nor a call.
+	Marker bool
 }
 
 // Range is a byte range [From, To) of a file.

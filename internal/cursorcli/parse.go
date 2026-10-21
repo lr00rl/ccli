@@ -184,6 +184,12 @@ func read(r io.Reader, id string, side Side, view bool) (transcript.Result, []co
 				})
 			}
 		case m.role == "assistant":
+			if id != "" {
+				// A reply with no token counts: Cursor bills them on its usage page.
+				res.Responses = append(res.Responses, transcript.Response{
+					Key: "cursor:" + id + ":" + strconv.FormatInt(m.off, 10), Model: side.Model, TS: res.LastTS, Turn: cur,
+				})
+			}
 			t := tail(&turns, cur, m.off)
 			if m.text != "" {
 				t.Entries = append(t.Entries, conv.Entry{Kind: conv.KindText, Text: m.text})
@@ -207,7 +213,7 @@ func read(r io.Reader, id string, side Side, view bool) (transcript.Result, []co
 	res.State.Turn = cur
 	if side.Model != "" && id != "" {
 		res.Responses = append(res.Responses, transcript.Response{
-			Key: "cursor:" + id + ":model", Model: side.Model, TS: res.FirstTS, Turn: 1,
+			Key: "cursor:" + id + ":model", Model: side.Model, TS: res.FirstTS, Turn: 1, Marker: true,
 		})
 	}
 	if !view {

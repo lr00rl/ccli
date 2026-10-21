@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,8 +24,19 @@ import (
 	"github.com/lr00rl/ccli/internal/store"
 )
 
-// Version is set at build time.
+// Version is set at build time. Without it, a binary built by go install
+// from a tagged release reports that release (see version).
 var Version = "dev"
+
+func version() string {
+	if Version != "dev" {
+		return Version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return Version
+}
 
 type app struct {
 	out, errw io.Writer
@@ -166,7 +178,7 @@ func Main(args []string, out, errw io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	if cmd == "version" {
-		fmt.Fprintln(out, "ccli", Version)
+		fmt.Fprintln(out, "ccli", version())
 		return 0
 	}
 	run, ok := commands[cmd]

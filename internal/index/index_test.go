@@ -626,3 +626,23 @@ func TestUnreadableHomeDoesNotStopTheRun(t *testing.T) {
 		t.Fatal("the unreadable home's composer was marked missing")
 	}
 }
+
+// An account renamed between runs, as when a new home takes its name, keeps
+// its sessions: its files and responses move to the new name.
+func TestRenamedAccountKeepsItsSessions(t *testing.T) {
+	e := newEnv(t, "default")
+	e.write(0, "-p/s1.jsonl", prompt(0, "hello")+asst(1, "m1", 10))
+	e.write(0, "-p/s1/subagents/agent-a1.jsonl", asst(1.5, "sub1", 5))
+	e.run()
+	e.accts[0].Name = "default-claude"
+	e.run()
+	if n := e.int("SELECT COUNT(*) FROM files WHERE account <> 'default-claude'"); n != 0 {
+		t.Fatalf("%d files kept the old account name", n)
+	}
+	if n := e.int("SELECT COUNT(*) FROM responses WHERE account = 'default-claude'"); n != 2 {
+		t.Fatalf("responses under the new name = %d, want 2", n)
+	}
+	if s := e.run(); s.Parsed != 0 {
+		t.Fatalf("a third run read %d files again", s.Parsed)
+	}
+}
