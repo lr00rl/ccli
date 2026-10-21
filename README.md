@@ -33,7 +33,9 @@ Requires Go 1.26 or later.
 go install github.com/lr00rl/ccli@latest
 ```
 
-Or from a checkout: `go build -o ~/.local/bin/ccli .`
+Releases are tagged: `@latest` installs the newest one, `@main` the newest
+code, and `ccli version` says which you have. Or from a checkout:
+`go build -o ~/.local/bin/ccli .`
 
 The first command indexes every transcript. That takes about 10 seconds for
 4 GB on an M-series Mac. Later commands read only what was added since and
