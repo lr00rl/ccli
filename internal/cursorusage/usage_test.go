@@ -377,3 +377,13 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 		t.Fatalf("err %v, followed %t", err, followed)
 	}
 }
+
+func TestLoadIgnoresAnOlderLedger(t *testing.T) {
+	dir := t.TempDir()
+	if err := save(dir, &Ledger{Version: ledgerVersion - 1, Sessions: map[string]*Use{"c": {USD: 1, Events: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	if l := Load(dir); len(l.Sessions) != 0 {
+		t.Fatalf("an older ledger was used: %+v", l)
+	}
+}
