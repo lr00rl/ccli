@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -160,5 +161,45 @@ func TestCursorIDEReadsBubblesWithoutHeaderChange(t *testing.T) {
 	db.Close()
 	if got := e.sessions()[id]; got.Tokens.Input != 30 {
 		t.Fatalf("input after the reply = %d, want 30", got.Tokens.Input)
+	}
+}
+
+// A bubble of a composer in use that is rewritten in place, keeping its row
+// id, is still read again: its size changed.
+func TestCursorIDEReadsBubbleRewrittenInPlace(t *testing.T) {
+	user := filepath.Join(t.TempDir(), "Cursor", "User")
+	dbPath := filepath.Join(user, "globalStorage", "state.vscdb")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "abababab-abab-4bab-8bab-abababababab"
+	now := time.Now().UnixMilli()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reply := func(in int) string {
+		return `{"type":2,"bubbleId":"r","text":"It scans the folder.","createdAt":` + strconv.FormatInt(now, 10) + `,"tokenCount":{"inputTokens":` + strconv.Itoa(in) + `,"outputTokens":5}}`
+	}
+	exec(`CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, createdAt INTEGER, lastUpdatedAt INTEGER, isSubagent INTEGER, value TEXT)`)
+	exec(`CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`)
+	exec(`INSERT INTO composerHeaders VALUES (?, ?, ?, 0, '{"name":"chat"}')`, id, now, now)
+	exec(`INSERT INTO cursorDiskKV VALUES (?, ?)`, "bubbleId:"+id+":u", `{"type":1,"bubbleId":"u","text":"explain","createdAt":`+strconv.FormatInt(now, 10)+`}`)
+	exec(`INSERT INTO cursorDiskKV VALUES (?, ?)`, "bubbleId:"+id+":r", reply(30))
+
+	e := newAgentEnv(t, account.Account{Name: "cursor-ide", Tool: account.CursorIDE, Dir: user})
+	if got := e.sessions()[id]; got.Tokens.Input != 30 {
+		t.Fatalf("input = %d, want 30", got.Tokens.Input)
+	}
+	exec(`UPDATE cursorDiskKV SET value = ? WHERE key = ?`, reply(31200), "bubbleId:"+id+":r")
+	if got := e.sessions()[id]; got.Tokens.Input != 31200 {
+		t.Fatalf("input after the rewrite = %d, want 31200", got.Tokens.Input)
 	}
 }

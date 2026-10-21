@@ -34,8 +34,10 @@ type Head struct {
 	// Bubbles is how many messages the composer has, and LastRow the highest
 	// row id among them. cursorDiskKV replaces a row on a repeated key, so a
 	// bubble written again gets a new row id. The pair moves on every message
-	// even when Cursor has not yet moved lastUpdatedAt.
-	Bubbles, LastRow int64
+	// even when Cursor has not yet moved lastUpdatedAt. Bytes, the size of
+	// those messages, is read only for composers updated within recentFor; it
+	// also catches a bubble rewritten in place.
+	Bubbles, LastRow, Bytes int64
 }
 
 // List reads composer headers and the workspace folder each one names.
@@ -77,8 +79,28 @@ func List(user string) ([]Head, error) {
 		}
 		out = append(out, h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close() // one connection: the size queries below need it
+	recent := time.Now().Add(-recentFor).UnixMilli()
+	for i := range out {
+		if out[i].Updated < recent {
+			continue
+		}
+		prefix := "bubbleId:" + out[i].ID + ":"
+		if err := db.QueryRow(`SELECT COALESCE(sum(length(value)), 0) FROM cursorDiskKV WHERE key >= ? AND key < ?`,
+			prefix, prefixEnd(prefix)).Scan(&out[i].Bytes); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
+
+// recentFor is how long after its last update a composer's bubble sizes are
+// still summed. Reading every value is too slow for the whole database (13 s
+// for 100,000 bubbles); the composers in use are a handful.
+const recentFor = 7 * 24 * time.Hour
 
 // bubbleMarks counts each composer's bubbles and finds its newest row, in
 // one pass over the key index ("bubbleId:<composer>:<bubble>").
