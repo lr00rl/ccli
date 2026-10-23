@@ -447,7 +447,7 @@ Fix flaky cart total test around daylight saving
 fork d244741f from work into default as a new session 77ad76f7
   writes a 74K transcript; the original is not touched
   usage already in the transcript stays with work; only new work counts toward default
-Dry run. Add --apply to do it (a new id is drawn each time).
+Dry run, nothing was forked. Add --apply to do it (a new id is drawn each time).
 ```
 
 ### Copy and move many sessions

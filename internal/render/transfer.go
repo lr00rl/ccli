@@ -40,7 +40,7 @@ func (t Term) Diff(a, b string, rows []DiffRow, total int) {
 		}
 		id := query.ShortID(r.SessionID)
 		if r.Live {
-			id = t.paint(cLive, id+"●")
+			id = t.paint(cLive, id+" ●")
 		}
 		title := r.Title
 		if title == "" {
@@ -121,7 +121,9 @@ func (t Term) Plan(verb string, ops []transfer.Op, info map[string]query.Session
 	if verb == "move" {
 		extra = " Move puts each source in " + ShortHome(archive) + " instead of deleting it."
 	}
-	t.println(t.dim(fmt.Sprintf("Dry run: %d of %d sessions would %s. Add --apply to do it.%s", ready, len(ops), verb, extra)))
+	// Not dimmed: the table reads like a result, so say plainly that it is not.
+	past := map[string]string{"copy": "copied", "move": "moved"}[verb]
+	t.println(fmt.Sprintf("Dry run, nothing was %s: %d of %d sessions would %s. Add --apply to do it.", past, ready, len(ops), verb) + t.dim(extra))
 }
 
 // Results prints what copy or move did.
@@ -177,7 +179,7 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
 	}
 	t.println(t.dim("  writes " + writes + "; the original is not touched"))
 	t.println(t.dim("  usage already in the transcript stays with " + p.From + "; only new work counts toward " + p.To))
-	t.println(t.dim("Dry run. Add --apply to do it (a new id is drawn each time)."))
+	t.println("Dry run, nothing was forked. Add --apply to do it" + t.dim(" (a new id is drawn each time)."))
 }
 
 // Forked prints what fork did and how to go on.
