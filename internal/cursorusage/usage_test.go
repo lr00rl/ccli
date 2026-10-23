@@ -10,7 +10,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -309,9 +312,9 @@ func TestFailedEventsKeepCachedSessions(t *testing.T) {
 	if err := save(dir, old); err != nil {
 		t.Fatal(err)
 	}
-	var asked int
+	var asked atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked++
+		asked.Add(1)
 		if strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents") {
 			http.Error(w, "busy", http.StatusServiceUnavailable)
 			return
@@ -333,12 +336,12 @@ func TestFailedEventsKeepCachedSessions(t *testing.T) {
 	if saved := Load(dir); saved.Sessions["conv-1"] == nil || saved.FailedAt.IsZero() {
 		t.Fatalf("saved %+v", saved)
 	}
-	n := asked
+	n := asked.Load()
 	if !Fresh(dir) {
 		t.Fatal("a failure a moment ago should not be retried yet")
 	}
-	if _, err := Refresh(context.Background(), dir); err != nil || asked != n {
-		t.Fatalf("second refresh: err %v, %d more requests", err, asked-n)
+	if _, err := Refresh(context.Background(), dir); err != nil || asked.Load() != n {
+		t.Fatalf("second refresh: err %v, %d more requests", err, asked.Load()-n)
 	}
 }
 
@@ -385,5 +388,122 @@ func TestLoadIgnoresAnOlderLedger(t *testing.T) {
 	}
 	if l := Load(dir); len(l.Sessions) != 0 {
 		t.Fatalf("an older ledger was used: %+v", l)
+	}
+}
+
+// eventServer answers GetFilteredUsageEvents from a list, newest first, the
+// way the service pages it, and records each request's window and page size.
+type eventServer struct {
+	mu     sync.Mutex
+	events []map[string]any
+	starts []int64
+	sizes  []int
+}
+
+func (s *eventServer) handler(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents") {
+		fmtJSON(w, map[string]any{"planUsage": map[string]any{"includedSpend": 1, "limit": 2}})
+		return
+	}
+	var body struct {
+		Start    string `json:"startDate"`
+		Page     int    `json:"page"`
+		PageSize int    `json:"pageSize"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	start, _ := strconv.ParseInt(body.Start, 10, 64)
+	s.mu.Lock()
+	s.starts, s.sizes = append(s.starts, start), append(s.sizes, body.PageSize)
+	var in []map[string]any
+	for _, e := range s.events {
+		if ts, _ := strconv.ParseInt(e["timestamp"].(string), 10, 64); ts >= start {
+			in = append(in, e)
+		}
+	}
+	s.mu.Unlock()
+	lo := min((body.Page-1)*body.PageSize, len(in))
+	hi := min(lo+body.PageSize, len(in))
+	fmtJSON(w, map[string]any{"totalUsageEventsCount": len(in), "usageEventsDisplay": in[lo:hi]})
+}
+
+func usageEvent(conv string, at time.Time) map[string]any {
+	return map[string]any{"conversationId": conv, "model": "m", "timestamp": strconv.FormatInt(at.UnixMilli(), 10),
+		"chargedCents": 100, "tokenUsage": map[string]any{"inputTokens": 1, "outputTokens": 1}}
+}
+
+func serveEvents(t *testing.T, s *eventServer) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(s.handler))
+	t.Cleanup(srv.Close)
+	oldBase, oldDo, oldDB := apiBase, httpDo, stateDBOverride
+	apiBase, httpDo, stateDBOverride = srv.URL+"/", srv.Client(), loginDB(t, "tok")
+	t.Cleanup(func() { apiBase, httpDo, stateDBOverride = oldBase, oldDo, oldDB })
+}
+
+// A year of events comes in pages of 1000, the pages after the first fetched
+// at once, and every event is counted once.
+func TestEventsComeInLargePages(t *testing.T) {
+	s := &eventServer{}
+	now := time.Now()
+	for i := range 2500 {
+		s.events = append(s.events, usageEvent(fmt.Sprintf("conv-%d", i%7), now.Add(-time.Duration(i)*time.Minute)))
+	}
+	serveEvents(t, s)
+	led, err := Refresh(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, u := range led.Sessions {
+		n += u.Events
+	}
+	if n != 2500 || led.EventCount != 2500 || led.FullAt.IsZero() {
+		t.Fatalf("counted %d events (EventCount %d, full at %v), want 2500", n, led.EventCount, led.FullAt)
+	}
+	if len(s.sizes) != 3 || s.sizes[0] != 1000 {
+		t.Fatalf("event requests: page sizes %v, want 3 pages of 1000", s.sizes)
+	}
+}
+
+// After a full read, the next read asks only from 48 hours before the newest
+// cached event, and the events it gets again replace the cached ones.
+func TestEventsReadOnlySinceTheCache(t *testing.T) {
+	s := &eventServer{}
+	now := time.Now()
+	old, recent := now.Add(-10*24*time.Hour), now.Add(-time.Hour)
+	s.events = []map[string]any{usageEvent("a", recent), usageEvent("a", old), usageEvent("b", old)}
+	serveEvents(t, s)
+	dir := t.TempDir()
+	if _, err := Refresh(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.events = append([]map[string]any{usageEvent("a", now.Add(-time.Minute))}, s.events...)
+	s.starts = nil
+	s.mu.Unlock()
+	led, err := RefreshOption(context.Background(), dir, Option{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := recent.Add(-overlap).UnixMilli(); len(s.starts) != 1 || s.starts[0] != want {
+		t.Fatalf("second read started at %v, want %d", s.starts, want)
+	}
+	if a, b := led.Sessions["a"], led.Sessions["b"]; a == nil || a.Events != 3 || b == nil || b.Events != 1 || led.EventCount != 4 {
+		t.Fatalf("after the incremental read: a %+v, b %+v, count %d", a, b, led.EventCount)
+	}
+	// A week after the last full read, the next read is full again.
+	led.FullAt = now.Add(-fullEvery - time.Minute).UTC()
+	led.FetchedAt = time.Time{}
+	if err := save(dir, led); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.starts = nil
+	s.mu.Unlock()
+	if _, err := Refresh(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.starts) != 1 || s.starts[0] > now.AddDate(-1, 0, 1).UnixMilli() {
+		t.Fatalf("read after a week started at %v, want a year back", s.starts)
 	}
 }

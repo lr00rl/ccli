@@ -25,10 +25,18 @@ import (
 )
 
 const (
-	maxPages      = 200
-	pageSize      = 100
+	maxPages = 200
+	// pageSize is the most events the service returns per page; 2000 is
+	// refused. Each request costs seconds, so fewer, larger pages win.
+	pageSize      = 1000
+	parallelPages = 4 // event pages fetched at once after the first
 	freshFor      = 15 * time.Minute
 	retryAfter    = 5 * time.Minute // after a failed read, before asking again
+	// A read asks only for events from overlap before the newest cached one,
+	// which also picks up late changes to recent events. A full read of the
+	// year's events runs every fullEvery.
+	overlap       = 48 * time.Hour
+	fullEvery     = 7 * 24 * time.Hour
 	ledgerVersion = 2
 )
 
@@ -141,6 +149,7 @@ type Ledger struct {
 	Period     *Period         `json:"period,omitempty"`
 	EventCount int             `json:"event_count,omitempty"`
 	Truncated  bool            `json:"truncated,omitempty"`
+	FullAt     time.Time       `json:"full_at,omitzero"` // the last read of the whole year's events
 	Error      string          `json:"error,omitempty"`
 	FailedAt   time.Time       `json:"failed_at,omitzero"` // the last read that failed; no new read until retryAfter
 	FromCache  bool            `json:"-"`
@@ -217,7 +226,7 @@ func RefreshOption(ctx context.Context, dataDir string, opt Option) (*Ledger, er
 	if fresh && opt.Force {
 		trace(ctx, "cursor usage: fetching again although the cache is fresh")
 	}
-	next, err := fetch(ctx, opt.Asking)
+	next, err := fetch(ctx, opt.Asking, cur)
 	if err == nil {
 		return next, save(dataDir, next)
 	}
@@ -294,7 +303,7 @@ func save(dataDir string, l *Ledger) error {
 	return err
 }
 
-func fetch(ctx context.Context, asking func()) (*Ledger, error) {
+func fetch(ctx context.Context, asking func(), cur *Ledger) (*Ledger, error) {
 	token, err := accessToken()
 	if err != nil {
 		return nil, err
@@ -304,24 +313,41 @@ func fetch(ctx context.Context, asking func()) (*Ledger, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	led := &Ledger{Version: ledgerVersion, FetchedAt: time.Now().UTC(), Sessions: map[string]*Use{}}
+	now := time.Now()
+	led := &Ledger{Version: ledgerVersion, FetchedAt: now.UTC(), Sessions: map[string]*Use{}}
+	// The billing period and the events are separate requests; ask both at once.
+	var p *Period
 	var soft error
-	if p, err := period(ctx, token); err == nil {
-		led.Period = p
-	} else {
-		soft = err
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p, soft = period(ctx, token)
+	}()
+	start, full := now.AddDate(-1, 0, 0), true
+	if from := cur.incrementalFrom(now); !from.IsZero() {
+		start, full = from, false
+		led.Sessions, led.EventCount = cur.sessionsBefore(from)
+		led.FullAt = cur.FullAt
 	}
-	end := time.Now()
-	start := end.AddDate(-1, 0, 0)
-	trace(ctx, "cursor usage: events %s to %s", start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
-	ev, truncated, evErr := events(ctx, token, start, end)
-	led.Truncated = truncated
-	led.EventCount = len(ev)
+	trace(ctx, "cursor usage: events %s to %s (%s)", start.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339),
+		map[bool]string{true: "full read", false: "since the cached events"}[full])
+	ev, truncated, evErr := events(ctx, token, start, now)
+	<-done
+	led.Period = p
+	if full {
+		led.Truncated = truncated
+		if evErr == nil {
+			led.FullAt = now.UTC()
+		}
+	} else {
+		led.Truncated = cur.Truncated || truncated
+	}
 	for _, e := range ev {
 		id := e.ConversationID
 		if id == "" {
-			continue
+			continue // joins no session, and is not counted either way
 		}
+		led.EventCount++
 		u := led.Sessions[id]
 		if u == nil {
 			u = &Use{Models: map[string]*Model{}}
@@ -342,11 +368,51 @@ func fetch(ctx context.Context, asking func()) (*Ledger, error) {
 	return led, soft
 }
 
+// incrementalFrom is where a read can start instead of a year back: overlap
+// before the newest cached event, when the cache holds a full read from
+// less than fullEvery ago. Zero means a full read.
+func (l *Ledger) incrementalFrom(now time.Time) time.Time {
+	if l == nil || l.Version != ledgerVersion || l.FullAt.IsZero() || now.Sub(l.FullAt) >= fullEvery {
+		return time.Time{}
+	}
+	var newest int64
+	for _, u := range l.Sessions {
+		for _, h := range u.Hits {
+			newest = max(newest, h.At)
+		}
+	}
+	if newest == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(newest).Add(-overlap)
+}
+
+// sessionsBefore rebuilds the cached sessions from their events before
+// cutoff, which a read from cutoff does not return again, and counts them.
+// An event with no time cannot be asked for again, so it is kept.
+func (l *Ledger) sessionsBefore(cutoff time.Time) (map[string]*Use, int) {
+	out := map[string]*Use{}
+	n := 0
+	for id, u := range l.Sessions {
+		var kept *Use
+		for _, h := range u.Hits {
+			if h.At >= cutoff.UnixMilli() {
+				continue
+			}
+			if kept == nil {
+				kept = &Use{Models: map[string]*Model{}}
+			}
+			addHit(kept, h)
+			n++
+		}
+		if kept != nil {
+			out[id] = kept
+		}
+	}
+	return out, n
+}
+
 func addEvent(u *Use, e event) {
-	in := int64(e.TokenUsage.Input)
-	out := int64(e.TokenUsage.Output)
-	cr := int64(e.TokenUsage.CacheRead)
-	cw := int64(e.TokenUsage.CacheWrite)
 	// The API speaks Connect JSON, which leaves out a field whose value is
 	// zero, so an event charged nothing and one with no charge look the same.
 	// Both take totalCents, the event's full price, which is also what ccli
@@ -355,35 +421,40 @@ func addEvent(u *Use, e event) {
 	if usd == 0 {
 		usd = float64(e.TokenUsage.TotalCents)
 	}
-	usd /= 100
-	u.Input += in
-	u.Output += out
-	u.CacheRead += cr
-	u.CacheWrite += cw
-	u.USD += usd
-	u.Events++
 	name := e.Model
 	if name == "" {
 		name = "(unknown)"
 	}
+	addHit(u, Hit{
+		At: int64(e.Timestamp), Model: name,
+		Input: int64(e.TokenUsage.Input), Output: int64(e.TokenUsage.Output),
+		CacheRead: int64(e.TokenUsage.CacheRead), CacheWrite: int64(e.TokenUsage.CacheWrite), USD: usd / 100,
+	})
+}
+
+// addHit adds one billed event to a conversation's totals and its list.
+func addHit(u *Use, h Hit) {
+	u.Input += h.Input
+	u.Output += h.Output
+	u.CacheRead += h.CacheRead
+	u.CacheWrite += h.CacheWrite
+	u.USD += h.USD
+	u.Events++
 	if u.Models == nil {
 		u.Models = map[string]*Model{}
 	}
-	m := u.Models[name]
+	m := u.Models[h.Model]
 	if m == nil {
 		m = &Model{}
-		u.Models[name] = m
+		u.Models[h.Model] = m
 	}
-	m.Input += in
-	m.Output += out
-	m.CacheRead += cr
-	m.CacheWrite += cw
-	m.USD += usd
+	m.Input += h.Input
+	m.Output += h.Output
+	m.CacheRead += h.CacheRead
+	m.CacheWrite += h.CacheWrite
+	m.USD += h.USD
 	m.N++
-	u.Hits = append(u.Hits, Hit{
-		At: int64(e.Timestamp), Model: name,
-		Input: in, Output: out, CacheRead: cr, CacheWrite: cw, USD: usd,
-	})
+	u.Hits = append(u.Hits, h)
 }
 
 // Between sums the events whose time falls in [since, until). A zero bound
@@ -477,10 +548,10 @@ type event struct {
 	} `json:"tokenUsage"`
 }
 
+// events returns the billed events in [start, end]. The first page says how
+// many there are; the rest are fetched parallelPages at a time.
 func events(ctx context.Context, token string, start, end time.Time) ([]event, bool, error) {
-	var all []event
-	truncated := false
-	for page := 1; page <= maxPages; page++ {
+	fetchPage := func(ctx context.Context, page int) ([]event, int, error) {
 		body := map[string]any{
 			"startDate": strconv.FormatInt(start.UnixMilli(), 10),
 			"endDate":   strconv.FormatInt(end.UnixMilli(), 10),
@@ -493,22 +564,55 @@ func events(ctx context.Context, token string, start, end time.Time) ([]event, b
 			UsageEvents        []event `json:"usageEvents"`
 		}
 		if err := post(ctx, token, "GetFilteredUsageEvents", body, &resp); err != nil {
-			return all, truncated, err
+			return nil, 0, err
 		}
 		batch := resp.UsageEventsDisplay
 		if len(batch) == 0 {
 			batch = resp.UsageEvents
 		}
-		trace(ctx, "GetFilteredUsageEvents page %d: %d events, %d/%d", page, len(batch), len(all)+len(batch), resp.Total)
-		if len(batch) == 0 {
-			break
+		trace(ctx, "GetFilteredUsageEvents page %d: %d events of %d", page, len(batch), resp.Total)
+		return batch, resp.Total, nil
+	}
+	all, total, err := fetchPage(ctx, 1)
+	if err != nil || len(all) < pageSize {
+		return all, false, err
+	}
+	pages := (total + pageSize - 1) / pageSize
+	if total <= 0 {
+		pages = maxPages // no count given: ask until a short page
+	}
+	truncated := pages > maxPages
+	pages = min(pages, maxPages)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	batches := make([][]event, pages+1)
+	errs := make([]error, pages+1)
+	sem := make(chan struct{}, parallelPages)
+	var wg sync.WaitGroup
+	for page := 2; page <= pages; page++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				errs[page] = ctx.Err()
+				return
+			}
+			if batches[page], _, errs[page] = fetchPage(ctx, page); errs[page] != nil {
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	for page := 2; page <= pages; page++ {
+		if errs[page] != nil {
+			return all, truncated, errs[page]
 		}
-		all = append(all, batch...)
-		if resp.Total > 0 && len(all) >= resp.Total {
-			break
-		}
-		if page == maxPages && (resp.Total > len(all) || len(batch) == pageSize) {
-			truncated = true
+		all = append(all, batches[page]...)
+		if total <= 0 && len(batches[page]) < pageSize {
+			break // the last page when no count was given
 		}
 	}
 	return all, truncated, nil
@@ -527,16 +631,23 @@ func period(ctx context.Context, token string) (*Period, error) {
 			APIPercentUsed   flexF `json:"apiPercentUsed"`
 		} `json:"planUsage"`
 	}
-	if err := post(ctx, token, "GetCurrentPeriodUsage", map[string]any{}, &usage); err != nil {
-		return nil, err
-	}
 	var plan struct {
 		PlanInfo struct {
 			PlanName string `json:"planName"`
 		} `json:"planInfo"`
 	}
-	if err := post(ctx, token, "GetPlanInfo", map[string]any{}, &plan); err != nil {
-		trace(ctx, "cursor usage: plan name unknown: %v", err)
+	// Two small requests of a second or two each; ask both at once.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := post(ctx, token, "GetPlanInfo", map[string]any{}, &plan); err != nil {
+			trace(ctx, "cursor usage: plan name unknown: %v", err)
+		}
+	}()
+	err := post(ctx, token, "GetCurrentPeriodUsage", map[string]any{}, &usage)
+	<-done
+	if err != nil {
+		return nil, err
 	}
 	p := fillPeriod(
 		float64(usage.PlanUsage.IncludedSpend),
@@ -569,11 +680,22 @@ func fillPeriod(includedCents, bonusCents, limitCents, apiPct, totalPct float64)
 
 type traceKey struct{}
 
+// withTrace attaches fn, made safe to call from the requests that run at
+// once.
 func withTrace(ctx context.Context, fn func(string, ...any)) context.Context {
 	if fn == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, traceKey{}, fn)
+	return context.WithValue(ctx, traceKey{}, serial(fn))
+}
+
+func serial(fn func(string, ...any)) func(string, ...any) {
+	var mu sync.Mutex
+	return func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		fn(format, args...)
+	}
 }
 
 func trace(ctx context.Context, format string, args ...any) {
@@ -589,7 +711,7 @@ func withBody(ctx context.Context, fn func(string, ...any)) context.Context {
 	if fn == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, bodyKey{}, fn)
+	return context.WithValue(ctx, bodyKey{}, serial(fn))
 }
 
 func bodyTrace(ctx context.Context, format string, args ...any) {
