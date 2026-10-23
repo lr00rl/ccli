@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/cursoredits"
+	"github.com/lr00rl/ccli/internal/cursoride"
 	"github.com/lr00rl/ccli/internal/transcript"
 )
 
@@ -26,6 +28,11 @@ type SessionDetail struct {
 	Links     []Link     `json:"links"`
 	Processes int        `json:"processes_with_own_totals"`
 	Resume    Resume     `json:"resume"`
+	// Edits are the files Cursor's agents wrote in the conversation, from
+	// Cursor's AI code tracking; nil outside Cursor or when none are known.
+	Edits *cursoredits.Edits `json:"cursor_edits,omitempty"`
+	// Composer is what a Cursor IDE chat's header says now.
+	Composer *cursoride.Composer `json:"cursor_composer,omitempty"`
 
 	graph *graph // turns, with each subagent and run placed in one
 }
@@ -237,6 +244,7 @@ func (d *DB) session(ctx context.Context, ref string) (*SessionDetail, error) {
 	if err := d.fillMoves(ctx, det); err != nil {
 		return nil, err
 	}
+	d.fillCursor(ctx, det)
 	if det.graph, err = d.buildGraph(ctx, det); err != nil {
 		return nil, err
 	}

@@ -257,6 +257,22 @@ is filed under `subagentInfo.rootParentConversationId`. Some bubbles carry
 chat from the CLI can rewrite a transcript, so `show` says to open it from
 the Agents window. A composer is re-read when its `lastUpdatedAt` changes.
 
+`show` reads two more things for a Cursor session, both at the time it
+runs and neither kept in the index. The files the agents wrote come from
+`~/.cursor/ai-tracking/ai-code-tracking.db` (`ai_code_hashes`: one row per
+line an agent wrote, with `conversationId`, `fileName`, `model` and
+`timestamp`), for the session id and its subagent ids. Cursor CLI chats and
+IDE composers both write there under the conversation id. Rows are grouped
+by file and model; a file's newest write orders the list, and the row count
+orders the models. The count is not shown as lines: `hash` is the table's
+key and Cursor does not say how it forms it, so the row count is not a
+reliable line count.
+For an IDE chat, `composerHeaders.value` gives `contextUsagePercent`,
+`totalLinesAdded`, `totalLinesRemoved` and `filesChangedCount`. The change
+count is Cursor's and reads zero for some chats that edited files, so
+`show` prints it only when it is not zero. A read that fails leaves its
+part out of `show` and does not fail the command.
+
 An IDE agent writes its transcript into `~/.cursor/projects` too, under the
 composer's id and with no chat store in `~/.cursor/chats`, so the Cursor CLI
 scan finds it. Both rows stay listed. A `cursor` session whose id is a

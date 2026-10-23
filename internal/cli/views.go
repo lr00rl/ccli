@@ -292,7 +292,7 @@ func cmdShow(ctx context.Context, a *app, args []string) error {
 	var c common
 	fs := newFlags("show", a, &c)
 	in := copyFlag(fs)
-	all := fs.Bool("all", false, "list every subagent")
+	all := fs.Bool("all", false, "list every subagent, and every file a Cursor agent wrote")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
