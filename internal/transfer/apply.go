@@ -52,8 +52,9 @@ type Options struct {
 	// Live reports whether a Claude Code process is running the session in
 	// any account. Nil means never live.
 	Live func(sessionID string) bool
-	// ArchiveDir is where Move puts the source files before removing them.
-	// Required for Move.
+	// ArchiveDir is where Move puts the source files before removing them,
+	// and where a copy puts an older /rewind backup it replaces. Required for
+	// Move; without it a copy leaves such a backup alone.
 	ArchiveDir string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
@@ -68,11 +69,16 @@ type Result struct {
 	Written   []string `json:"written"`   // files created or replaced in the target
 	Skipped   []string `json:"skipped"`   // sidecar files already identical
 	Conflicts []string `json:"conflicts"` // target files left alone because they differ and are not a prefix of the source
-	Archive   string   `json:"archive,omitempty"`
-	Removed   []string `json:"removed,omitempty"`
-	Imports   []Import `json:"imports,omitempty"` // transcript bytes written into the target
+	// Replaced lists older /rewind backups in the target that a newer one of
+	// the same name replaced; they were moved to SetAside.
+	Replaced []string `json:"replaced,omitempty"`
+	SetAside string   `json:"set_aside,omitempty"`
+	Archive  string   `json:"archive,omitempty"`
+	Removed  []string `json:"removed,omitempty"`
+	Imports  []Import `json:"imports,omitempty"` // transcript bytes written into the target
 
-	intend Intend
+	intend  Intend
+	history bool // merging /rewind backups: copies keep the source's time
 }
 
 // Intend is called with the transcript bytes a copy is about to write, before
@@ -249,13 +255,29 @@ func Apply(op Op, opt Options) (Result, error) {
 		}
 	}
 	if src.FileHistory != "" {
-		if err := mergeTree(src.FileHistory, src.Account.Dir, planned.to.Dir, &res); err != nil {
+		// Claude Code numbers a file's /rewind backups per process, so after a
+		// resume it writes a name again and replaces its own older backup. A
+		// copy does the same: the newer backup takes the name, and the older
+		// one goes to the archive rather than away.
+		if opt.ArchiveDir != "" {
+			if res.SetAside, err = archiveRoot(opt.ArchiveDir, planned.to.Name, opt.now()); err != nil {
+				return res, err
+			}
+		}
+		res.history = true
+		err := mergeTree(src.FileHistory, src.Account.Dir, planned.to.Dir, &res)
+		res.history = false
+		if err != nil {
 			return res, err
+		}
+		if len(res.Replaced) == 0 {
+			res.SetAside = ""
 		}
 	}
 	sort.Strings(res.Written)
 	sort.Strings(res.Skipped)
 	sort.Strings(res.Conflicts)
+	sort.Strings(res.Replaced)
 	if planned.Mode != Move {
 		return res, nil
 	}
@@ -495,7 +517,10 @@ func mergeFile(src, dst string, res *Result) error {
 	_, err := os.Lstat(dst)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return copyTranscript(src, dst, res)
+			if err := copyTranscript(src, dst, res); err != nil {
+				return err
+			}
+			return keepTime(src, dst, res)
 		}
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
@@ -507,9 +532,82 @@ func mergeFile(src, dst string, res *Result) error {
 	case Same:
 		res.Skipped = append(res.Skipped, dst)
 	case AAhead:
-		return copyTranscript(src, dst, res)
+		if err := copyTranscript(src, dst, res); err != nil {
+			return err
+		}
+		return keepTime(src, dst, res)
 	default:
+		if res.history && res.SetAside != "" {
+			return replaceOlder(src, dst, res)
+		}
 		res.Conflicts = append(res.Conflicts, dst)
+	}
+	return nil
+}
+
+// keepTime gives a copied /rewind backup its source's modification time:
+// the newer-wins rule compares those times, so a copy must not look newer
+// than the backup it copies.
+func keepTime(src, dst string, res *Result) error {
+	if !res.history {
+		return nil
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	if err := os.Chtimes(dst, st.ModTime(), st.ModTime()); err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	return nil
+}
+
+// replaceOlder puts the /rewind backup src in place of a different one of
+// the same name at dst when src is the newer of the two, moving dst to the
+// copy's archive first. A dst that is as new or newer is left alone.
+func replaceOlder(src, dst string, res *Result) error {
+	ss, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	ds, err := os.Lstat(dst)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	if !ds.Mode().IsRegular() || !ss.ModTime().After(ds.ModTime()) {
+		res.Conflicts = append(res.Conflicts, dst)
+		return nil
+	}
+	root := strings.TrimSuffix(res.Op.to.Dir, string(filepath.Separator))
+	rel, err := filepath.Rel(root, dst)
+	if err != nil || !within(root, dst) {
+		return fmt.Errorf("copy %s: escapes %s", dst, root)
+	}
+	aside, err := joinWithin(res.SetAside, rel)
+	if err != nil {
+		return err
+	}
+	// Two copies in the same second may set aside the same name.
+	for i, base := 1, aside; ; i++ {
+		if _, err := os.Lstat(aside); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		aside = fmt.Sprintf("%s.%d", base, i)
+	}
+	if err := relocate(dst, aside); err != nil {
+		return err
+	}
+	if err := copyRegularIf(src, dst, func() error { return unchangedSince(dst, nil) }); err != nil {
+		// Put the older backup back, unless something took its place.
+		if back, rerr := moveBack(aside, dst); rerr != nil || !back {
+			return fmt.Errorf("%w; the older backup is in %s", err, aside)
+		}
+		return err
+	}
+	res.Written = append(res.Written, dst)
+	res.Replaced = append(res.Replaced, dst)
+	if err := os.Chtimes(dst, ss.ModTime(), ss.ModTime()); err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
 	}
 	return nil
 }

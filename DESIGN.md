@@ -640,7 +640,16 @@ on the next open, except for sessions tagged in the meantime.
   checking that the target has not changed since the plan, so it stays the
   same file with its creation time and only the new bytes are written.
   Subagent, tool-result, scratchpad and file-history folders are copied file
-  by file without overwriting a file that differs. No write passes through a
+  by file without overwriting a file that differs, with one exception: a
+  `/rewind` backup (`file-history/<id>/<hash>@vN`). Claude Code numbers those
+  per process and reuses a name after a resume, replacing its own older
+  backup, so a backup of the same name with other content is expected. The
+  newer of the two (by modification time) takes the name; an older target
+  backup moves to `archive/<time>/<target account>/` first, and a target
+  backup that is as new or newer is left alone and reported. Without an
+  archive folder, nothing is replaced. Copied backups keep their source's
+  modification time, so a later copy compares the times Claude Code wrote
+  them, not when ccli copied them. No write passes through a
   symlinked folder in the target. A new copy gets its own file times, so it
   is always newer than its original (the index relies on that when no ledger
   entry says which is which).

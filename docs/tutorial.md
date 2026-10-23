@@ -495,6 +495,25 @@ bring one up to date from the other. Resume through ccli instead:
 That is usage staying in the account that spent it, not lost data; `ccli
 show` lists the turns, and the copy's own cost grows as you work in it.
 
+**A `/rewind` backup that differs in both accounts.** Claude Code backs up
+each file it edits under a numbered name, and after a resume it starts the
+numbers again, replacing its own older backups. So a copy can meet a
+backup of the same name with other content. The newer one takes the name
+and the older one moves to ccli's archive; the copy says which:
+
+```
+$ ccli copy 746cbfa4 --from work --to default --apply
+✓ 746cbfa4 Why does the nightly export take forty minutes no… fast-forward work → default, 4 files written, 1 older /rewind backup replaced
+    replaced 1 /rewind backup with the newer one of the same name, as Claude Code does; the older is in ~/.local/share/ccli/archive/20261022-232541/default
+1 of 1 sessions copied.
+```
+
+If the target's backup is the newer one, it stays and the copy lists it as
+left alone. The conversation is complete either way. What can differ is
+`/rewind`'s restore of code at an older checkpoint, which may bring back a
+newer version of that file; Claude Code does the same after any resume, so
+keep the code history in git.
+
 ### When both copies went on
 
 If you continued the session in both accounts without syncing, the copies
