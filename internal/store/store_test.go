@@ -188,3 +188,48 @@ func TestForgetRemovesOneSession(t *testing.T) {
 		t.Fatalf("files %d responses %d hidden %d, want 2, 2 and 1", files, responses, hidden)
 	}
 }
+
+// Opening an index written before snapshots: a transcript still on disk is
+// read again from the start, and one that is gone keeps its newest snapshot,
+// so the history of a deleted session keeps its share.
+func TestProcessesMoveToSnapshots(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "ccli.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO files(id, path, account, session_id, project_key, kind, parser, missing) VALUES(1, '/a/s1.jsonl', 'default', 's1', 'p', 'main', 3, 0)`,
+		`INSERT INTO files(id, path, account, session_id, project_key, kind, parser, missing) VALUES(2, '/a/s2.jsonl', 'default', 's2', 'p', 'main', 3, 1)`,
+		`INSERT INTO processes(file_id, start_ms, end_ms, model, input, output, cache_read, cache_write, web_search, cost) VALUES(1, 100, 200, 'm', 1, 2, 3, 4, 0, 1.5)`,
+		`INSERT INTO processes(file_id, start_ms, end_ms, model, input, output, cache_read, cache_write, web_search, cost) VALUES(2, 300, 400, 'm', 5, 6, 7, 8, 0, 2.5)`,
+	} {
+		if _, err := s.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	if s, err = Open(p); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	count := func(q string) int {
+		var n int
+		if err := s.DB().QueryRow(q).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count("SELECT COUNT(*) FROM processes"); n != 0 {
+		t.Fatalf("processes keeps %d rows", n)
+	}
+	if n := count("SELECT parser FROM files WHERE id = 1"); n != 0 {
+		t.Fatal("the transcript on disk is not read again")
+	}
+	if n := count("SELECT COUNT(*) FROM snapshots WHERE file_id = 2 AND start_ms = 300 AND output = 6"); n != 1 {
+		t.Fatal("the deleted transcript lost its snapshot")
+	}
+	if n := count("SELECT COUNT(*) FROM snapshots WHERE file_id = 1"); n != 0 {
+		t.Fatal("the transcript on disk got a snapshot without being read")
+	}
+}

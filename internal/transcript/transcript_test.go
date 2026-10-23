@@ -247,13 +247,16 @@ func TestCostStateProcesses(t *testing.T) {
 		asst(1, "m1", "claude-opus-5-5", 1, 1, 0, 0, ""),
 		cs(100, 1.5, 10),
 		asst(2, "m2", "claude-opus-5-5", 1, 1, 0, 0, ""),
-		cs(100, 2.5, 20), // a later snapshot of the same process replaces it
+		cs(100, 2.5, 20), // a later snapshot of the same running total: both are kept
 		cs(200, 0.5, 5),
 	)
-	if len(res.Processes) != 2 {
+	if len(res.Processes) != 3 {
 		t.Fatalf("processes = %+v", res.Processes)
 	}
-	p := res.Processes[0]
+	if first, p := res.Processes[0], res.Processes[1]; first.Start != 100 || first.Models[1].Output != 10 || first.Offset >= p.Offset {
+		t.Fatalf("first snapshot = %+v", first)
+	}
+	p := res.Processes[1]
 	if p.Start != 100 || p.End != parseTS(ts(2)) || len(p.Models) != 2 {
 		t.Fatalf("process = %+v", p)
 	}

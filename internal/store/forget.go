@@ -13,7 +13,7 @@ func (s *Store) Forget(ctx context.Context, account, sessionID string) (int, err
 	}
 	defer tx.Rollback()
 	files := `SELECT id FROM files WHERE account = ? AND session_id = ?`
-	for _, table := range []string{"responses", "activity", "tools", "links", "processes", "spawns", "turns"} {
+	for _, table := range []string{"responses", "activity", "tools", "links", "processes", "snapshots", "spawns", "turns"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id IN (`+files+`)`, account, sessionID); err != nil {
 			return 0, err
 		}

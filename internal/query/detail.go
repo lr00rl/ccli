@@ -389,8 +389,8 @@ func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
 	}
 	trows.Close()
 	d.applyCursorDetail(ctx, det)
-	return d.sql().QueryRowContext(ctx, `SELECT COUNT(DISTINCT p.start_ms) FROM processes p JOIN files f ON f.id = p.file_id
-		WHERE f.account = ? AND f.session_id = ?`, det.Account, det.ID).Scan(&det.Processes)
+	return d.sql().QueryRowContext(ctx, `SELECT COUNT(DISTINCT p.start_ms) FROM snapshots p JOIN files f ON f.id = p.file_id
+		WHERE f.account = ? AND f.session_id = ? AND p.imported = 0`, det.Account, det.ID).Scan(&det.Processes)
 }
 
 func (d *DB) fillLinks(ctx context.Context, det *SessionDetail) error {

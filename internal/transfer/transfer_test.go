@@ -1211,3 +1211,63 @@ func TestCopyExclusiveKeepsANewFile(t *testing.T) {
 		t.Fatalf("restored %q at %v", readStr(t, dst), got.ModTime())
 	}
 }
+
+// A fast-forward appends to the target in place: it stays the same file,
+// with its creation time, which is how the index tells an original from a
+// copy, and only the new bytes are written.
+func TestFastForwardAppendsInPlace(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "a")
+	b := makeAcct(t, root, "b")
+	writeFile(t, transcriptPath(a, "k", id1), "line-1\nline-2\nline-3\n", time.Time{})
+	writeFile(t, transcriptPath(b, "k", id1), "line-1\n", time.Now().Add(-time.Hour))
+	before, err := os.Stat(transcriptPath(b, "k", id1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := Plan(id1, a, b, Copy, Options{})
+	if err != nil || op.Action != FastForward {
+		t.Fatalf("plan: %s %v", op.Action, err)
+	}
+	res, err := Apply(op, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(transcriptPath(b, "k", id1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("the target was replaced by a new file")
+	}
+	if got := readStr(t, transcriptPath(b, "k", id1)); got != "line-1\nline-2\nline-3\n" {
+		t.Fatalf("target = %q", got)
+	}
+	if len(res.Imports) != 1 || res.Imports[0].From != int64(len("line-1\n")) {
+		t.Fatalf("imports = %+v", res.Imports)
+	}
+}
+
+// A fast-forward whose target changed after the plan appends nothing.
+func TestAppendTailLeavesAChangedTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src.jsonl"), filepath.Join(dir, "dst.jsonl")
+	writeFile(t, src, "a\nb\nc\n", time.Time{})
+	writeFile(t, dst, "a\n", time.Now().Add(-time.Hour))
+	prev, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(dst, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("theirs\n")
+	f.Close()
+	if err := appendTail(src, dst, prev, 6); err == nil || !strings.Contains(err.Error(), "changed while ccli was copying") {
+		t.Fatalf("append onto a changed target: %v", err)
+	}
+	if got := readStr(t, dst); got != "a\ntheirs\n" {
+		t.Fatalf("target = %q", got)
+	}
+	if ents, _ := filepath.Glob(filepath.Join(dir, ".ccli-tmp-*")); len(ents) != 0 {
+		t.Fatalf("temporary files left: %v", ents)
+	}
+}

@@ -646,3 +646,117 @@ func TestRenamedAccountKeepsItsSessions(t *testing.T) {
 		t.Fatalf("a third run read %d files again", s.Parsed)
 	}
 }
+
+// Claude Code keeps one running total per session and carries it on when
+// the session resumes, in another account too once ccli copied it there.
+// Each account's shortfall is the growth of that total it produced itself,
+// whichever file is newer and whatever the sync did to creation times.
+func TestRunningTotalSplitBetweenAccounts(t *testing.T) {
+	e := newEnv(t, "default", "work")
+	ctx := context.Background()
+	start := time.Date(2026, 10, 1, 8, 59, 0, 0, time.UTC).UnixMilli()
+	total := func(in, out int64) string {
+		return fmt.Sprintf(`{"type":"cost-state","startTime":%d,"modelUsage":{"claude-opus-5-5":{"inputTokens":%d,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}`+"\n", start, in, out)
+	}
+	record := func(to int, from, upto int64) {
+		t.Helper()
+		names := []string{"default", "work"}
+		if err := e.st.RecordTransfers(ctx, []store.Transfer{{At: time.Now(), Mode: "copy", SessionID: "s1",
+			FromAccount: names[1-to], ToAccount: names[to], Path: e.path(to, "-p/s1.jsonl"), From: from, To: upto}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replace := func(acct int, content string) {
+		t.Helper()
+		tmp := e.path(acct, "-p/.s1.tmp")
+		os.MkdirAll(filepath.Dir(tmp), 0o755)
+		if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, e.path(acct, "-p/s1.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missing := func(acct string) int64 {
+		return e.int("SELECT COALESCE(SUM(output), 0) FROM responses WHERE kind = 'adjustment' AND account = ?", acct)
+	}
+
+	// default records 20 output tokens; its total says 50,020.
+	a1 := prompt(0, "start") + asst(1, "m1", 10) + asst(2, "m2", 10) + total(2_000_000, 50_020)
+	e.write(0, "-p/s1.jsonl", a1)
+	e.run()
+	time.Sleep(20 * time.Millisecond)
+	// Copied to work, which records 20 more and carries the total to 80,040.
+	replace(1, a1)
+	record(1, 0, int64(len(a1)))
+	e.run()
+	b1 := a1 + prompt(3, "go on in work") + asst(4, "m3", 10) + asst(5, "m4", 10) + total(4_000_000, 80_040)
+	replace(1, b1)
+	e.run()
+	if d, w := missing("default"), missing("work"); d != 50_000 || w != 30_000 {
+		t.Fatalf("after work went on: default missing %d, work %d; want 50000 and 30000", d, w)
+	}
+	// Synced back by replacing default's file, which makes it the newer one.
+	replace(0, b1)
+	record(0, int64(len(a1)), int64(len(b1)))
+	e.run()
+	if d, w := missing("default"), missing("work"); d != 50_000 || w != 30_000 {
+		t.Fatalf("after the sync back: default missing %d, work %d; want 50000 and 30000", d, w)
+	}
+	// default goes on: 10 recorded, the total grows by 5,010.
+	e.appendTo(0, "-p/s1.jsonl", prompt(6, "back home")+asst(7, "m5", 10)+total(5_000_000, 85_050))
+	e.run()
+	if d, w := missing("default"), missing("work"); d != 55_000 || w != 30_000 {
+		t.Fatalf("after default went on: default missing %d, work %d; want 55000 and 30000", d, w)
+	}
+}
+
+// A session that continues another one starts its own transcript with the
+// running total as it stood, plus its own work, and no earlier line to
+// measure from. Its first snapshot only sets the base, so the parent's part
+// is not counted twice; its later growth counts.
+func TestContinuedSessionFirstSnapshotOnlySetsBase(t *testing.T) {
+	e := newEnv(t, "default")
+	start := time.Date(2026, 10, 1, 8, 59, 0, 0, time.UTC).UnixMilli()
+	total := func(out int64) string {
+		return fmt.Sprintf(`{"type":"cost-state","startTime":%d,"modelUsage":{"claude-opus-5-5":{"inputTokens":0,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}`+"\n", start, out)
+	}
+	missing := func(sess string) int64 {
+		return e.int("SELECT COALESCE(SUM(output), 0) FROM responses WHERE kind = 'adjustment' AND session_id = ?", sess)
+	}
+	e.write(0, "-p/s1.jsonl", prompt(0, "start")+asst(1, "m1", 10)+total(1_010))
+	e.run()
+	time.Sleep(20 * time.Millisecond)
+	e.write(0, "-p/s2.jsonl", prompt(2, "continued")+asst(3, "m2", 10)+total(1_520)+asst(4, "m3", 10)+total(2_030))
+	e.run()
+	if p, c := missing("s1"), missing("s2"); p != 1_000 || c != 500 {
+		t.Fatalf("parent missing %d, continuation %d; want 1000 and 500", p, c)
+	}
+	// A total that dips (two writers, or a damaged line) never counts growth twice.
+	start++
+	e.write(0, "-p/s3.jsonl", prompt(0, "dip")+total(5_000)+total(1_000)+total(6_000))
+	e.run()
+	if n := missing("s3"); n != 6_000 {
+		t.Fatalf("dipping total counted %d, want 6000", n)
+	}
+}
+
+// A copy whose original is not indexed (its account was removed, say)
+// still counts the snapshots that came in with it: no other file can.
+func TestCopiedSnapshotsCountWhenTheOriginalIsAbsent(t *testing.T) {
+	e := newEnv(t, "work")
+	start := time.Date(2026, 10, 1, 8, 59, 0, 0, time.UTC).UnixMilli()
+	total := func(out int64) string {
+		return fmt.Sprintf(`{"type":"cost-state","startTime":%d,"modelUsage":{"claude-opus-5-5":{"inputTokens":0,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}`+"\n", start, out)
+	}
+	copied := prompt(0, "start") + total(1_000)
+	e.write(0, "-p/s1.jsonl", copied+prompt(2, "more")+total(1_500))
+	if err := e.st.RecordTransfers(context.Background(), []store.Transfer{{At: time.Now(), Mode: "copy", SessionID: "s1",
+		FromAccount: "default", ToAccount: "work", Path: e.path(0, "-p/s1.jsonl"), From: 0, To: int64(len(copied))}}); err != nil {
+		t.Fatal(err)
+	}
+	e.run()
+	if n := e.int("SELECT COALESCE(SUM(output), 0) FROM responses WHERE kind = 'adjustment'"); n != 1_500 {
+		t.Fatalf("missing %d, want 1500", n)
+	}
+}
