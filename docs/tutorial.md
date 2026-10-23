@@ -429,7 +429,8 @@ and the turns you ran in default count toward default, however often the
 session goes back and forth. ccli records every byte range it copies into an
 account, and a response that arrived with a copy never counts toward the
 account it was copied into. A copy that has not done any new work yet shows
-$0.
+$0, and its MODEL column stays empty until it makes its first call. In
+`ccli sessions` its account reads `default ← work`, naming where it came from.
 
 Add `--print` to see the command without running it, and `--fork` to resume
 into a new session id (Claude Code's `--fork-session`).

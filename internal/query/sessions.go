@@ -67,6 +67,10 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err != nil {
 		return nil, err
 	}
+	copied, err := d.copiedFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
 	q, args := fmt.Sprintf(sessionSQL, ""), []any{f.sinceMS(), f.untilMS()}
 	if only != nil {
 		q = fmt.Sprintf(sessionSQL, "WHERE account = ?3 AND session_id = ?4")
@@ -100,7 +104,8 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 		s.Missing = missing != 0
 		s.Project = projectName(s.Cwd, s.ProjectKey)
 		s.Models = models[skey{s.Account, s.ID}]
-		_, s.Live = d.live[s.ID]
+		_, s.Live = d.live[skey{s.Account, s.ID}]
+		s.CopiedFrom = copied[skey{s.Account, s.ID}]
 		if !matches(s, f) {
 			continue
 		}
@@ -291,6 +296,26 @@ func RangeDays(n int, loc *time.Location) (time.Time, time.Time) {
 }
 
 // sessionModels lists each session's models, costliest first.
+// copiedFrom maps a session in an account to the account the newest copy or
+// move into it came from. A fork is left out: it gets a new id.
+func (d *DB) copiedFrom(ctx context.Context) (map[skey]string, error) {
+	rows, err := d.sql().QueryContext(ctx, `SELECT to_account, session_id, from_account FROM transfers WHERE mode <> 'fork' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[skey]string{}
+	for rows.Next() {
+		var k skey
+		var from string
+		if err := rows.Scan(&k.account, &k.id, &from); err != nil {
+			return nil, err
+		}
+		out[k] = from
+	}
+	return out, rows.Err()
+}
+
 func (d *DB) sessionModels(ctx context.Context, only *skey) (map[skey][]string, error) {
 	const q = `SELECT account, session_id, model FROM responses %s
 		GROUP BY account, session_id, model ORDER BY account, session_id, SUM(COALESCE(cost, 0)) DESC`

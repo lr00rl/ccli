@@ -90,17 +90,21 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 		column{title: "TOKENS", right: true}, column{title: "CACHED", right: true}, column{title: "COST", right: true},
 	)
 	var rows [][]string
+	copies := false
 	for _, s := range p.Sessions {
 		r := []string{t.Ago(s.Last)}
 		if showAccount {
-			r = append(r, s.Account)
+			r = append(r, t.accountCell(s))
+			copies = copies || s.CopiedFrom != ""
 		}
+		// The mark stands apart from the id, so a double-click selects
+		// the id alone.
 		id := query.ShortID(s.ID)
 		switch {
 		case s.Live:
-			id = t.paint(cLive, id+"●")
+			id = t.paint(cLive, id+" ●")
 		case s.Missing:
-			id = t.dim(id + "×")
+			id = t.dim(id + " ×")
 		}
 		ttl := s.Title
 		if ttl == "" {
@@ -137,7 +141,20 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 	if p.Drafts > 0 {
 		t.draftsLeftOut(p.Drafts)
 	}
-	t.println(t.dim("● running   × transcript deleted (history kept)   + unpriced models left out"))
+	legend := "● running   × transcript deleted (history kept)   + unpriced models left out"
+	if copies {
+		legend += "   ← copied from that account"
+	}
+	t.println(t.dim(legend))
+}
+
+// accountCell names the session's account and, for a session ccli copied or
+// moved in, the account it came from.
+func (t Term) accountCell(s query.SessionRow) string {
+	if s.CopiedFrom == "" {
+		return s.Account
+	}
+	return s.Account + t.dim(" ← "+s.CopiedFrom)
 }
 
 func (t Term) sessionDetails(p query.SessionPage, showAccount bool) {
@@ -164,7 +181,7 @@ func (t Term) sessionDetails(p query.SessionPage, showAccount bool) {
 			where += "  " + s.Cwd
 		}
 		if showAccount {
-			where = s.Account + "  " + where
+			where = t.accountCell(s) + "  " + where
 		}
 		t.println("  " + t.dim(where))
 		t.printf("  %s · active %s · %d prompts · %d tool calls · %d subagents\n",

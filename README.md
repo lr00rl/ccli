@@ -346,6 +346,12 @@ and forth. ccli records every byte range it copies into an account, and a
 response that came in with a copy never counts toward the account it was
 copied into. A forked session starts at $0 in its new account.
 
+In `ccli sessions`, a copied or moved session's account reads
+`talcum ← default`: the account it is in, then the account the newest copy
+into it came from. `ccli show` lists every copy between accounts. A Claude
+Code process runs only one copy of a session, so only that account's row
+shows it as running.
+
 ### Clearing out empty sessions
 
 ```sh
