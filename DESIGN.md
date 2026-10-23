@@ -375,7 +375,14 @@ consecutive snapshots in its own transcript, counted at each snapshot that is
 its own: a snapshot ccli copied in only moves the base for the next one. A
 snapshot several files hold as their own (a transcript copied by hand, the
 history a native fork or continuation repeats) counts once, in the file
-created first.
+created first; one that only copies hold (the original is not indexed)
+counts in the earliest copy. In a file created after the total began
+elsewhere, a first snapshot with nothing before it in the file only sets the
+base: it holds the parent's total up to an unknown point, so counting it
+could count the parent twice. What such a session spent without writing it
+down before its first snapshot is left out. A total that dips does not lower
+the base. `processes` rows of transcripts already gone from disk move over
+as one snapshot each, since the file cannot be read again.
 
 For each total in a dirty session, that growth is compared per model with the
 session's own responses in the same time windows (from the snapshot before to

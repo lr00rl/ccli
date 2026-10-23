@@ -710,3 +710,53 @@ func TestRunningTotalSplitBetweenAccounts(t *testing.T) {
 		t.Fatalf("after default went on: default missing %d, work %d; want 55000 and 30000", d, w)
 	}
 }
+
+// A session that continues another one starts its own transcript with the
+// running total as it stood, plus its own work, and no earlier line to
+// measure from. Its first snapshot only sets the base, so the parent's part
+// is not counted twice; its later growth counts.
+func TestContinuedSessionFirstSnapshotOnlySetsBase(t *testing.T) {
+	e := newEnv(t, "default")
+	start := time.Date(2026, 10, 1, 8, 59, 0, 0, time.UTC).UnixMilli()
+	total := func(out int64) string {
+		return fmt.Sprintf(`{"type":"cost-state","startTime":%d,"modelUsage":{"claude-opus-5-5":{"inputTokens":0,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}`+"\n", start, out)
+	}
+	missing := func(sess string) int64 {
+		return e.int("SELECT COALESCE(SUM(output), 0) FROM responses WHERE kind = 'adjustment' AND session_id = ?", sess)
+	}
+	e.write(0, "-p/s1.jsonl", prompt(0, "start")+asst(1, "m1", 10)+total(1_010))
+	e.run()
+	time.Sleep(20 * time.Millisecond)
+	e.write(0, "-p/s2.jsonl", prompt(2, "continued")+asst(3, "m2", 10)+total(1_520)+asst(4, "m3", 10)+total(2_030))
+	e.run()
+	if p, c := missing("s1"), missing("s2"); p != 1_000 || c != 500 {
+		t.Fatalf("parent missing %d, continuation %d; want 1000 and 500", p, c)
+	}
+	// A total that dips (two writers, or a damaged line) never counts growth twice.
+	start++
+	e.write(0, "-p/s3.jsonl", prompt(0, "dip")+total(5_000)+total(1_000)+total(6_000))
+	e.run()
+	if n := missing("s3"); n != 6_000 {
+		t.Fatalf("dipping total counted %d, want 6000", n)
+	}
+}
+
+// A copy whose original is not indexed (its account was removed, say)
+// still counts the snapshots that came in with it: no other file can.
+func TestCopiedSnapshotsCountWhenTheOriginalIsAbsent(t *testing.T) {
+	e := newEnv(t, "work")
+	start := time.Date(2026, 10, 1, 8, 59, 0, 0, time.UTC).UnixMilli()
+	total := func(out int64) string {
+		return fmt.Sprintf(`{"type":"cost-state","startTime":%d,"modelUsage":{"claude-opus-5-5":{"inputTokens":0,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}`+"\n", start, out)
+	}
+	copied := prompt(0, "start") + total(1_000)
+	e.write(0, "-p/s1.jsonl", copied+prompt(2, "more")+total(1_500))
+	if err := e.st.RecordTransfers(context.Background(), []store.Transfer{{At: time.Now(), Mode: "copy", SessionID: "s1",
+		FromAccount: "default", ToAccount: "work", Path: e.path(0, "-p/s1.jsonl"), From: 0, To: int64(len(copied))}}); err != nil {
+		t.Fatal(err)
+	}
+	e.run()
+	if n := e.int("SELECT COALESCE(SUM(output), 0) FROM responses WHERE kind = 'adjustment'"); n != 1_500 {
+		t.Fatalf("missing %d, want 1500", n)
+	}
+}

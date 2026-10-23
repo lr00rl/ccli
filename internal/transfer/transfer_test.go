@@ -1247,3 +1247,27 @@ func TestFastForwardAppendsInPlace(t *testing.T) {
 		t.Fatalf("imports = %+v", res.Imports)
 	}
 }
+
+// A fast-forward whose target changed after the plan appends nothing.
+func TestAppendTailLeavesAChangedTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src.jsonl"), filepath.Join(dir, "dst.jsonl")
+	writeFile(t, src, "a\nb\nc\n", time.Time{})
+	writeFile(t, dst, "a\n", time.Now().Add(-time.Hour))
+	prev, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(dst, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("theirs\n")
+	f.Close()
+	if err := appendTail(src, dst, prev, 6); err == nil || !strings.Contains(err.Error(), "changed while ccli was copying") {
+		t.Fatalf("append onto a changed target: %v", err)
+	}
+	if got := readStr(t, dst); got != "a\ntheirs\n" {
+		t.Fatalf("target = %q", got)
+	}
+	if ents, _ := filepath.Glob(filepath.Join(dir, ".ccli-tmp-*")); len(ents) != 0 {
+		t.Fatalf("temporary files left: %v", ents)
+	}
+}

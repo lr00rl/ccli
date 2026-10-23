@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,7 +35,11 @@ type SessionKey struct {
 // snapshots in its own transcript, counted where the later snapshot is its
 // own: a snapshot ccli copied in from another account only moves the base.
 // A snapshot that several files hold as their own (a transcript copied by
-// hand) counts once, in the file created first.
+// hand) counts once, in the file created first; one that only copies hold
+// counts in the earliest of them. In a file created after the total began
+// elsewhere (a continued or forked session), a first snapshot with nothing
+// before it in the file only sets the base: it includes the parent's total
+// up to an unknown point, so counting it could count the parent twice.
 //
 // The marks are cleared in the same transaction, so a run that stops early
 // leaves them for the next one. normalize maps model names to price-table keys;
@@ -62,11 +67,10 @@ func (s *Store) Reconcile(ctx context.Context, normalize func(string) string, we
 	// Sessions sharing a running total with a marked one are redone too:
 	// which file a shared snapshot counts in may have changed.
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO dirty(account, session_id)
-		SELECT DISTINCT f2.account, f2.session_id FROM dirty d
-		JOIN files f1 ON f1.account = d.account AND f1.session_id = d.session_id
-		JOIN snapshots p1 ON p1.file_id = f1.id
-		JOIN snapshots p2 ON p2.start_ms = p1.start_ms
-		JOIN files f2 ON f2.id = p2.file_id`); err != nil {
+		SELECT DISTINCT f2.account, f2.session_id FROM snapshots p2 JOIN files f2 ON f2.id = p2.file_id
+		WHERE p2.start_ms IN (SELECT DISTINCT p1.start_ms FROM dirty d
+			JOIN files f1 ON f1.account = d.account AND f1.session_id = d.session_id
+			JOIN snapshots p1 ON p1.file_id = f1.id)`); err != nil {
 		return 0, err
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT account, session_id FROM dirty")
@@ -154,12 +158,24 @@ func reconcileOne(ctx context.Context, tx *sql.Tx, k SessionKey, normalize func(
 			return err
 		}
 		// Which file each distinct snapshot counts in: the earliest created
-		// of those holding it as their own.
+		// of those holding it as their own, else of those holding a copy.
 		counts := map[string]*holding{}
+		own := map[string]bool{}
+		// The total began in the earliest created file holding a snapshot of
+		// it as its own, or, if only copies hold it, in the earliest of them.
+		var first *holding
+		firstOwn := false
 		for _, h := range hs {
+			mine := slices.ContainsFunc(h.snaps, func(sn *snapshot) bool { return !sn.imported })
+			if first == nil || mine && !firstOwn || mine == firstOwn && earlier(h, first) {
+				first, firstOwn = h, mine
+			}
 			for _, sn := range h.snaps {
-				if c := counts[sn.key]; !sn.imported && (c == nil || h.rank < c.rank || h.rank == c.rank && h.fileID < c.fileID) {
+				c := counts[sn.key]
+				switch {
+				case c == nil, !sn.imported && !own[sn.key], sn.imported == !own[sn.key] && earlier(h, c):
 					counts[sn.key] = h
+					own[sn.key] = own[sn.key] || !sn.imported
 				}
 			}
 		}
@@ -171,17 +187,24 @@ func reconcileOne(ctx context.Context, tx *sql.Tx, k SessionKey, normalize func(
 				continue
 			}
 			base, from := map[string]sums{}, start-1
-			for _, sn := range h.snaps {
-				if !sn.imported && counts[sn.key] == h {
+			for i, sn := range h.snaps {
+				counted := counts[sn.key] == h && (i > 0 || h == first)
+				if counted {
 					for model, v := range sn.models {
 						acc := grown[model]
 						acc.add(less(v, base[model]))
 						grown[model] = acc
 					}
 					wins = append(wins, window{from, max(sn.end, from)})
-					fileID, end = h.fileID, max(sn.end, start)
+					if sn.end >= end {
+						fileID, end = h.fileID, max(sn.end, start)
+					}
 				}
-				base, from = sn.models, sn.end
+				// A total never shrinks; a lower snapshot does not lower the base.
+				for model, v := range sn.models {
+					base[model] = most(base[model], v)
+				}
+				from = max(from, sn.end)
 			}
 		}
 		if len(wins) == 0 {
@@ -223,6 +246,17 @@ func reconcileOne(ctx context.Context, tx *sql.Tx, k SessionKey, normalize func(
 		}
 	}
 	return nil
+}
+
+// earlier orders holders by creation, then by file id.
+func earlier(a, b *holding) bool {
+	return a.rank < b.rank || a.rank == b.rank && a.fileID < b.fileID
+}
+
+// most is the larger of two snapshots of one model, field by field.
+func most(a, b sums) sums {
+	return sums{input: max(a.input, b.input), output: max(a.output, b.output), read: max(a.read, b.read),
+		write: max(a.write, b.write), web: max(a.web, b.web)}
 }
 
 // less is a snapshot's growth over an earlier one of the same total.
@@ -302,9 +336,20 @@ func holdings(ctx context.Context, tx *sql.Tx, start int64, normalize func(strin
 
 // recorded adds a session's transcript responses within its windows to have.
 func recorded(ctx context.Context, tx *sql.Tx, sess SessionKey, wins []window, normalize func(string) string, have map[string]sums) error {
+	// Merge overlapping and touching windows: each response counts once,
+	// and the query stays short however many snapshots there are.
+	sort.Slice(wins, func(i, j int) bool { return wins[i].from < wins[j].from })
+	merged := wins[:0:0]
+	for _, w := range wins {
+		if n := len(merged); n > 0 && w.from <= merged[n-1].to {
+			merged[n-1].to = max(merged[n-1].to, w.to)
+			continue
+		}
+		merged = append(merged, w)
+	}
 	var cond []string
 	args := []any{sess.Account, sess.SessionID}
-	for _, w := range wins {
+	for _, w := range merged {
 		cond = append(cond, "(ts > ? AND ts <= ?)")
 		args = append(args, w.from, w.to)
 	}

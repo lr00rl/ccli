@@ -374,38 +374,64 @@ func syncDir(dir string) error {
 	return nil
 }
 
-// appendTail extends dst, which is a byte prefix of src as it was when
-// prev was taken, with the rest of src, in place. The file keeps its
-// identity and creation time, which tell an original from its copies, and
-// only the new bytes are written. An append that fails is cut back.
-func appendTail(src, dst string, prev os.FileInfo) error {
-	if err := unchangedSince(dst, prev); err != nil {
-		return err
+// errAppendLeft marks a failed append that may have left part of the copy
+// at the end of the target.
+var errAppendLeft = errors.New("part of the copy may be left at the end of the target; check it before resuming the session there")
+
+// appendTail extends dst, which was a byte prefix of src when prev was
+// taken, with src's bytes from there up to size, in place. The file keeps
+// its identity and creation time, which tell an original from its copies,
+// and only the new bytes are written. They are staged next to dst first, so
+// dst is checked again just before a short append rather than before a long
+// copy. A failed append is cut back only when nothing else wrote to dst.
+func appendTail(src, dst string, prev os.FileInfo, size int64) error {
+	n := size - prev.Size()
+	if n <= 0 {
+		return fmt.Errorf("copy %s: it is no longer ahead of %s; run the command again", src, dst)
 	}
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("copy %s: %w", src, err)
 	}
 	defer in.Close()
-	if _, err := in.Seek(prev.Size(), io.SeekStart); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".ccli-tmp-*")
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if got, err := io.Copy(tmp, io.NewSectionReader(in, prev.Size(), n)); err != nil || got != n {
+		if err == nil {
+			err = fmt.Errorf("read %d of %d bytes", got, n)
+		}
 		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	if err := unchangedSince(dst, prev); err != nil {
+		return err
 	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
-	_, err = io.Copy(out, in)
+	written, err := io.Copy(out, tmp)
 	if err == nil {
 		err = out.Sync()
 	}
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		os.Truncate(dst, prev.Size())
-		return fmt.Errorf("copy %s: %w", dst, err)
+	if err == nil {
+		return nil
 	}
-	return nil
+	if st, serr := os.Lstat(dst); serr == nil && st.Size() == prev.Size()+written {
+		if terr := os.Truncate(dst, prev.Size()); terr == nil {
+			return fmt.Errorf("copy %s: %w", dst, err)
+		}
+	}
+	return fmt.Errorf("copy %s: %w: %w", dst, err, errAppendLeft)
 }
 
 // unchangedSince reports, as an error, that path is not the file it was
@@ -759,33 +785,41 @@ func copyTranscript(src, dst string, res *Result) error {
 	if st, err := os.Lstat(dst); err == nil && st.Mode().IsRegular() {
 		before, prev = st.Size(), st
 	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	size := st.Size()
 	jsonl := strings.HasSuffix(dst, ".jsonl")
 	var undo func()
-	if jsonl && res.intend != nil {
-		if st, err := os.Stat(src); err == nil && st.Size() > before {
-			if undo, err = res.intend(Import{Path: dst, From: before, To: st.Size()}); err != nil {
-				return fmt.Errorf("record the copy of %s: %w", dst, err)
-			}
+	if jsonl && res.intend != nil && size > before {
+		if undo, err = res.intend(Import{Path: dst, From: before, To: size}); err != nil {
+			return fmt.Errorf("record the copy of %s: %w", dst, err)
 		}
 	}
 	// The plan saw dst at this size; a process that resumed the session in
 	// the target since would lose its new lines.
-	var err error
 	if prev != nil {
-		err = appendTail(src, dst, prev)
+		err = appendTail(src, dst, prev, size)
 	} else {
 		err = copyRegularIf(src, dst, func() error { return unchangedSince(dst, prev) })
 	}
 	if err != nil {
-		if undo != nil {
+		// Bytes left in the target stay recorded, so they never count there.
+		if undo != nil && !errors.Is(err, errAppendLeft) {
 			undo()
 		}
 		return err
 	}
 	res.Written = append(res.Written, dst)
 	if jsonl {
-		if st, err := os.Stat(dst); err == nil && st.Size() > before {
-			res.Imports = append(res.Imports, Import{Path: dst, From: before, To: st.Size()})
+		if prev == nil {
+			if st, err := os.Stat(dst); err == nil {
+				size = st.Size()
+			}
+		}
+		if size > before {
+			res.Imports = append(res.Imports, Import{Path: dst, From: before, To: size})
 		}
 	}
 	return nil
