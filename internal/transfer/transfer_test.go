@@ -818,6 +818,34 @@ func TestSharedFoldersRefused(t *testing.T) {
 	}
 }
 
+// A target whose projects folder is a symlink to somewhere else is not
+// written through, even though no other account shares that folder.
+func TestSymlinkedProjectsFolderNotWritten(t *testing.T) {
+	root := t.TempDir()
+	from := makeAcct(t, root, "a")
+	to := account.Account{Name: "b", Dir: filepath.Join(root, "accounts", "b")}
+	elsewhere := filepath.Join(root, "elsewhere")
+	for _, d := range []string{to.Dir, elsewhere} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(to.Dir, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, transcriptPath(from, "k", id1), "line\n", time.Time{})
+	op, err := Plan(id1, from, to, Copy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(op, Options{}); err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+		t.Fatalf("apply through a symlinked projects folder: %v", err)
+	}
+	if ents, _ := os.ReadDir(elsewhere); len(ents) != 0 {
+		t.Fatalf("wrote through the symlink: %v", ents)
+	}
+}
+
 // The target holding the session under another project folder must not get a
 // second copy.
 func TestOtherProjectKeyRefused(t *testing.T) {

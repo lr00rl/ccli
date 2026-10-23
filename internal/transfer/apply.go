@@ -448,17 +448,16 @@ func verifyTree(srcRoot, fromDir, toDir string) error {
 	})
 }
 
-// checkParents refuses a write whose directory, below the account's
-// projects/ or file-history/ folder, passes through a symlink: the write
-// would land outside the session's own folders.
+// checkParents refuses a write whose directory below the account, from its
+// projects/ or file-history/ folder down, passes through a symlink: the
+// write would land outside the session's own folders.
 func checkParents(root, path string) error {
 	rel, err := filepath.Rel(root, filepath.Dir(path))
 	if err != nil || !within(root, path) {
 		return fmt.Errorf("write %s: escapes %s", path, root)
 	}
-	parts := strings.Split(rel, string(filepath.Separator))
-	cur := filepath.Join(root, parts[0])
-	for _, p := range parts[1:] {
+	cur := root
+	for _, p := range strings.Split(rel, string(filepath.Separator)) {
 		cur = filepath.Join(cur, p)
 		fi, err := os.Lstat(cur)
 		if errors.Is(err, os.ErrNotExist) {
