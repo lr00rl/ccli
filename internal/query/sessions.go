@@ -67,6 +67,10 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err != nil {
 		return nil, err
 	}
+	copied, err := d.copiedFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
 	q, args := fmt.Sprintf(sessionSQL, ""), []any{f.sinceMS(), f.untilMS()}
 	if only != nil {
 		q = fmt.Sprintf(sessionSQL, "WHERE account = ?3 AND session_id = ?4")
@@ -100,7 +104,8 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 		s.Missing = missing != 0
 		s.Project = projectName(s.Cwd, s.ProjectKey)
 		s.Models = models[skey{s.Account, s.ID}]
-		_, s.Live = d.live[s.ID]
+		_, s.Live = d.live[skey{s.Account, s.ID}]
+		s.CopiedFrom = copied[skey{s.Account, s.ID}]
 		if !matches(s, f) {
 			continue
 		}
@@ -290,6 +295,26 @@ func RangeDays(n int, loc *time.Location) (time.Time, time.Time) {
 	return start, time.Time{}
 }
 
+// copiedFrom maps a session in an account to the account the newest copy or
+// move into it came from. A fork is left out: it gets a new id.
+func (d *DB) copiedFrom(ctx context.Context) (map[skey]string, error) {
+	rows, err := d.sql().QueryContext(ctx, `SELECT to_account, session_id, from_account FROM transfers WHERE mode <> 'fork' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[skey]string{}
+	for rows.Next() {
+		var k skey
+		var from string
+		if err := rows.Scan(&k.account, &k.id, &from); err != nil {
+			return nil, err
+		}
+		out[k] = from
+	}
+	return out, rows.Err()
+}
+
 // sessionModels lists each session's models, costliest first.
 func (d *DB) sessionModels(ctx context.Context, only *skey) (map[skey][]string, error) {
 	const q = `SELECT account, session_id, model FROM responses %s
@@ -333,9 +358,10 @@ func (d *DB) Usage(ctx context.Context, acct string, since time.Time) (Tokens, C
 	var t Tokens
 	var c Cost
 	err := d.sql().QueryRowContext(ctx, `SELECT COALESCE(SUM(input), 0), COALESCE(SUM(output), 0), COALESCE(SUM(cache_read), 0),
-		COALESCE(SUM(cache_5m + cache_1h), 0), COALESCE(SUM(COALESCE(cost, 0)), 0),
-		COALESCE(SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), 0)
+		COALESCE(SUM(cache_5m + cache_1h), 0), COALESCE(SUM(web_search), 0), COALESCE(SUM(COALESCE(cost, 0)), 0),
+		COALESCE(SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), 0),
+		COALESCE(SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END), 0)
 		FROM responses WHERE account = ? AND ts >= ?`, acct, since.UnixMilli()).
-		Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &c.USD, &c.Unpriced)
+		Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &t.WebSearch, &c.USD, &c.Unpriced, &c.Unlogged)
 	return t, c, err
 }

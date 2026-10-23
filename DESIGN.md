@@ -24,7 +24,7 @@ ccli is a reader. The only things it writes are:
   wrapper's and the latest Codex log reading in `<account>.json`, live check
   answers in `live/<account>.json`), and `$XDG_DATA_HOME/ccli/tool-runs/`,
   the empty folder `quota` starts the tools in;
-- for `copy`, `move`, `fork` and `resume --sync` only: transcript files of
+- for `copy`, `move`, `fork` and `resume -a` only: transcript files of
   the session in the target account (`projects/<key>/<id>.jsonl`,
   `projects/<any key>/<id>/`, `file-history/<id>/`; a fork writes them under
   its new id), and for `move`, an archive of the source under
@@ -393,18 +393,12 @@ price".
 
 ## Query interface
 
-Every command calls `query.Service`; the terminal renderer only formats its
-results. `ccli web` will serve the same calls over HTTP.
-
-```go
-type Service interface {
-    Accounts(ctx context.Context, f Filter) ([]AccountSummary, error)
-    Sessions(ctx context.Context, f Filter) (SessionPage, error)
-    Session(ctx context.Context, ref string) (*SessionDetail, error)
-    Overview(ctx context.Context, f Filter) (*Overview, error)
-    Projects(ctx context.Context, f Filter) (ProjectPage, error)
-}
-```
+Every command reads through `query.DB`; the terminal renderer only formats
+its results, and every result serializes as JSON. The main calls are
+`Accounts(filter)`, `Sessions(filter)`, `Session(ref)`, `Overview(filter)`
+and `Projects(filter)`. There is no shared interface: a consumer that wants
+one declares what it uses where it uses it, as the TUI does with its
+`Source`, and a planned `ccli web` would do the same.
 
 The turn views add `Turns(ref)` (the turn list with each turn's cost and the
 cost of the agents it started), `TurnRange(ref, from, to, all)` (turns read
@@ -465,8 +459,8 @@ ccli diff <a> <b> [--project p]    sessions only in a, only in b, identical, ahe
 ccli copy <id>... --to acct        copy sessions (fast-forward only)
 ccli move <id>... --to acct        copy, then archive and remove the source
 ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N]   batch
-ccli fork <id> --to acct [--from acct]   copy under a new session id
-ccli resume <id> [-a acct [--sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
+ccli fork <id> -a acct [--turn N] [--from acct]   copy under a new session id, whole or through turn N
+ccli resume <id> [-a acct [--no-sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
 ccli clean [-a acct] [--dir folder] [--tool t] [--unanswered] [--idle 1h] [--apply]   set aside empty sessions
 ccli clean --undo <stamp>          put back what one clean run archived and hid
@@ -474,7 +468,9 @@ ccli tag <id> <tag> / --clear       label a session in ccli, or remove the label
 ccli index [--rebuild]
 ```
 
-Global flags: `--json`, `--no-index`, `--color auto|always|never`.
+Every command takes `--json`, `--no-index` and `--color auto|always|never`
+after its name (`ccli accounts --json`). Only `--debug` and `--verbose` may
+also come before the command.
 
 ## Hiding sessions
 
@@ -591,13 +587,28 @@ on the next open, except for sessions tagged in the meantime.
   under a new random id, rewriting only the `sessionId` and `session_id`
   fields. A running session can be forked; its partial last line is left
   out. The whole copy is recorded as imported, so the fork starts at $0.
+  `--turn N` (N from 1) ends the copy at the offset of the prompt of the
+  turn after N, taken from the index and checked against the file: the
+  byte before it ends a line, and the line there starts a turn by the
+  parser's own rule (`transcript.StartsTurn`, so a tool result, meta line,
+  compaction summary or sidechain message does not pass). Through the last
+  turn, the copy ends where the index stopped reading (`files.offset`), so a
+  turn written since is not taken along. It leaves out the subagent and
+  workflow transcripts the index ties to a later turn (or, when the index
+  could not place one, that started after the cut), with their
+  `.meta.json`; every one of them must be in the session's folders. `Fork`
+  repeats these checks against the files just before it writes. Files
+  outside the transcript (file-history, tool results) are copied whole.
+  Only the conversation is cut; nothing in the working folder changes.
 - `resume -a <acct>` resumes the session in that account. If another
-  account holds a newer copy (this one is a prefix of it), `--sync` first
-  fast-forwards it the way `copy` does; without `--sync` nothing is written.
+  account holds a newer copy (this one is a prefix of it), it first
+  fast-forwards it the way `copy` does; with `--no-sync` nothing is written
+  and the resume stops. A session a process is running anywhere is not
+  copied; the error names the account it runs in.
   A copy elsewhere that diverged from this account's own does not stop the
   resume (a note names it and the `fork` that would continue it). Diverged
   copies are never merged; when two copies are both newer than this one and
-  diverged from each other, `--sync` refuses and names them.
+  diverged from each other, the sync refuses and names them.
 - Accounts that share these folders through a symlink are refused, and so is
   a target that holds the session under another project folder.
 - The transcript is written to a temporary file and renamed into place.

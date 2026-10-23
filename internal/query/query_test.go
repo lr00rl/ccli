@@ -286,3 +286,35 @@ func TestShortID(t *testing.T) {
 		t.Fatal("ShortID")
 	}
 }
+
+// A session copied between accounts has the same id in each. A process runs
+// one copy, so only that account's row is live, and the copy names the
+// account it came from.
+func TestCopiedSessionLiveAndSource(t *testing.T) {
+	fx := setup(t)
+	ctx := context.Background()
+	work := fx.accts[1]
+	os.MkdirAll(filepath.Join(work.Dir, "sessions"), 0o755)
+	reg := fmt.Sprintf(`{"sessionId":%q,"status":"busy","cwd":"/work/alpha"}`, lead)
+	if err := os.WriteFile(filepath.Join(work.Dir, "sessions", fmt.Sprintf("%d.json", os.Getpid())), []byte(reg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.st.RecordTransfers(ctx, []store.Transfer{{At: base, Mode: "copy", SessionID: lead,
+		FromAccount: "default", ToAccount: "work", Path: filepath.Join(work.Dir, "projects", "-work-alpha", lead+".jsonl"), To: 10}}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := query.New(fx.st, fx.accts).Sessions(ctx, query.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]query.SessionRow{}
+	for _, s := range page.Sessions {
+		byID[s.Account+"/"+s.ID] = s
+	}
+	if s := byID["work/"+lead]; !s.Live || s.CopiedFrom != "default" {
+		t.Fatalf("work copy: live=%v copied_from=%q, want live and from default", s.Live, s.CopiedFrom)
+	}
+	if s := byID["default/"+lead]; s.Live || s.CopiedFrom != "" {
+		t.Fatalf("default original: live=%v copied_from=%q, want neither", s.Live, s.CopiedFrom)
+	}
+}

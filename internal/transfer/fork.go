@@ -25,8 +25,90 @@ type ForkPlan struct {
 	To           string `json:"to"`
 	Bytes        int64  `json:"bytes"`   // transcript bytes to write
 	Folders      int    `json:"folders"` // session folders copied along
-	Reason       string `json:"reason,omitempty"`
-	from, to     account.Account
+	// Turn is the last turn the fork keeps, of Turns; 0 when it keeps the
+	// whole conversation. Left counts the agent transcripts left out, and
+	// Unread the bytes written after the index last read the transcript,
+	// which a fork through its last turn leaves out.
+	Turn   int    `json:"turn,omitempty"`
+	Turns  int    `json:"turns,omitempty"`
+	Left   int    `json:"agents_left_out,omitempty"`
+	Unread int64  `json:"unread_bytes,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	from   account.Account
+	to     account.Account
+	cut    Cut
+}
+
+// Cut ends a fork at a turn: the transcript up to the prompt of the turn
+// after it, without the transcripts of agents started later. The zero Cut
+// keeps everything.
+type Cut struct {
+	Turn  int   // last turn kept
+	Turns int   // turns in the session
+	Upto  int64 // transcript bytes kept: where the next turn's prompt starts; 0 = all
+	// End is set when Turn is the last turn the index has read: Upto is then
+	// where the index stopped reading, not the start of a prompt.
+	End   bool
+	Leave []string // agent transcripts (absolute paths) to leave out
+	// Prompt reports whether a transcript line starts a turn. The line at
+	// Upto must, unless End is set.
+	Prompt func(line []byte) bool
+}
+
+const reasonStaleCut = "the transcript does not match ccli's index at that turn; run ccli index and try again"
+
+// checkCut says why a cut does not fit the session's files now, or "" when
+// it does: Upto ends a line within the complete bytes and, unless the cut
+// is at the end, starts a turn; every transcript to leave out is in the
+// session's folders.
+func checkCut(src Files, cut Cut, complete int64) (string, error) {
+	if cut.Upto > 0 {
+		if cut.Upto > complete || !cut.End && cut.Upto == complete {
+			return reasonStaleCut, nil
+		}
+		f, err := os.Open(src.Transcript)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		var prev [1]byte
+		if _, err := f.ReadAt(prev[:], cut.Upto-1); err != nil {
+			return "", err
+		}
+		if prev[0] != '\n' {
+			return reasonStaleCut, nil
+		}
+		if !cut.End {
+			ln, err := bufio.NewReader(io.NewSectionReader(f, cut.Upto, complete-cut.Upto)).ReadBytes('\n')
+			if err != nil {
+				return "", err
+			}
+			if cut.Prompt == nil || !cut.Prompt(ln) {
+				return reasonStaleCut, nil
+			}
+		}
+	}
+	if len(cut.Leave) == 0 {
+		return "", nil
+	}
+	have := map[string]bool{}
+	for _, dir := range src.sidecars() {
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				have[path] = true
+			}
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	for _, path := range cut.Leave {
+		if !have[filepath.Clean(path)] {
+			return fmt.Sprintf("ccli's index lists %s as an agent of this session, but it is not in the session's folders; run ccli index and try again", path), nil
+		}
+	}
+	return "", nil
 }
 
 // NewID returns a random (version 4) session id.
@@ -42,9 +124,11 @@ func NewID() (string, error) {
 
 // PlanFork decides what forking the session from one account into another
 // (or the same one) would write. A running session can be forked: only its
-// complete lines are copied, and the copy gets its own id.
-func PlanFork(sessionID string, from, to account.Account, newID string) (ForkPlan, error) {
-	p := ForkPlan{SessionID: sessionID, NewSessionID: newID, From: from.Name, To: to.Name, from: from, to: to}
+// complete lines are copied, and the copy gets its own id. A non-zero cut
+// ends the copy at a turn.
+func PlanFork(sessionID string, from, to account.Account, newID string, cut Cut) (ForkPlan, error) {
+	p := ForkPlan{SessionID: sessionID, NewSessionID: newID, From: from.Name, To: to.Name, from: from, to: to,
+		Turn: cut.Turn, Turns: cut.Turns, cut: cut}
 	if !validID(sessionID) || !validID(newID) {
 		p.Reason = reasonBadID
 		return p, nil
@@ -73,6 +157,16 @@ func PlanFork(sessionID string, from, to account.Account, newID string) (ForkPla
 	if p.Bytes, err = completeLines(src.Transcript, st.Size()); err != nil {
 		return ForkPlan{}, err
 	}
+	if p.Reason, err = checkCut(src, cut, p.Bytes); err != nil || p.Reason != "" {
+		return p, err
+	}
+	if cut.Upto > 0 {
+		if cut.End {
+			p.Unread = p.Bytes - cut.Upto
+		}
+		p.Bytes = cut.Upto
+	}
+	p.Left = len(cut.Leave)
 	p.Folders = len(src.sidecars())
 	if src.FileHistory != "" {
 		p.Folders++
@@ -99,9 +193,35 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 	if err := checkParents(p.to.Dir, dst.transcript); err != nil {
 		return res, err
 	}
+	// The plan checked the cut; check it again against the files as they
+	// are now, before anything is written.
+	if p.cut.Upto > 0 || len(p.cut.Leave) > 0 {
+		st, err := os.Lstat(src.Transcript)
+		if err != nil {
+			return res, err
+		}
+		complete, err := completeLines(src.Transcript, st.Size())
+		if err != nil {
+			return res, err
+		}
+		if reason, err := checkCut(src, p.cut, complete); err != nil || reason != "" {
+			if err == nil {
+				err = errors.New(reason)
+			}
+			return res, fmt.Errorf("fork stopped: %w", err)
+		}
+	}
 	rw := idRewriter(p.SessionID, p.NewSessionID)
-	if err := forkFile(src.Transcript, dst.transcript, rw, &res); err != nil {
+	if err := forkFile(src.Transcript, dst.transcript, p.cut.Upto, rw, &res); err != nil {
 		return res, err
+	}
+	// An agent started after the cut belongs to the part left out; its
+	// .meta.json goes with it.
+	leave := map[string]bool{}
+	for _, path := range p.cut.Leave {
+		path = filepath.Clean(path)
+		leave[path] = true
+		leave[strings.TrimSuffix(path, ".jsonl")+".meta.json"] = true
 	}
 	// Session folders: projects/<key>/<id>/ under each key, and file-history.
 	type tree struct{ from, to string }
@@ -129,7 +249,7 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 				res.Skipped = append(res.Skipped, path+symlinkMark)
 				return nil
 			}
-			if d.IsDir() || !d.Type().IsRegular() {
+			if d.IsDir() || !d.Type().IsRegular() || leave[path] {
 				return nil
 			}
 			rel, err := filepath.Rel(tr.from, path)
@@ -148,7 +268,7 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 				return nil
 			}
 			if strings.HasSuffix(path, ".jsonl") {
-				return forkFile(path, out, rw, &res)
+				return forkFile(path, out, 0, rw, &res)
 			}
 			if err := copyRegular(path, out); err != nil {
 				return err
@@ -179,8 +299,9 @@ func idRewriter(oldID, newID string) func([]byte) []byte {
 }
 
 // forkFile writes the complete lines of src to dst, rewritten, through a
-// temporary file, and records them as imported.
-func forkFile(src, dst string, rw func([]byte) []byte, res *Result) error {
+// temporary file, and records them as imported. A positive upto stops at
+// that offset, which is the start of a line.
+func forkFile(src, dst string, upto int64, rw func([]byte) []byte, res *Result) error {
 	if err := mkdirAll(filepath.Dir(dst)); err != nil {
 		return fmt.Errorf("fork %s: %w", dst, err)
 	}
@@ -202,10 +323,13 @@ func forkFile(src, dst string, rw func([]byte) []byte, res *Result) error {
 	}()
 	br := bufio.NewReaderSize(in, 1<<20)
 	bw := bufio.NewWriterSize(tmp, 1<<20)
-	var n int64
+	var n, read int64
 	for {
 		ln, err := br.ReadBytes('\n')
 		if err == nil {
+			if read += int64(len(ln)); upto > 0 && read > upto {
+				break
+			}
 			w, werr := bw.Write(rw(ln))
 			if werr != nil {
 				tmp.Close()
@@ -249,6 +373,9 @@ func forkFile(src, dst string, rw func([]byte) []byte, res *Result) error {
 	}
 	os.Remove(name)
 	done = true
+	if err := syncDir(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("fork %s: %w", dst, err)
+	}
 	res.Written = append(res.Written, dst)
 	if jsonl {
 		res.Imports = append(res.Imports, im)

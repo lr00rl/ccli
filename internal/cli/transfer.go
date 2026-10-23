@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
 	"github.com/lr00rl/ccli/internal/store"
+	"github.com/lr00rl/ccli/internal/transcript"
 	"github.com/lr00rl/ccli/internal/transfer"
 )
 
@@ -364,19 +366,30 @@ func (l *ledger) finish(imports []transfer.Import) error {
 }
 
 // cmdFork copies a session into an account under a new id, so the copy and
-// the original can each go on.
+// the original can each go on. With --turn the copy ends at that turn.
 func cmdFork(ctx context.Context, a *app, args []string) error {
 	var c common
 	fs := newFlags("fork", a, &c)
-	to := fs.String("to", "", "target account (required; may be the session's own account)")
+	in := fs.String("a", "", "account the fork goes into and continues in (required; may be the session's own)")
+	to := fs.String("to", "", "same as -a")
 	from := fs.String("from", "", "source account (default: the copy with the latest activity)")
+	turn := fs.Int("turn", 0, "keep the conversation through this turn of ccli log, leave out the rest (default: all of it)")
 	apply := fs.Bool("apply", false, "carry out the fork (without it nothing is written)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 1 || *to == "" {
-		return errors.New("usage: ccli fork <session> --to <account> [--from <account>] [--apply]")
+	if *in != "" && *to != "" && *in != *to {
+		return fmt.Errorf("-a %s and --to %s name different accounts; give one", *in, *to)
+	}
+	if *in == "" {
+		in = to
+	}
+	if len(pos) != 1 || *in == "" || *turn < 0 {
+		return errors.New("usage: ccli fork <session> -a <account> [--turn N] [--from <account>] [--apply]")
+	}
+	if flagSet(fs, "turn") && *turn == 0 {
+		return errors.New("--turn counts from 1: turn 0 in ccli log --all is what came before the first prompt, and a fork cannot end there")
 	}
 	svc, err := a.prepare(ctx, c, nil)
 	if err != nil {
@@ -394,7 +407,11 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 	if err != nil {
 		return err
 	}
-	dst, err := a.claudeAccount(*to)
+	dst, err := a.claudeAccount(*in)
+	if err != nil {
+		return err
+	}
+	cut, last, err := forkCut(ctx, svc, src.Name, id, *turn)
 	if err != nil {
 		return err
 	}
@@ -402,11 +419,7 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := transfer.PlanFork(id, src, dst, newID)
-	if err != nil {
-		return err
-	}
-	info, err := sessionInfo(ctx, svc, src.Name)
+	p, err := transfer.PlanFork(id, src, dst, newID, cut)
 	if err != nil {
 		return err
 	}
@@ -415,7 +428,11 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 		if c.json {
 			return a.printJSON(p)
 		}
-		t.ForkPlan(p, info[src.Name+"/"+id])
+		det, err := svc.Session(ctx, src.Name+":"+id)
+		if err != nil {
+			return err
+		}
+		t.ForkPlan(p, det.SessionRow, last)
 		return nil
 	}
 	l := a.ledger(ctx, "fork", id, newID, src.Name, dst.Name)
@@ -435,6 +452,58 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 		return ferr
 	}
 	return rerr
+}
+
+// forkCut works out where a fork that keeps the conversation through turn
+// ends: at the prompt of the turn after it, without the agents started
+// later; for the last turn, where the index stopped reading. Turn 0 keeps
+// everything.
+func forkCut(ctx context.Context, svc *query.DB, acct, id string, turn int) (transfer.Cut, query.TurnRow, error) {
+	if turn == 0 {
+		return transfer.Cut{}, query.TurnRow{}, nil
+	}
+	ref := acct + ":" + id
+	tl, err := svc.Turns(ctx, ref)
+	if err != nil {
+		return transfer.Cut{}, query.TurnRow{}, err
+	}
+	short := query.ShortID(id)
+	if tl.Missing {
+		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s: %w", short, query.ErrNoTranscript)
+	}
+	if len(tl.Turns) == 0 || tl.Turns[len(tl.Turns)-1].Seq < 1 {
+		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s has no turns to fork from", short)
+	}
+	final := tl.Turns[len(tl.Turns)-1].Seq
+	i := slices.IndexFunc(tl.Turns, func(t query.TurnRow) bool { return t.Seq == turn })
+	if i < 0 {
+		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s has no turn %d; its turns run 1 to %d (ccli log %s --all lists them)", short, turn, final, short)
+	}
+	last := tl.Turns[i]
+	cut := transfer.Cut{Turn: turn, Turns: final, Prompt: transcript.StartsTurn}
+	if i == len(tl.Turns)-1 {
+		// The last turn the index has read. Lines written since may hold a
+		// later turn, so the fork stops where the index did.
+		cut.Upto, cut.End = tl.Read, true
+		return cut, last, nil
+	}
+	cut.Upto = tl.Turns[i+1].Offset
+	det, err := svc.Session(ctx, ref)
+	if err != nil {
+		return transfer.Cut{}, query.TurnRow{}, err
+	}
+	// An agent whose spawning turn the index could not place (turn 0) goes
+	// by when it started.
+	next := tl.Turns[i+1].At
+	for _, f := range det.Files {
+		if f.Kind == "main" {
+			continue
+		}
+		if f.Turn > turn || f.Turn == 0 && !f.Started.IsZero() && !f.Started.Before(next) {
+			cut.Leave = append(cut.Leave, f.Path)
+		}
+	}
+	return cut, last, nil
 }
 
 // syncFor makes sure account `in` holds the newest copy of a session before
@@ -492,7 +561,7 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 		case transfer.AAhead:
 			ahead = append(ahead, o)
 		case transfer.Diverged:
-			fmt.Fprintf(a.errw, "ccli: the copy of %s in %s went on separately from %s's; resuming %s's (ccli fork %s --from %s --to %s continues that one as a new session)\n",
+			fmt.Fprintf(a.errw, "ccli: the copy of %s in %s went on separately from %s's; resuming %s's (ccli fork %s --from %s -a %s continues that one as a new session)\n",
 				short, o.acct.Name, target.Name, target.Name, short, o.acct.Name, target.Name)
 		}
 	}
@@ -513,7 +582,7 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 		case transfer.AAhead:
 			newest = o
 		case transfer.Diverged:
-			return fmt.Errorf("the copies of %s in %s and %s are both newer than %s's and have diverged; continue one with ccli fork %s --from <account> --to %s",
+			return fmt.Errorf("the copies of %s in %s and %s are both newer than %s's and have diverged; continue one with ccli fork %s --from <account> -a %s",
 				short, newest.acct.Name, o.acct.Name, target.Name, short, target.Name)
 		}
 	}
@@ -522,7 +591,7 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 		what = "has an older copy of"
 	}
 	if !apply {
-		return fmt.Errorf("%s %s %s than %s. Add --sync to bring it up to date first, or resume it in %s", target.Name, what, short, newest.acct.Name, newest.acct.Name)
+		return fmt.Errorf("%s %s %s than %s. Leave out --no-sync to bring it up to date first, or resume it in %s", target.Name, what, short, newest.acct.Name, newest.acct.Name)
 	}
 	opt := transfer.Options{Live: func(sid string) bool {
 		for _, l := range account.LiveSessions(a.accts) {
@@ -537,6 +606,13 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 		return err
 	}
 	if op.Action == transfer.Refuse {
+		// Say where it runs: the copy can be brought over once Claude Code
+		// has exited there.
+		for _, l := range account.LiveSessions(a.accts) {
+			if l.SessionID == id {
+				return fmt.Errorf("%s is running in %s; exit Claude Code there, then run this again to bring %s's copy up to date", short, l.Account, target.Name)
+			}
+		}
 		return fmt.Errorf("cannot bring %s up to date in %s: %s", short, target.Name, op.Reason)
 	}
 	l := a.ledger(ctx, "copy", id, "", newest.acct.Name, target.Name)

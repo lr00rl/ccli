@@ -1,10 +1,10 @@
-// Package query answers questions about the index. Every ccli view calls a
-// Service; the terminal renderer formats its results, and a web server can
-// serve the same calls as JSON.
+// Package query answers questions about the index. Every ccli view reads
+// through a DB; the terminal renderer formats its results, and each result
+// serializes as JSON. A consumer that wants an interface declares the one
+// it uses, as the TUI does with its Source.
 package query
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -16,15 +16,6 @@ import (
 	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/store"
 )
-
-// Service is the read interface shared by the terminal and a future web UI.
-type Service interface {
-	Accounts(ctx context.Context, f Filter) ([]AccountSummary, error)
-	Sessions(ctx context.Context, f Filter) (SessionPage, error)
-	Session(ctx context.Context, ref string) (*SessionDetail, error)
-	Overview(ctx context.Context, f Filter) (*Overview, error)
-	Projects(ctx context.Context, f Filter) (ProjectPage, error)
-}
 
 // Filter narrows a query. Zero values mean "no limit".
 type Filter struct {
@@ -151,7 +142,8 @@ type SessionRow struct {
 	Team         string       `json:"team,omitempty"`
 	AgentName    string       `json:"agent_name,omitempty"`
 	Live         bool         `json:"live"`
-	Hidden       bool         `json:"hidden,omitempty"` // set aside with `ccli hide`; counted in totals, left out of lists
+	CopiedFrom   string       `json:"copied_from,omitempty"` // account the newest copy or move into this one came from
+	Hidden       bool         `json:"hidden,omitempty"`      // set aside with `ccli hide`; counted in totals, left out of lists
 	Missing      bool         `json:"transcript_missing"`
 	GitBranch    string       `json:"git_branch,omitempty"`
 	Entrypoint   string       `json:"entrypoint,omitempty"`
@@ -175,11 +167,11 @@ type SessionPage struct {
 	Cost     Cost         `json:"cost"`
 }
 
-// DB is the Service backed by the index.
+// DB answers queries from the index.
 type DB struct {
 	st    *store.Store
 	accts []account.Account
-	live  map[string]account.Live // session id -> live process
+	live  map[skey]account.Live // live process per account and session id
 
 	cacheMu  sync.Mutex
 	cache    map[string]*SessionDetail // by ref; nil unless CacheSessions was called
@@ -195,11 +187,13 @@ type DB struct {
 // before the DB is shared; details are read-only once built.
 func (d *DB) CacheSessions() { d.cache = map[string]*SessionDetail{} }
 
-// New builds a Service over the store.
+// New builds a DB over the store.
 func New(st *store.Store, accts []account.Account) *DB {
-	live := map[string]account.Live{}
+	// Keyed by account too: a session copied between accounts has the same
+	// id in each, and a process runs only one of the copies.
+	live := map[skey]account.Live{}
 	for _, l := range account.LiveSessions(accts) {
-		live[l.SessionID] = l
+		live[skey{l.Account, l.SessionID}] = l
 	}
 	return &DB{st: st, accts: accts, live: live}
 }
@@ -208,12 +202,6 @@ func (d *DB) sql() *sql.DB { return d.st.DB() }
 
 // Accounts known to the service.
 func (d *DB) AccountList() []account.Account { return d.accts }
-
-// IsLive reports whether a process is running the session.
-func (d *DB) IsLive(id string) (account.Live, bool) {
-	l, ok := d.live[id]
-	return l, ok
-}
 
 func ms(t int64) time.Time {
 	if t == 0 {

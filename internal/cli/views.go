@@ -364,21 +364,26 @@ func cmdStats(ctx context.Context, a *app, args []string) error {
 }
 
 // cmdResume runs `claude --resume` for the session, in its folder and with
-// its account's CLAUDE_CONFIG_DIR. It only starts Claude Code; ccli itself
-// changes nothing.
+// its account's CLAUDE_CONFIG_DIR. With -a it first brings that account's
+// copy up to date when another account holds a newer one, so the resumed
+// conversation is never an old copy.
 func cmdResume(ctx context.Context, a *app, args []string) error {
 	var c common
 	fs := newFlags("resume", a, &c)
-	printOnly := fs.Bool("print", false, "print the command instead of running it")
+	printOnly := fs.Bool("print", false, "print the command instead of running it (with -a, the copy is still brought up to date)")
 	fork := fs.Bool("fork", false, "resume into a new session id (--fork-session)")
-	in := fs.String("a", "", "resume in this account (its copy must be up to date, or use --sync)")
-	syncCopy := fs.Bool("sync", false, "with -a: first bring that account's copy up to date from the newest copy")
+	in := fs.String("a", "", "resume in this account, first bringing its copy up to date from a newer one")
+	noSync := fs.Bool("no-sync", false, "with -a: resume that account's copy only if it is already up to date")
+	syncCopy := fs.Bool("sync", true, "with -a: bring that account's copy up to date first (the default)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return errors.New("usage: ccli resume [-a account [--sync]] [-print] [-fork] <session id or prefix>")
+		return errors.New("usage: ccli resume [-a account [--no-sync]] [-print] [-fork] <session id or prefix>")
+	}
+	if *noSync && flagSet(fs, "sync") {
+		return errors.New("give --sync or --no-sync, not both")
 	}
 	svc, err := a.prepare(ctx, c, nil)
 	if err != nil {
@@ -391,7 +396,7 @@ func cmdResume(ctx context.Context, a *app, args []string) error {
 			a.close()
 			return err
 		}
-		if err := a.syncFor(ctx, id, *in, *syncCopy); err != nil {
+		if err := a.syncFor(ctx, id, *in, *syncCopy && !*noSync); err != nil {
 			a.close()
 			return err
 		}
@@ -462,6 +467,13 @@ func withoutVar(env []string, name string) []string {
 		}
 	}
 	return out
+}
+
+// flagSet reports whether the command line gave the flag.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 // parse accepts flags before and after positional arguments ("show ID

@@ -420,3 +420,23 @@ func TestCommandName(t *testing.T) {
 		t.Fatal("plain text was a command")
 	}
 }
+
+// StartsTurn applies the parser's own rule: a typed prompt starts a turn,
+// while a tool result, a meta line, a compaction summary and a sidechain
+// message, all user lines too, do not.
+func TestStartsTurn(t *testing.T) {
+	for line, want := range map[string]bool{
+		`{"type":"user","message":{"role":"user","content":"fix the build"}}`:                                           true,
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"and the tests"}]}}`:                  true,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}`: false,
+		`{"type":"user","isMeta":true,"message":{"role":"user","content":"caveat"}}`:                                    false,
+		`{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary"}}`:                         false,
+		`{"type":"user","isSidechain":true,"message":{"role":"user","content":"side"}}`:                                 false,
+		`{"type":"assistant","message":{"content":"reply"}}`:                                                            false,
+		`not json`: false,
+	} {
+		if got := StartsTurn([]byte(line)); got != want {
+			t.Errorf("StartsTurn(%s) = %v, want %v", line, got, want)
+		}
+	}
+}

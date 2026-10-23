@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/transcript"
 )
 
 const (
@@ -818,6 +819,34 @@ func TestSharedFoldersRefused(t *testing.T) {
 	}
 }
 
+// A target whose projects folder is a symlink to somewhere else is not
+// written through, even though no other account shares that folder.
+func TestSymlinkedProjectsFolderNotWritten(t *testing.T) {
+	root := t.TempDir()
+	from := makeAcct(t, root, "a")
+	to := account.Account{Name: "b", Dir: filepath.Join(root, "accounts", "b")}
+	elsewhere := filepath.Join(root, "elsewhere")
+	for _, d := range []string{to.Dir, elsewhere} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(to.Dir, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, transcriptPath(from, "k", id1), "line\n", time.Time{})
+	op, err := Plan(id1, from, to, Copy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(op, Options{}); err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+		t.Fatalf("apply through a symlinked projects folder: %v", err)
+	}
+	if ents, _ := os.ReadDir(elsewhere); len(ents) != 0 {
+		t.Fatalf("wrote through the symlink: %v", ents)
+	}
+}
+
 // The target holding the session under another project folder must not get a
 // second copy.
 func TestOtherProjectKeyRefused(t *testing.T) {
@@ -955,7 +984,7 @@ func TestForkRewritesIDAndSkipsPartialLine(t *testing.T) {
 	writeFile(t, filepath.Join(a.Dir, "projects", "proj", id1, "subagents", "agent-x.meta.json"), `{"agentType":"x"}`, time.Time{})
 	writeFile(t, filepath.Join(a.Dir, "file-history", id1, "snap"), "s", time.Time{})
 
-	p, err := PlanFork(id1, a, b, id2)
+	p, err := PlanFork(id1, a, b, id2, Cut{})
 	if err != nil || p.Reason != "" || p.Folders != 2 {
 		t.Fatalf("plan: %+v %v", p, err)
 	}
@@ -982,11 +1011,109 @@ func TestForkRewritesIDAndSkipsPartialLine(t *testing.T) {
 	if src, _ := os.ReadFile(transcriptPath(a, "proj", id1)); string(src) != full+partial {
 		t.Fatalf("source changed")
 	}
-	if p2, _ := PlanFork(id1, a, b, id2); p2.Reason == "" {
+	if p2, _ := PlanFork(id1, a, b, id2, Cut{}); p2.Reason == "" {
 		t.Fatalf("a second fork to the same id was not refused")
 	}
 	if id, err := NewID(); err != nil || !validID(id) {
 		t.Fatalf("NewID = %q %v", id, err)
+	}
+}
+
+// A fork cut at a turn keeps the transcript up to the next turn's prompt and
+// leaves out the agents started after it, with their .meta.json.
+func TestForkCutAtTurn(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "default")
+	b := makeAcct(t, root, "work")
+	user := func(content string) string {
+		return `{"type":"user","sessionId":"` + id1 + `","message":{"role":"user","content":` + content + `}}` + "\n"
+	}
+	reply := `{"type":"assistant","sessionId":"` + id1 + `","message":{"content":"reply"}}` + "\n"
+	result := user(`[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`)
+	turn1 := user(`"one"`) + reply + result + reply
+	turn2 := user(`"two"`) + reply
+	writeFile(t, transcriptPath(a, "proj", id1), turn1+turn2, time.Time{})
+	subs := filepath.Join(a.Dir, "projects", "proj", id1, "subagents")
+	writeFile(t, filepath.Join(subs, "agent-early.jsonl"), `{"session_id":"`+id1+`"}`+"\n", time.Time{})
+	writeFile(t, filepath.Join(subs, "agent-late.jsonl"), `{"session_id":"`+id1+`"}`+"\n", time.Time{})
+	writeFile(t, filepath.Join(subs, "agent-late.meta.json"), `{"agentType":"x"}`, time.Time{})
+	late := filepath.Join(subs, "agent-late.jsonl")
+	at := func(upto int) Cut {
+		return Cut{Turn: 1, Turns: 2, Upto: int64(upto), Prompt: transcript.StartsTurn}
+	}
+
+	// A cut that does not land on a turn's prompt means the index is stale:
+	// inside a line, at a reply, or at a tool result, which is a user line
+	// too but starts no turn.
+	for name, upto := range map[string]int{
+		"inside a line": len(turn1) - 3,
+		"a reply":       len(user(`"one"`)),
+		"a tool result": len(user(`"one"`) + reply),
+	} {
+		if p, err := PlanFork(id1, a, b, id2, at(upto)); err != nil || p.Reason == "" {
+			t.Fatalf("a cut at %s was not refused: %+v %v", name, p, err)
+		}
+	}
+	// So does an agent to leave out that is not in the session's folders.
+	bad := at(len(turn1))
+	bad.Leave = []string{filepath.Join(subs, "agent-gone.jsonl")}
+	if p, _ := PlanFork(id1, a, b, id2, bad); !strings.Contains(p.Reason, "agent-gone") {
+		t.Fatalf("a missing agent to leave out was not refused: %q", p.Reason)
+	}
+
+	cut := at(len(turn1))
+	cut.Leave = []string{late}
+	p, err := PlanFork(id1, a, b, id2, cut)
+	if err != nil || p.Reason != "" || p.Bytes != int64(len(turn1)) || p.Turn != 1 || p.Left != 1 {
+		t.Fatalf("plan: %+v %v", p, err)
+	}
+	res, err := Fork(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(transcriptPath(b, "proj", id2))
+	if want := strings.ReplaceAll(turn1, id1, id2); string(got) != want {
+		t.Fatalf("forked transcript = %q, want %q", got, want)
+	}
+	newSubs := filepath.Join(b.Dir, "projects", "proj", id2, "subagents")
+	if !isRegular(filepath.Join(newSubs, "agent-early.jsonl")) {
+		t.Fatalf("an agent from before the cut was left out: %v", res.Written)
+	}
+	for _, f := range []string{"agent-late.jsonl", "agent-late.meta.json"} {
+		if _, err := os.Lstat(filepath.Join(newSubs, f)); err == nil {
+			t.Fatalf("%s from after the cut was copied", f)
+		}
+	}
+}
+
+// A fork through the last turn stops where the index stopped reading, so a
+// turn written since is not taken along.
+func TestForkThroughLastTurnStopsAtTheIndex(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "default")
+	b := makeAcct(t, root, "work")
+	read := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"one"}}` + "\n"
+	later := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"two"}}` + "\n"
+	writeFile(t, transcriptPath(a, "proj", id1), read+later, time.Time{})
+	p, err := PlanFork(id1, a, b, id2, Cut{Turn: 1, Turns: 1, Upto: int64(len(read)), End: true, Prompt: transcript.StartsTurn})
+	if err != nil || p.Reason != "" || p.Bytes != int64(len(read)) || p.Unread != int64(len(later)) {
+		t.Fatalf("plan: %+v %v", p, err)
+	}
+	// The transcript is replaced between the plan and the fork: the cut no
+	// longer ends a line, and nothing is written.
+	writeFile(t, transcriptPath(a, "proj", id1), "x"+read+later, time.Time{})
+	if _, err := Fork(p, nil); err == nil || !strings.Contains(err.Error(), "fork stopped") {
+		t.Fatalf("fork after the transcript changed: %v", err)
+	}
+	if _, err := os.Lstat(transcriptPath(b, "proj", id2)); err == nil {
+		t.Fatal("a stale fork was written")
+	}
+	writeFile(t, transcriptPath(a, "proj", id1), read+later, time.Time{})
+	if _, err := Fork(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readStr(t, transcriptPath(b, "proj", id2)); got != strings.ReplaceAll(read, id1, id2) {
+		t.Fatalf("forked transcript = %q", got)
 	}
 }
 
@@ -1012,5 +1139,75 @@ func TestCompleteLines(t *testing.T) {
 		if err != nil || got != c.want {
 			t.Fatalf("completeLines(%d bytes) = %d, %v; want %d", len(c.content), got, err, c.want)
 		}
+	}
+}
+
+// A target that changed after ccli looked at it is not replaced: a Claude
+// Code process that resumed the session there would lose its new lines.
+func TestCopyLeavesAChangedTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src.jsonl"), filepath.Join(dir, "dst.jsonl")
+	writeFile(t, src, "a\nb\nc\n", time.Time{})
+	writeFile(t, dst, "a\n", time.Now().Add(-time.Hour))
+	before, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unchangedSince(dst, before); err != nil {
+		t.Fatalf("unchanged target reported: %v", err)
+	}
+	// The process appends while the copy is being written.
+	err = copyRegularIf(src, dst, func() error {
+		f, err := os.OpenFile(dst, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		f.WriteString("new\n")
+		f.Close()
+		return unchangedSince(dst, before)
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed while ccli was copying") {
+		t.Fatalf("copy over a changed target: %v", err)
+	}
+	if got := readStr(t, dst); got != "a\nnew\n" {
+		t.Fatalf("target = %q, want the process's lines kept", got)
+	}
+	if ents, _ := filepath.Glob(filepath.Join(dir, ".ccli-tmp-*")); len(ents) != 0 {
+		t.Fatalf("temporary files left: %v", ents)
+	}
+	// A target that appears during a create is left alone too.
+	gone := filepath.Join(dir, "new.jsonl")
+	if err := copyRegularIf(src, gone, func() error {
+		writeFile(t, gone, "theirs\n", time.Time{})
+		return unchangedSince(gone, nil)
+	}); err == nil || readStr(t, gone) != "theirs\n" {
+		t.Fatalf("copy over a file that appeared: %v", err)
+	}
+}
+
+// Where a restore cannot hard-link, it copies into a file it creates only
+// if none exists, so a transcript written since the check is kept.
+func TestCopyExclusiveKeepsANewFile(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "archived.jsonl"), filepath.Join(dir, "restored.jsonl")
+	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	writeFile(t, src, "archived\n", old)
+	st, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dst, "written since\n", time.Time{})
+	if err := copyExclusive(src, dst, st); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("copy onto an existing file: %v", err)
+	}
+	if readStr(t, dst) != "written since\n" {
+		t.Fatal("the new file was replaced")
+	}
+	os.Remove(dst)
+	if err := copyExclusive(src, dst, st); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Lstat(dst); readStr(t, dst) != "archived\n" || !got.ModTime().Equal(old) {
+		t.Fatalf("restored %q at %v", readStr(t, dst), got.ModTime())
 	}
 }

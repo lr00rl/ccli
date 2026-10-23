@@ -221,9 +221,9 @@ Usage:
   ccli diff <a> <b>                  sessions only in a, only in b, identical, ahead or diverged
   ccli copy|move <id>... --to <acct> copy a session (move also archives and removes the source)
   ccli copy|move --from a --to b     batch, dry run unless --apply
-  ccli fork <id> --to <acct>         continue a session under a new id, in any account
+  ccli fork <id> -a <acct> [--turn N] continue a session under a new id, from its end or from turn N
   ccli resume <id>                   run claude --resume in the session's account and folder
-  ccli resume <id> -a <acct> --sync  resume in another account, bringing its copy up to date first
+  ccli resume <id> -a <acct>         resume in an account, bringing its copy up to date first
   ccli hide|unhide <id>...           leave sessions out of lists, or bring them back (totals still count them)
   ccli tag <id> <tag>                label a session in ccli, shown next to its title (--clear removes it)
   ccli clean [flags]                 set aside empty sessions after asking (--undo <stamp> puts them back)

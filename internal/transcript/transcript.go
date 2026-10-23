@@ -615,6 +615,37 @@ func (p *parser) assistant(l line, ts int64) {
 	res.Responses = append(res.Responses, r)
 }
 
+// turnPrompt returns the prompt a user line of the main conversation starts
+// a turn with, and its kind; ok is false for a line that starts no turn
+// (tool results, meta lines, compaction summaries, sidechains).
+func turnPrompt(l line, c json.RawMessage) (text string, images int, kind string, ok bool) {
+	if l.IsMeta || l.IsCompactSummary || l.IsSidechain {
+		return "", 0, "", false
+	}
+	if text, images, ok = promptText(c); !ok {
+		return "", 0, "", false
+	}
+	kind = promptKind(l, text)
+	return text, images, kind, kind != ""
+}
+
+// StartsTurn reports whether a Claude Code transcript line is a prompt that
+// starts a turn of the main conversation, by the rule the parser numbers
+// turns with. It cannot tell a replayed prompt from a new one; that takes
+// the prompt ids of the turns before it.
+func StartsTurn(raw []byte) bool {
+	var l line
+	if json.Unmarshal(raw, &l) != nil || l.Type != "user" {
+		return false
+	}
+	var m userMsg
+	if json.Unmarshal(l.Message, &m) != nil || len(m.Content) == 0 {
+		return false
+	}
+	_, _, _, ok := turnPrompt(l, bytes.TrimSpace(m.Content))
+	return ok
+}
+
 func (p *parser) user(l line, ts int64) {
 	var m userMsg
 	if json.Unmarshal(l.Message, &m) != nil || len(m.Content) == 0 {
@@ -637,15 +668,8 @@ func (p *parser) user(l line, ts int64) {
 		}
 		return
 	}
-	if l.IsSidechain {
-		return
-	}
-	text, images, ok := promptText(c)
+	text, images, kind, ok := turnPrompt(l, c)
 	if !ok {
-		return
-	}
-	kind := promptKind(l, text)
-	if kind == "" {
 		return
 	}
 	res := p.res

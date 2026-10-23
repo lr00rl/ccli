@@ -40,7 +40,7 @@ func (t Term) Diff(a, b string, rows []DiffRow, total int) {
 		}
 		id := query.ShortID(r.SessionID)
 		if r.Live {
-			id = t.paint(cLive, id+"●")
+			id = t.paint(cLive, id+" ●")
 		}
 		title := r.Title
 		if title == "" {
@@ -121,7 +121,12 @@ func (t Term) Plan(verb string, ops []transfer.Op, info map[string]query.Session
 	if verb == "move" {
 		extra = " Move puts each source in " + ShortHome(archive) + " instead of deleting it."
 	}
-	t.println(t.dim(fmt.Sprintf("Dry run: %d of %d sessions would %s. Add --apply to do it.%s", ready, len(ops), verb, extra)))
+	// Not dimmed: the table reads like a result, so say plainly that it is not.
+	past, ok := map[string]string{"copy": "copied", "move": "moved"}[verb]
+	if !ok {
+		past = "changed"
+	}
+	t.println(fmt.Sprintf("Dry run, nothing was %s: %d of %d sessions would %s. Add --apply to do it.", past, ready, len(ops), verb) + t.dim(extra))
 }
 
 // Results prints what copy or move did.
@@ -159,8 +164,9 @@ func (t Term) Results(verb string, rs []transfer.Result, info map[string]query.S
 	t.println(t.dim(fmt.Sprintf("%d of %d sessions %s.", done, len(rs), past)))
 }
 
-// ForkPlan prints what fork would do.
-func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
+// ForkPlan prints what fork would do. last is the turn a cut fork ends
+// with.
+func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow, last query.TurnRow) {
 	title := s.Title
 	if title == "" {
 		title = "(untitled)"
@@ -171,13 +177,34 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
 		return
 	}
 	t.printf("fork %s from %s into %s as a new session %s\n", query.ShortID(p.SessionID), p.From, p.To, query.ShortID(p.NewSessionID))
+	cut := p.Turn > 0 && p.Turn < p.Turns
+	switch {
+	case cut:
+		t.printf("  keeps the conversation through turn %d of %d, which began: %s\n", p.Turn, p.Turns, fit(last.Headline, max(20, t.Width-50)))
+		left := fmt.Sprintf("  leaves out turns %d to %d", p.Turn+1, p.Turns)
+		if p.Turn+1 == p.Turns {
+			left = fmt.Sprintf("  leaves out turn %d", p.Turns)
+		}
+		if p.Left > 0 {
+			left += " and " + plural(p.Left, "agent transcript") + " started in them"
+		}
+		t.println(t.dim(left))
+	case p.Turn > 0:
+		t.printf("  keeps the conversation through turn %d, the last one\n", p.Turn)
+		if p.Unread > 0 {
+			t.println(t.dim("  leaves out the last " + humanSize(p.Unread) + ", written after ccli read the transcript; run the command again to include it"))
+		}
+	}
 	writes := "a " + humanSize(p.Bytes) + " transcript"
 	if p.Folders > 0 {
 		writes += " and " + plural(p.Folders, "session folder")
 	}
 	t.println(t.dim("  writes " + writes + "; the original is not touched"))
 	t.println(t.dim("  usage already in the transcript stays with " + p.From + "; only new work counts toward " + p.To))
-	t.println(t.dim("Dry run. Add --apply to do it (a new id is drawn each time)."))
+	if cut {
+		t.println(t.warn(fmt.Sprintf("  only the conversation goes back to turn %d: files on disk stay as they are now, and the fork knows nothing of the changes made after that turn", p.Turn)))
+	}
+	t.println("Dry run, nothing was forked. Add --apply to do it" + t.dim(" (a new id is drawn each time)."))
 }
 
 // Forked prints what fork did and how to go on.
@@ -185,6 +212,9 @@ func (t Term) Forked(p transfer.ForkPlan, r transfer.Result) {
 	t.printf("%s forked %s → %s as %s, %d files written\n", t.money("✓"), p.From, p.To, p.NewSessionID, len(r.Written))
 	for _, c := range r.Conflicts {
 		t.printf("    %s %s\n", t.warn("left alone"), ShortHome(c))
+	}
+	if p.Turn > 0 && p.Turn < p.Turns {
+		t.println(t.warn(fmt.Sprintf("the fork's conversation ends at turn %d; files on disk were not changed", p.Turn)))
 	}
 	t.println(t.dim("continue it with: ccli resume " + query.ShortID(p.NewSessionID)))
 }
