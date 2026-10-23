@@ -15,15 +15,21 @@ import (
 // selects which sessions appear, the same way transcript totals do.
 // An IDE row that already has bubble tokens keeps them and only takes the
 // billed amount. A CLI row takes tokens and cost, because its transcript has
-// neither.
+// neither. A CLI row that is the IDE's copy of a composer takes nothing and
+// names the IDE account as where it came from.
 func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) {
+	for i := range rows {
+		if from := d.ideCopy(ctx, rows[i].Tool, rows[i].ID); from != "" && rows[i].CopiedFrom == "" {
+			rows[i].CopiedFrom = from
+		}
+	}
 	led := d.cursorLedger()
 	if led == nil || len(led.Sessions) == 0 {
 		return
 	}
 	kids := d.cursorChildren(ctx)
 	for i := range rows {
-		if rows[i].Tool != account.Cursor && rows[i].Tool != account.CursorIDE {
+		if !d.billedHere(ctx, rows[i].Tool, rows[i].ID) {
 			continue
 		}
 		rows[i].ownTokens, rows[i].ownCost = rows[i].Tokens, rows[i].Cost
@@ -69,7 +75,7 @@ func billedAdds(tool account.Tool, ownTokens Tokens, ownCost Cost, tokens Tokens
 
 func (d *DB) applyCursorDetail(ctx context.Context, det *SessionDetail) {
 	led := d.cursorLedger()
-	if led == nil || (det.Tool != account.Cursor && det.Tool != account.CursorIDE) {
+	if led == nil || !d.billedHere(ctx, det.Tool, det.ID) {
 		return
 	}
 	kids := d.cursorChildren(ctx)
@@ -180,6 +186,57 @@ func (d *DB) cursorChildren(ctx context.Context) map[string][]string {
 	return d.kids
 }
 
+// billedHere says whether a session's row carries its billed Cursor usage:
+// any Cursor row except the IDE's copy of a composer, so a conversation is
+// billed once.
+func (d *DB) billedHere(ctx context.Context, tool account.Tool, id string) bool {
+	if tool != account.Cursor && tool != account.CursorIDE {
+		return false
+	}
+	return d.ideCopy(ctx, tool, id) == ""
+}
+
+// ideCopy names the Cursor IDE account when a Cursor CLI session is a copy
+// of one of its composers. An IDE agent writes its transcript into
+// ~/.cursor/projects as the CLI does, under the composer's id, so the same
+// conversation turns up in both accounts. The IDE is where it lives and is
+// resumed; the copy has no chat store of its own.
+func (d *DB) ideCopy(ctx context.Context, tool account.Tool, id string) string {
+	if tool != account.Cursor {
+		return ""
+	}
+	d.ideOnce.Do(func() {
+		d.ideIDs = map[string]string{}
+		var names []any
+		marks := ""
+		for _, a := range d.accts {
+			if a.Kind() == account.CursorIDE {
+				names = append(names, a.Name)
+				marks += ",?"
+			}
+		}
+		if len(names) == 0 {
+			return
+		}
+		// A subagent composer counts too: its copy can be a CLI session of
+		// its own when no chat store says whose subagent it is.
+		in := marks[1:]
+		rows, err := d.sql().QueryContext(ctx, `SELECT account, session_id FROM files WHERE account IN (`+in+`)
+			UNION SELECT account, agent_id FROM files WHERE account IN (`+in+`) AND agent_id <> ''`, append(names, names...)...)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var acct, sid string
+			if rows.Scan(&acct, &sid) == nil && d.ideIDs[sid] == "" {
+				d.ideIDs[sid] = acct
+			}
+		}
+	})
+	return d.ideIDs[id]
+}
+
 // addCursorAccountUsage adds billed Cursor usage onto account totals, and
 // only the events inside the filter, under the rule in billedAdds. IDE token
 // rows are already in the SQL sum, which is why billedAdds never adds a
@@ -196,7 +253,7 @@ func (d *DB) addCursorAccountUsage(ctx context.Context, f Filter, out []AccountS
 	kids := d.cursorChildren(ctx)
 	for _, s := range rows {
 		i, ok := idx[s.Account]
-		if !ok || (s.Tool != account.Cursor && s.Tool != account.CursorIDE) {
+		if !ok || !d.billedHere(ctx, s.Tool, s.ID) {
 			continue
 		}
 		u := usageOf(led, s.ID, kids[s.ID], f.Since, f.Until)
@@ -225,7 +282,7 @@ func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Ov
 	since, until := o.Filter.Since, o.Filter.Until
 	for i := range sessions {
 		s := &sessions[i]
-		if s.Tool != account.Cursor && s.Tool != account.CursorIDE {
+		if !d.billedHere(ctx, s.Tool, s.ID) {
 			continue
 		}
 		k := skey{s.Account, s.ID}

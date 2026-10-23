@@ -257,6 +257,14 @@ is filed under `subagentInfo.rootParentConversationId`. Some bubbles carry
 chat from the CLI can rewrite a transcript, so `show` says to open it from
 the Agents window. A composer is re-read when its `lastUpdatedAt` changes.
 
+An IDE agent writes its transcript into `~/.cursor/projects` too, under the
+composer's id and with no chat store in `~/.cursor/chats`, so the Cursor CLI
+scan finds it. Both rows stay listed. A `cursor` session whose id is a
+session or subagent id in a `cursor-ide` account is the IDE's copy: its
+`copied_from` names that account and it takes no billed usage, so the list,
+account totals, `stats` and `show` bill the conversation once, on the IDE
+row (`billedHere` in `internal/query/cursor_use.go`).
+
 ## Relationships
 
 ccli builds a session graph from these sources:

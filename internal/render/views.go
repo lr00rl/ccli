@@ -319,6 +319,9 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	if d.Cost.Unlogged > 0 {
 		cost += t.dim(fmt.Sprintf(" (includes %s of calls Claude Code billed but did not write to the transcript)", USD(d.Cost.Unlogged)))
 	}
+	if d.Tool == account.Cursor && d.CopiedFrom != "" {
+		cost = t.dim(fmt.Sprintf("billed in %s: this transcript is the copy a Cursor IDE agent wrote, and the IDE holds the conversation", d.CopiedFrom))
+	}
 	kv("cost", cost)
 	if d.Team != "" {
 		kv("team", d.Team+agentSuffix(d.AgentName))

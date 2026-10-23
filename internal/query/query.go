@@ -180,6 +180,8 @@ type DB struct {
 	use      *cursorusage.Ledger
 	kidOnce  sync.Once
 	kids     map[string][]string
+	ideOnce  sync.Once
+	ideIDs   map[string]string // session and subagent ids in Cursor IDE accounts, to the account
 }
 
 // CacheSessions makes Session keep what it loads for the life of the DB, so

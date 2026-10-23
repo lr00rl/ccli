@@ -582,6 +582,12 @@ the parent session. Where an IDE bubble already has a token count, that
 count is kept. The dollars still come from the usage page when the transcript
 recorded none.
 
+A Cursor IDE agent also writes its transcript into `~/.cursor/projects`, under
+the composer's id, so the same conversation shows up in `cursor` as well as
+in `cursor-ide`. ccli bills it once, on the `cursor-ide` row, where the
+conversation lives. The `cursor` row reads `cursor ← cursor-ide`, costs
+nothing, and `show` says the bill is in `cursor-ide`.
+
 ## What it touches
 
 ccli reads transcripts and keeps its own index in
