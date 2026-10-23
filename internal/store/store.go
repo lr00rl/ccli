@@ -479,17 +479,8 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 		f.Parser = 0
 	}
 	if u.Reset {
-		for _, q := range []string{
-			"DELETE FROM responses WHERE file_id = ?",
-			"DELETE FROM activity WHERE file_id = ?",
-			"DELETE FROM tools WHERE file_id = ?",
-			"DELETE FROM links WHERE file_id = ?",
-			"DELETE FROM processes WHERE file_id = ?",
-			"DELETE FROM snapshots WHERE file_id = ?",
-			"DELETE FROM spawns WHERE file_id = ?",
-			"DELETE FROM turns WHERE file_id = ?",
-		} {
-			if _, err := tx.ExecContext(ctx, q, f.ID); err != nil {
+		for _, table := range readTables {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id = ?`, f.ID); err != nil {
 				return err
 			}
 		}
@@ -747,10 +738,64 @@ func (s *Store) MarkMissing(ctx context.Context, ids []int64, missing bool) erro
 }
 
 // MovePath gives a file's row the path its tool moved the file to (Codex
-// moves a thread it archives), so what the index read of it stays with it.
-func (s *Store) MovePath(ctx context.Context, id int64, path string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE files SET path = ? WHERE id = ?", path, id)
-	return err
+// moves a thread it archives, Claude Code a session that enters or leaves a
+// worktree), so what the index read of it stays with it. A project key that
+// is not empty replaces the row's. The transfer ledger follows too: the
+// byte ranges ccli copied in are the same in the moved file.
+func (s *Store) MovePath(ctx context.Context, id int64, path, projectKey string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var was string
+	if err := tx.QueryRowContext(ctx, "SELECT path FROM files WHERE id = ?", id).Scan(&was); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE files SET path = ?, project_key = CASE WHEN ? <> '' THEN ? ELSE project_key END WHERE id = ?",
+		path, projectKey, projectKey, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE transfers SET path = ? WHERE path = ?", path, was); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DropCopy removes the row of a file that turned out to be an older copy of
+// the transcript at keep, with every row read from it, and sets keep to be
+// read again from the start, so it takes back the replies the copy held.
+// Both happen in one transaction: a run stopped after it still re-reads
+// keep. The transfer ledger moves to keep.
+func (s *Store) DropCopy(ctx context.Context, id int64, keep string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var path, account, session string
+	if err := tx.QueryRowContext(ctx, "SELECT path, account, session_id FROM files WHERE id = ?", id).Scan(&path, &account, &session); err != nil {
+		return err
+	}
+	for _, table := range readTables {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id = ?`, id); err != nil {
+			return err
+		}
+	}
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{"DELETE FROM files WHERE id = ?", []any{id}},
+		{"UPDATE files SET parser = 0 WHERE path = ?", []any{keep}},
+		{"UPDATE transfers SET path = ? WHERE path = ?", []any{keep, path}},
+		{"INSERT OR IGNORE INTO dirty(account, session_id) VALUES(?, ?)", []any{account, session}},
+	} {
+		if _, err := tx.ExecContext(ctx, q.sql, q.args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Run is a workflow run: counts from its journal, and what its state file

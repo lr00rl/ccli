@@ -95,6 +95,7 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 		var found []discovered
 		var rs []store.Run
 		var moves []moved
+		var stale []staleCopy
 		switch a.Kind() {
 		case account.Codex:
 			found, moves, err = scanCodex(a, known)
@@ -116,14 +117,29 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 			}
 			continue
 		}
+		if a.Kind() == account.Claude {
+			moves, stale = claudeMoves(a.Name, found, known)
+		}
 		for _, m := range moves {
-			if err := st.MovePath(ctx, m.ID, m.To); err != nil {
+			if err := st.MovePath(ctx, m.ID, m.To, m.Key); err != nil {
 				return stats, err
 			}
 			f := known[m.From]
 			delete(known, m.From)
 			f.Path = m.To
+			if m.Key != "" {
+				f.ProjectKey = m.Key
+			}
 			known[m.To] = f
+		}
+		for _, c := range stale {
+			if err := st.DropCopy(ctx, c.ID, c.Keep); err != nil {
+				return stats, err
+			}
+			delete(known, c.Path)
+			k := known[c.Keep]
+			k.Parser = 0 // read again from the start, as DropCopy set it
+			known[c.Keep] = k
 		}
 		runs = append(runs, rs...)
 		for _, d := range found {
