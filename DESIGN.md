@@ -342,7 +342,20 @@ so one file can be re-parsed without touching others.
 - `meta`: schema version, price table hash, reconciliation version.
 
 Rows are never deleted when Claude Code deletes a transcript: the file is
-marked missing and its history stays. The schema only grows: new columns are
+marked missing and its history stays. A moved transcript is not a deleted
+one. When a session enters or leaves a worktree (`EnterWorktree`,
+`ExitWorktree`, `claude --worktree`), Claude Code moves its transcript
+between the two folders' project directories under the same name. A file
+whose account, session, kind and agent match a vanished row, and that starts
+with the bytes the row read (its head hash, at most the row's offset), is
+that transcript: at a path the index does not know, the row takes the new
+path and project key and keeps what it read; at a path that already has a
+row (the transcript went back, and ccli saw both), the vanished row is a
+stale copy, so `DropCopy` removes it and the kept file is read again from
+the start, in one transaction. Either way the transfer ledger follows the
+file. Before this, such a session showed the stale copy as its transcript,
+"gone from disk", and counted its prompts twice (`claudeMoves` in
+`internal/index/moved.go`). The schema only grows: new columns are
 added to existing tables in place (`columns` in `store.go`). A database with
 another schema version is renamed aside, never dropped, but that would lose
 the history of deleted transcripts from the live index, so the version is not

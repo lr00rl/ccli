@@ -135,10 +135,11 @@ func scanCodex(a account.Account, known map[string]store.File) ([]discovered, []
 	return found, moves, nil
 }
 
-// moved is a file its tool moved: the row known at From now names To.
+// moved is a file its tool moved: the row known at From now names To, and
+// the project key Key when it is not empty.
 type moved struct {
-	ID       int64
-	From, To string
+	ID            int64
+	From, To, Key string
 }
 
 // thread is the Codex thread a file row holds.
