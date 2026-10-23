@@ -295,7 +295,6 @@ func RangeDays(n int, loc *time.Location) (time.Time, time.Time) {
 	return start, time.Time{}
 }
 
-// sessionModels lists each session's models, costliest first.
 // copiedFrom maps a session in an account to the account the newest copy or
 // move into it came from. A fork is left out: it gets a new id.
 func (d *DB) copiedFrom(ctx context.Context) (map[skey]string, error) {
@@ -316,6 +315,7 @@ func (d *DB) copiedFrom(ctx context.Context) (map[skey]string, error) {
 	return out, rows.Err()
 }
 
+// sessionModels lists each session's models, costliest first.
 func (d *DB) sessionModels(ctx context.Context, only *skey) (map[skey][]string, error) {
 	const q = `SELECT account, session_id, model FROM responses %s
 		GROUP BY account, session_id, model ORDER BY account, session_id, SUM(COALESCE(cost, 0)) DESC`
@@ -358,9 +358,10 @@ func (d *DB) Usage(ctx context.Context, acct string, since time.Time) (Tokens, C
 	var t Tokens
 	var c Cost
 	err := d.sql().QueryRowContext(ctx, `SELECT COALESCE(SUM(input), 0), COALESCE(SUM(output), 0), COALESCE(SUM(cache_read), 0),
-		COALESCE(SUM(cache_5m + cache_1h), 0), COALESCE(SUM(COALESCE(cost, 0)), 0),
-		COALESCE(SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), 0)
+		COALESCE(SUM(cache_5m + cache_1h), 0), COALESCE(SUM(web_search), 0), COALESCE(SUM(COALESCE(cost, 0)), 0),
+		COALESCE(SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), 0),
+		COALESCE(SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END), 0)
 		FROM responses WHERE account = ? AND ts >= ?`, acct, since.UnixMilli()).
-		Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &c.USD, &c.Unpriced)
+		Scan(&t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &t.WebSearch, &c.USD, &c.Unpriced, &c.Unlogged)
 	return t, c, err
 }

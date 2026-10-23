@@ -122,7 +122,10 @@ func (t Term) Plan(verb string, ops []transfer.Op, info map[string]query.Session
 		extra = " Move puts each source in " + ShortHome(archive) + " instead of deleting it."
 	}
 	// Not dimmed: the table reads like a result, so say plainly that it is not.
-	past := map[string]string{"copy": "copied", "move": "moved"}[verb]
+	past, ok := map[string]string{"copy": "copied", "move": "moved"}[verb]
+	if !ok {
+		past = "changed"
+	}
 	t.println(fmt.Sprintf("Dry run, nothing was %s: %d of %d sessions would %s. Add --apply to do it.", past, ready, len(ops), verb) + t.dim(extra))
 }
 

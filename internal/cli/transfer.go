@@ -423,16 +423,16 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 	if err != nil {
 		return err
 	}
-	info, err := sessionInfo(ctx, svc, src.Name)
-	if err != nil {
-		return err
-	}
 	t := a.term(c)
 	if !*apply {
 		if c.json {
 			return a.printJSON(p)
 		}
-		t.ForkPlan(p, info[src.Name+"/"+id], last)
+		det, err := svc.Session(ctx, src.Name+":"+id)
+		if err != nil {
+			return err
+		}
+		t.ForkPlan(p, det.SessionRow, last)
 		return nil
 	}
 	l := a.ledger(ctx, "fork", id, newID, src.Name, dst.Name)

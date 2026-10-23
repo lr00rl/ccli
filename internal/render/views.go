@@ -181,7 +181,13 @@ func (t Term) sessionDetails(p query.SessionPage, showAccount bool) {
 			where += "  " + s.Cwd
 		}
 		if showAccount {
-			where = t.accountCell(s) + "  " + where
+			// Plain text: the line is dimmed as a whole, and a dimmed
+			// account cell inside it would end the dim early.
+			acct := s.Account
+			if s.CopiedFrom != "" {
+				acct += " ← " + s.CopiedFrom
+			}
+			where = acct + "  " + where
 		}
 		t.println("  " + t.dim(where))
 		t.printf("  %s · active %s · %d prompts · %d tool calls · %d subagents\n",

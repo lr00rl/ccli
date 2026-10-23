@@ -465,7 +465,7 @@ ccli diff <a> <b> [--project p]    sessions only in a, only in b, identical, ahe
 ccli copy <id>... --to acct        copy sessions (fast-forward only)
 ccli move <id>... --to acct        copy, then archive and remove the source
 ccli copy|move --from a --to b [--project p] [--include missing,ahead] [--days N]   batch
-ccli fork <id> --to acct [--from acct]   copy under a new session id
+ccli fork <id> -a acct [--turn N] [--from acct]   copy under a new session id, whole or through turn N
 ccli resume <id> [-a acct [--no-sync]] [--print]   run claude --resume (or codex resume) with the right account and cwd
 ccli hide <id>... / unhide <id>...   leave sessions out of lists, or bring them back
 ccli clean [-a acct] [--dir folder] [--tool t] [--unanswered] [--idle 1h] [--apply]   set aside empty sessions
@@ -474,7 +474,9 @@ ccli tag <id> <tag> / --clear       label a session in ccli, or remove the label
 ccli index [--rebuild]
 ```
 
-Global flags: `--json`, `--no-index`, `--color auto|always|never`.
+Every command takes `--json`, `--no-index` and `--color auto|always|never`
+after its name (`ccli accounts --json`). Only `--debug` and `--verbose` may
+also come before the command.
 
 ## Hiding sessions
 
