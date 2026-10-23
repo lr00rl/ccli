@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,8 +26,25 @@ type ForkPlan struct {
 	To           string `json:"to"`
 	Bytes        int64  `json:"bytes"`   // transcript bytes to write
 	Folders      int    `json:"folders"` // session folders copied along
-	Reason       string `json:"reason,omitempty"`
-	from, to     account.Account
+	// Turn is the last turn the fork keeps, of Turns; 0 when it keeps the
+	// whole conversation. Left counts the agent transcripts left out.
+	Turn   int    `json:"turn,omitempty"`
+	Turns  int    `json:"turns,omitempty"`
+	Left   int    `json:"agents_left_out,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	from   account.Account
+	to     account.Account
+	cut    Cut
+}
+
+// Cut ends a fork at a turn: the transcript up to the prompt of the turn
+// after it, without the transcripts of agents started later. The zero Cut
+// keeps everything.
+type Cut struct {
+	Turn  int      // last turn kept
+	Turns int      // turns in the session
+	Upto  int64    // transcript bytes kept: where the next turn's prompt starts; 0 = all
+	Leave []string // agent transcripts (absolute paths) to leave out
 }
 
 // NewID returns a random (version 4) session id.
@@ -42,9 +60,11 @@ func NewID() (string, error) {
 
 // PlanFork decides what forking the session from one account into another
 // (or the same one) would write. A running session can be forked: only its
-// complete lines are copied, and the copy gets its own id.
-func PlanFork(sessionID string, from, to account.Account, newID string) (ForkPlan, error) {
-	p := ForkPlan{SessionID: sessionID, NewSessionID: newID, From: from.Name, To: to.Name, from: from, to: to}
+// complete lines are copied, and the copy gets its own id. A non-zero cut
+// ends the copy at a turn.
+func PlanFork(sessionID string, from, to account.Account, newID string, cut Cut) (ForkPlan, error) {
+	p := ForkPlan{SessionID: sessionID, NewSessionID: newID, From: from.Name, To: to.Name, from: from, to: to,
+		Turn: cut.Turn, Turns: cut.Turns, cut: cut}
 	if !validID(sessionID) || !validID(newID) {
 		p.Reason = reasonBadID
 		return p, nil
@@ -73,6 +93,18 @@ func PlanFork(sessionID string, from, to account.Account, newID string) (ForkPla
 	if p.Bytes, err = completeLines(src.Transcript, st.Size()); err != nil {
 		return ForkPlan{}, err
 	}
+	if cut.Upto > 0 {
+		ok, err := promptStart(src.Transcript, cut.Upto, p.Bytes)
+		if err != nil {
+			return ForkPlan{}, err
+		}
+		if !ok {
+			p.Reason = "the transcript does not match ccli's index at that turn; run ccli index and try again"
+			return p, nil
+		}
+		p.Bytes = cut.Upto
+	}
+	p.Left = len(cut.Leave)
 	p.Folders = len(src.sidecars())
 	if src.FileHistory != "" {
 		p.Folders++
@@ -100,8 +132,15 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 		return res, err
 	}
 	rw := idRewriter(p.SessionID, p.NewSessionID)
-	if err := forkFile(src.Transcript, dst.transcript, rw, &res); err != nil {
+	if err := forkFile(src.Transcript, dst.transcript, p.cut.Upto, rw, &res); err != nil {
 		return res, err
+	}
+	// An agent started after the cut belongs to the part left out; its
+	// .meta.json goes with it.
+	leave := map[string]bool{}
+	for _, path := range p.cut.Leave {
+		leave[path] = true
+		leave[strings.TrimSuffix(path, ".jsonl")+".meta.json"] = true
 	}
 	// Session folders: projects/<key>/<id>/ under each key, and file-history.
 	type tree struct{ from, to string }
@@ -129,7 +168,7 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 				res.Skipped = append(res.Skipped, path+symlinkMark)
 				return nil
 			}
-			if d.IsDir() || !d.Type().IsRegular() {
+			if d.IsDir() || !d.Type().IsRegular() || leave[path] {
 				return nil
 			}
 			rel, err := filepath.Rel(tr.from, path)
@@ -148,7 +187,7 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 				return nil
 			}
 			if strings.HasSuffix(path, ".jsonl") {
-				return forkFile(path, out, rw, &res)
+				return forkFile(path, out, 0, rw, &res)
 			}
 			if err := copyRegular(path, out); err != nil {
 				return err
@@ -179,8 +218,9 @@ func idRewriter(oldID, newID string) func([]byte) []byte {
 }
 
 // forkFile writes the complete lines of src to dst, rewritten, through a
-// temporary file, and records them as imported.
-func forkFile(src, dst string, rw func([]byte) []byte, res *Result) error {
+// temporary file, and records them as imported. A positive upto stops at
+// that offset, which is the start of a line.
+func forkFile(src, dst string, upto int64, rw func([]byte) []byte, res *Result) error {
 	if err := mkdirAll(filepath.Dir(dst)); err != nil {
 		return fmt.Errorf("fork %s: %w", dst, err)
 	}
@@ -202,10 +242,13 @@ func forkFile(src, dst string, rw func([]byte) []byte, res *Result) error {
 	}()
 	br := bufio.NewReaderSize(in, 1<<20)
 	bw := bufio.NewWriterSize(tmp, 1<<20)
-	var n int64
+	var n, read int64
 	for {
 		ln, err := br.ReadBytes('\n')
 		if err == nil {
+			if read += int64(len(ln)); upto > 0 && read > upto {
+				break
+			}
 			w, werr := bw.Write(rw(ln))
 			if werr != nil {
 				tmp.Close()
@@ -254,6 +297,36 @@ func forkFile(src, dst string, rw func([]byte) []byte, res *Result) error {
 		res.Imports = append(res.Imports, im)
 	}
 	return nil
+}
+
+// promptStart reports whether offset at, within the file's first complete
+// bytes, starts a line holding a user message, which is where every turn of
+// a Claude Code transcript begins. It checks that an offset from the index
+// still fits the file.
+func promptStart(path string, at, complete int64) (bool, error) {
+	if at <= 0 || at >= complete {
+		return false, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	var prev [1]byte
+	if _, err := f.ReadAt(prev[:], at-1); err != nil {
+		return false, err
+	}
+	if prev[0] != '\n' {
+		return false, nil
+	}
+	ln, err := bufio.NewReader(io.NewSectionReader(f, at, complete-at)).ReadBytes('\n')
+	if err != nil {
+		return false, err
+	}
+	var l struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(ln, &l) == nil && l.Type == "user", nil
 }
 
 // completeLines returns how many of a file's first size bytes end in a

@@ -320,26 +320,70 @@ then archives the source under `~/.local/share/ccli/archive/` instead of
 deleting it. Sessions whose working folder changed have folders under several
 project keys; all of them travel with the session.
 
-To keep working on one session from two accounts, switch with `resume`:
+To keep working on one session from two accounts, switch with `resume -a`.
+It first brings that account's copy up to date from the newer one, then
+starts Claude Code there:
 
 ```sh
-ccli resume 746cbfa4 -a default --sync    # bring default's copy up to date, then resume there
-# ... work in default, then later:
-ccli resume 746cbfa4 -a work --sync       # back to work, with what you did in default
+ccli resume 746cbfa4 -a work       # work gets what default added, then resumes
+# ... work in work, exit Claude Code, then later:
+ccli resume 746cbfa4 -a default    # back to default, with what you did in work
 ```
 
-Without `--sync`, `resume -a` tells you when that account's copy is behind
-and changes nothing. If both copies went on separately they have diverged,
-and ccli will not merge them: `resume -a` resumes that account's own copy and
-notes the other one. To continue the other copy here, fork it into a new
-session:
+ccli only appends to a copy that the newer one extends exactly, and it records
+what it appended. Add `--no-sync` to resume that account's copy only if it is
+already up to date. `--sync`, which older versions needed, is still accepted.
+
+Things that catch people out:
+
+- `copy`, `move` and `fork` only print a plan until you add `--apply`. A
+  copy you planned but did not apply is not in the target account, so
+  resuming it there finds nothing.
+- Exit Claude Code before switching. ccli will not copy a session while a
+  process is running it, and it tells you which account that process is in.
+- When Claude Code exits, it prints `claude --resume <id>`. That line leaves
+  out the account: run in a shell without `CLAUDE_CONFIG_DIR`, it opens the
+  default account's copy, which may be an old one. Continuing an old copy
+  splits the session in two. Use `ccli resume <id>` (the copy with the
+  latest activity) or `ccli resume <id> -a <account>` instead.
+- A copy starts at $0 with an empty MODEL column. Usage stays where it was
+  made; the copy counts only what you do in it.
+
+If both copies went on separately, they have diverged, and ccli will not
+merge them. They are two conversations with a shared beginning, and Claude
+Code loads one line of messages, so a merge could keep only one of them.
+`resume -a` resumes that account's own copy and notes the other one. To
+continue the other copy here, fork it into a new session:
 
 ```sh
-ccli fork d244741f --from work --to default --apply
+ccli fork d244741f --from work -a default --apply
 ```
 
 A fork copies the transcript and its folders under a new session id, so the
-copy and the original each go on.
+copy and the original each go on. `-a` names the account the fork goes into
+and continues in; it may be the session's own account.
+
+#### Fork from an earlier turn
+
+`--turn` ends the fork at a turn of the conversation, like Claude Code's
+`/rewind` but into a new session that the original keeps going beside. The
+turn numbers are the TURN column of `ccli log` (`--all` also lists the turns
+that tasks and other sessions started):
+
+```sh
+ccli log 746cbfa4                                  # find the turn to go back to
+ccli fork 746cbfa4 --turn 12 -a default            # plan: keeps turns 1 to 12
+ccli fork 746cbfa4 --turn 12 -a default --apply    # then: ccli resume <new id>
+```
+
+The fork keeps the conversation through turn 12, up to the prompt of turn
+13, and leaves out the transcripts of agents started after it. Without
+`--turn` the fork keeps the whole conversation.
+
+Only the conversation goes back. Files on disk stay as they are now: what
+the session changed after turn 12 is not undone, and the fork knows nothing
+about those changes. To roll back the code too, use git, or `/rewind` inside
+Claude Code, which can restore files it tracked.
 
 Usage stays with the account that made it, however often a session goes back
 and forth. ccli records every byte range it copies into an account, and a
@@ -428,8 +472,8 @@ the usage page, as [How it counts](#how-it-counts) describes.
 | `ccli quota` | current limits: Claude and Codex windows, Cursor's billing cycle; `--offline` shows the last saved ones |
 | `ccli diff <a> <b>` | sessions only in one account, in both, ahead or diverged |
 | `ccli copy\|move <id>... --to <acct>` | copy a session to another account; `move` archives the source |
-| `ccli fork <id> --to <acct>` | continue a session under a new id, in any account |
-| `ccli resume <id> [-a <acct> --sync]` | resume with that session's tool (`claude`, `codex`, `pi` or `agent`); `-a` is Claude Code only |
+| `ccli fork <id> -a <acct> [--turn N]` | continue a session under a new id, in any account, from its end or from turn N |
+| `ccli resume <id> [-a <acct>]` | resume with that session's tool (`claude`, `codex`, `pi` or `agent`); `-a` is Claude Code only |
 | `ccli hide\|unhide <id>...` | leave sessions out of lists, or bring them back; totals still count them |
 | `ccli tag <id> <tag>` | label a session, shown next to its title; `--clear` removes the tag |
 | `ccli clean` | set aside empty sessions after asking: Claude Code transcripts go to ccli's archive, others are hidden; `--undo <stamp>` puts them back |
@@ -511,7 +555,7 @@ usage before it asks. After a failed read it uses what it has and waits five
 minutes before asking again, and with no IDE login it does not ask at all. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
 `fork`, `statusline` and `index` do not ask Cursor.
 
-Only `copy`, `move`, `fork`, `resume --sync` and `clean` write into an
+Only `copy`, `move`, `fork`, `resume -a` and `clean` write into an
 account, and only the files of the session involved: `clean` moves an empty
 Claude Code transcript into ccli's archive, and `clean --undo` moves it back. `hide` and `tag` write only to ccli's
 own index. `export --out` writes only the path you give, never inside an

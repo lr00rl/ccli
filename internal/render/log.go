@@ -10,6 +10,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/conv"
 	"github.com/lr00rl/ccli/internal/query"
 )
@@ -127,6 +128,9 @@ func (t Term) Turns(l *query.TurnList, all bool) {
 		t.println(t.dim(fmt.Sprintf("%d turns started by tasks, other sessions or the system are hidden (--all shows them)", hidden)))
 	}
 	t.println(t.dim(fmt.Sprintf("ccli log %s <turn> prints a turn in full · ccli view %s browses them", id, id)))
+	if s.Tool == account.Claude {
+		t.println(t.dim(fmt.Sprintf("ccli fork %s --turn <turn> -a <account> continues the conversation from a turn as a new session", id)))
+	}
 }
 
 // Turn prints one turn in full.

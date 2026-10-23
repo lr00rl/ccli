@@ -161,8 +161,9 @@ func (t Term) Results(verb string, rs []transfer.Result, info map[string]query.S
 	t.println(t.dim(fmt.Sprintf("%d of %d sessions %s.", done, len(rs), past)))
 }
 
-// ForkPlan prints what fork would do.
-func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
+// ForkPlan prints what fork would do. last is the turn a cut fork ends
+// with.
+func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow, last query.TurnRow) {
 	title := s.Title
 	if title == "" {
 		title = "(untitled)"
@@ -173,12 +174,27 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow) {
 		return
 	}
 	t.printf("fork %s from %s into %s as a new session %s\n", query.ShortID(p.SessionID), p.From, p.To, query.ShortID(p.NewSessionID))
+	cut := p.Turn > 0 && p.Turn < p.Turns
+	if cut {
+		t.printf("  keeps the conversation through turn %d of %d, which began: %s\n", p.Turn, p.Turns, fit(last.Headline, max(20, t.Width-50)))
+		left := fmt.Sprintf("  leaves out turns %d to %d", p.Turn+1, p.Turns)
+		if p.Turn+1 == p.Turns {
+			left = fmt.Sprintf("  leaves out turn %d", p.Turns)
+		}
+		if p.Left > 0 {
+			left += " and " + plural(p.Left, "agent transcript") + " started in them"
+		}
+		t.println(t.dim(left))
+	}
 	writes := "a " + humanSize(p.Bytes) + " transcript"
 	if p.Folders > 0 {
 		writes += " and " + plural(p.Folders, "session folder")
 	}
 	t.println(t.dim("  writes " + writes + "; the original is not touched"))
 	t.println(t.dim("  usage already in the transcript stays with " + p.From + "; only new work counts toward " + p.To))
+	if cut {
+		t.println(t.warn(fmt.Sprintf("  only the conversation goes back to turn %d: files on disk stay as they are now, and the fork knows nothing of the changes made after that turn", p.Turn)))
+	}
 	t.println("Dry run, nothing was forked. Add --apply to do it" + t.dim(" (a new id is drawn each time)."))
 }
 
@@ -187,6 +203,9 @@ func (t Term) Forked(p transfer.ForkPlan, r transfer.Result) {
 	t.printf("%s forked %s → %s as %s, %d files written\n", t.money("✓"), p.From, p.To, p.NewSessionID, len(r.Written))
 	for _, c := range r.Conflicts {
 		t.printf("    %s %s\n", t.warn("left alone"), ShortHome(c))
+	}
+	if p.Turn > 0 && p.Turn < p.Turns {
+		t.println(t.warn(fmt.Sprintf("the fork's conversation ends at turn %d; files on disk were not changed", p.Turn)))
 	}
 	t.println(t.dim("continue it with: ccli resume " + query.ShortID(p.NewSessionID)))
 }

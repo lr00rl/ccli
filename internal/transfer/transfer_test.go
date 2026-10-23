@@ -955,7 +955,7 @@ func TestForkRewritesIDAndSkipsPartialLine(t *testing.T) {
 	writeFile(t, filepath.Join(a.Dir, "projects", "proj", id1, "subagents", "agent-x.meta.json"), `{"agentType":"x"}`, time.Time{})
 	writeFile(t, filepath.Join(a.Dir, "file-history", id1, "snap"), "s", time.Time{})
 
-	p, err := PlanFork(id1, a, b, id2)
+	p, err := PlanFork(id1, a, b, id2, Cut{})
 	if err != nil || p.Reason != "" || p.Folders != 2 {
 		t.Fatalf("plan: %+v %v", p, err)
 	}
@@ -982,11 +982,62 @@ func TestForkRewritesIDAndSkipsPartialLine(t *testing.T) {
 	if src, _ := os.ReadFile(transcriptPath(a, "proj", id1)); string(src) != full+partial {
 		t.Fatalf("source changed")
 	}
-	if p2, _ := PlanFork(id1, a, b, id2); p2.Reason == "" {
+	if p2, _ := PlanFork(id1, a, b, id2, Cut{}); p2.Reason == "" {
 		t.Fatalf("a second fork to the same id was not refused")
 	}
 	if id, err := NewID(); err != nil || !validID(id) {
 		t.Fatalf("NewID = %q %v", id, err)
+	}
+}
+
+// A fork cut at a turn keeps the transcript up to the next turn's prompt and
+// leaves out the agents started after it, with their .meta.json.
+func TestForkCutAtTurn(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "default")
+	b := makeAcct(t, root, "work")
+	turn1 := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"one"}}` + "\n" +
+		`{"type":"assistant","sessionId":"` + id1 + `","message":{"content":"reply one"}}` + "\n"
+	turn2 := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"two"}}` + "\n"
+	writeFile(t, transcriptPath(a, "proj", id1), turn1+turn2, time.Time{})
+	subs := filepath.Join(a.Dir, "projects", "proj", id1, "subagents")
+	writeFile(t, filepath.Join(subs, "agent-early.jsonl"), `{"session_id":"`+id1+`"}`+"\n", time.Time{})
+	writeFile(t, filepath.Join(subs, "agent-late.jsonl"), `{"session_id":"`+id1+`"}`+"\n", time.Time{})
+	writeFile(t, filepath.Join(subs, "agent-late.meta.json"), `{"agentType":"x"}`, time.Time{})
+
+	// An offset that is not the start of a line means the index is stale.
+	if p, err := PlanFork(id1, a, b, id2, Cut{Turn: 1, Turns: 2, Upto: int64(len(turn1)) - 3}); err != nil || p.Reason == "" {
+		t.Fatalf("a cut inside a line was not refused: %+v %v", p, err)
+	}
+	// So does one that starts a line that is not a prompt.
+	firstLine := int64(strings.Index(turn1, "\n") + 1)
+	if p, err := PlanFork(id1, a, b, id2, Cut{Turn: 1, Turns: 2, Upto: firstLine}); err != nil || p.Reason == "" {
+		t.Fatalf("a cut at a reply line was not refused: %+v %v", p, err)
+	}
+	cut := Cut{Turn: 1, Turns: 2, Upto: int64(len(turn1)), Leave: []string{filepath.Join(subs, "agent-late.jsonl")}}
+	p, err := PlanFork(id1, a, b, id2, cut)
+	if err != nil || p.Reason != "" || p.Bytes != int64(len(turn1)) || p.Turn != 1 || p.Left != 1 {
+		t.Fatalf("plan: %+v %v", p, err)
+	}
+	res, err := Fork(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(transcriptPath(b, "proj", id2))
+	if want := strings.ReplaceAll(turn1, id1, id2); string(got) != want {
+		t.Fatalf("forked transcript = %q, want %q", got, want)
+	}
+	newSubs := filepath.Join(b.Dir, "projects", "proj", id2, "subagents")
+	if !isRegular(filepath.Join(newSubs, "agent-early.jsonl")) {
+		t.Fatalf("an agent from before the cut was left out: %v", res.Written)
+	}
+	for _, f := range []string{"agent-late.jsonl", "agent-late.meta.json"} {
+		if _, err := os.Lstat(filepath.Join(newSubs, f)); err == nil {
+			t.Fatalf("%s from after the cut was copied", f)
+		}
+	}
+	if len(res.Imports) != 2 || res.Imports[0].To != int64(len(turn1)) && res.Imports[1].To != int64(len(turn1)) {
+		t.Fatalf("imports = %+v", res.Imports)
 	}
 }
 

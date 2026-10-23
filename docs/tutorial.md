@@ -395,29 +395,31 @@ session went on in work after default last saw it.
 ### Continue a session in the other account, and come back
 
 Say `746cbfa4` went on in work, and now you want to continue it in default.
-`resume -a` checks first:
+Exit Claude Code in work first, then:
 
 ```
 $ ccli resume 746cbfa4 -a default
-ccli: default has an older copy of 746cbfa4 than work. Add --sync to bring it up to date first, or resume it in work
-```
-
-With `--sync`, ccli extends default's copy with what work added (a
-fast-forward), then runs `claude --resume` in the session's folder under
-default:
-
-```
-$ ccli resume 746cbfa4 -a default --sync
 ccli: brought 746cbfa4 up to date in default from work (fast-forward)
 ```
 
-When you go back to work later, do the same the other way:
+`resume -a` extends default's copy with what work added, then runs
+`claude --resume` in the session's folder under default. It only appends to
+a copy that the newer one extends exactly, so nothing in default's copy is
+rewritten. When you go back to work later, do the same the other way:
 
 ```sh
-ccli resume 746cbfa4 -a work --sync
+ccli resume 746cbfa4 -a work
 ```
 
-Each sync appears in `ccli show` under "Copies between accounts":
+If default has no copy yet, the same command creates one. Add `--no-sync` to
+resume an account's copy only when it is already up to date:
+
+```
+$ ccli resume 746cbfa4 -a default --no-sync
+ccli: default has an older copy of 746cbfa4 than work. Leave out --no-sync to bring it up to date first, or resume it in work
+```
+
+Each copy appears in `ccli show` under "Copies between accounts":
 
 ```
 Copies between accounts
@@ -432,24 +434,112 @@ account it was copied into. A copy that has not done any new work yet shows
 $0, and its MODEL column stays empty until it makes its first call. In
 `ccli sessions` its account reads `default ← work`, naming where it came from.
 
-Add `--print` to see the command without running it, and `--fork` to resume
-into a new session id (Claude Code's `--fork-session`).
+Add `--print` to see the command without running it (with `-a`, the copy is
+still brought up to date, so the command opens the newest one), and `--fork`
+to resume into a new session id (Claude Code's `--fork-session`).
+
+### Pitfalls when switching accounts
+
+These are the mistakes that are easy to make, and what ccli says about them.
+
+**Planning a copy without applying it.** `copy`, `move` and `fork` print a
+table of what they would do and stop. The last line says
+`Dry run, nothing was copied`. Until you run the command again with
+`--apply`, the session is not in the target account, and
+`claude --resume <id>` there answers "No conversation found". You can skip
+`copy` entirely: `ccli resume <id> -a <account>` copies the session in as
+part of resuming it.
+
+**Switching while Claude Code still runs the session.** ccli does not copy a
+session that a process is running, because the transcript is still growing.
+It names the account:
+
+```
+ccli: 746cbfa4 is running in work; exit Claude Code there, then run this again to bring default's copy up to date
+```
+
+**Using the resume line Claude Code prints on exit.** When Claude Code exits
+it prints `Resume this session with: claude --resume <id>`. The line has no
+`CLAUDE_CONFIG_DIR`, so in a plain shell it opens the default account's copy
+of the session, even if you were working in another account. If that copy is
+older and you continue it, the two copies diverge, and ccli can no longer
+bring one up to date from the other. Resume through ccli instead:
+`ccli resume <id>` picks the copy with the latest activity, and
+`ccli resume <id> -a <account>` brings that account's copy up to date first.
+
+**Reading $0 as a missing session.** A fresh copy shows $0 and no model.
+That is usage staying in the account that spent it, not lost data; `ccli
+show` lists the turns, and the copy's own cost grows as you work in it.
 
 ### When both copies went on
 
 If you continued the session in both accounts without syncing, the copies
-have diverged and ccli will not merge them. `resume -a` resumes that
-account's own copy and tells you about the other one. To continue the other
-copy here as well, fork it into a new session:
+have diverged and ccli will not merge them. They are two conversations with
+a shared beginning, and Claude Code loads one line of messages, so a merged
+file could keep only one of them active. `resume -a` resumes that account's
+own copy and tells you about the other one. To continue the other copy here
+as well, fork it into a new session:
 
 ```
-$ ccli fork d244741f --from work --to default
+$ ccli fork d244741f --from work -a default
 Fix flaky cart total test around daylight saving
 fork d244741f from work into default as a new session 77ad76f7
   writes a 74K transcript; the original is not touched
   usage already in the transcript stays with work; only new work counts toward default
 Dry run, nothing was forked. Add --apply to do it (a new id is drawn each time).
 ```
+
+`-a` names the account the fork goes into and continues in, and it is
+required; it may be the session's own account. `--to` still works and means
+the same.
+
+### Fork from an earlier turn
+
+Sometimes a session went somewhere you did not want, and you would rather
+pick it up from an earlier point. `fork --turn` keeps the conversation
+through one turn and leaves the rest out, in a new session beside the
+original. Find the turn in `ccli log`:
+
+```
+$ ccli log 746cbfa4
+Why does the nightly export take forty minutes now?
+746cbfa4 · work · 25 prompts typed · $5.24
+
+ TURN  WHEN         TOOK   COST  TOOLS  AGENTS  PROMPT
+    1  10-21 15:01    2m  $0.21      5          Why does the nightly export take forty minutes now?
+    2  15:05          1m  $0.14      3          Try the simpler approach first.
+    3  15:30          1m  $0.17      3          Check how the other services call this endpoint.
+    4  15:35          2m  $0.27      4          Check how the other services call this endpoint.
+    5  15:41          1m  $0.16      3          That works. Clean up the naming and commit it.
+    6  15:44          2m  $0.17      3          Look at the failing test and find the cause before …
+```
+
+`ccli log` hides the turns that tasks and other sessions started; `--all`
+lists them, and their numbers work with `--turn` too. Then plan the fork:
+
+```
+$ ccli fork 746cbfa4 --turn 5 -a default
+Why does the nightly export take forty minutes now?
+fork 746cbfa4 from work into default as a new session 681ae78a
+  keeps the conversation through turn 5 of 25, which began: That works. Clean up the naming and commit it.
+  leaves out turns 6 to 25 and 1 agent transcript started in them
+  writes a 21K transcript and 1 session folder; the original is not touched
+  usage already in the transcript stays with work; only new work counts toward default
+  only the conversation goes back to turn 5: files on disk stay as they are now, and the fork knows nothing of the changes made after that turn
+Dry run, nothing was forked. Add --apply to do it (a new id is drawn each time).
+```
+
+Add `--apply` to write it, then `ccli resume <new id>` to continue. The fork
+keeps the transcript up to the prompt of the next turn, and leaves out the
+transcripts of agents started after the turn you chose. Without `--turn`, a
+fork keeps the whole conversation.
+
+Read the last line of the plan carefully. Only the conversation goes back.
+The files the session changed after that turn stay changed, and the fork's
+Claude does not know about those changes, so it may describe the code as it
+was. To roll the code back as well, use git, or `/rewind` inside Claude Code,
+which can restore the files it tracked. The original session is never
+touched, so you can always go back to it.
 
 ### Copy and move many sessions
 
