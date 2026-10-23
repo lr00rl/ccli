@@ -229,7 +229,13 @@ directory. A typed prompt is the text inside `<user_query>`. `resume` runs
 `agent --resume <id>`. Model, token and cost figures are not in the file.
 They are joined from Cursor's usage page by conversation id (the same id as
 the local session, and a subagent's own id rolled up to its parent) and
-cached in `cursor-usage.json` for 15 minutes. The access token Cursor stored
+cached in `cursor-usage.json` for 15 minutes. Each request to that service
+takes seconds, so the event list comes in pages of 1000 (the most it
+accepts), the pages after the first four at a time, and the billing cycle
+is asked for alongside it. A full read covers a year and runs once a week;
+in between, a read asks only from 48 hours before the newest cached event
+and replaces the cached events from then on, which also picks up late
+changes to recent ones. The access token Cursor stored
 for the IDE login is sent only to `api2.cursor.sh`. It is not written to the
 index or the cache. A failed read is saved with its time and not retried for
 five minutes, and a part that failed (the cycle or the event list) keeps
