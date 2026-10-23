@@ -1093,3 +1093,46 @@ func TestCompleteLines(t *testing.T) {
 		}
 	}
 }
+
+// A target that changed after ccli looked at it is not replaced: a Claude
+// Code process that resumed the session there would lose its new lines.
+func TestCopyLeavesAChangedTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src.jsonl"), filepath.Join(dir, "dst.jsonl")
+	writeFile(t, src, "a\nb\nc\n", time.Time{})
+	writeFile(t, dst, "a\n", time.Now().Add(-time.Hour))
+	before, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unchangedSince(dst, before); err != nil {
+		t.Fatalf("unchanged target reported: %v", err)
+	}
+	// The process appends while the copy is being written.
+	err = copyRegularIf(src, dst, func() error {
+		f, err := os.OpenFile(dst, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		f.WriteString("new\n")
+		f.Close()
+		return unchangedSince(dst, before)
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed while ccli was copying") {
+		t.Fatalf("copy over a changed target: %v", err)
+	}
+	if got := readStr(t, dst); got != "a\nnew\n" {
+		t.Fatalf("target = %q, want the process's lines kept", got)
+	}
+	if ents, _ := filepath.Glob(filepath.Join(dir, ".ccli-tmp-*")); len(ents) != 0 {
+		t.Fatalf("temporary files left: %v", ents)
+	}
+	// A target that appears during a create is left alone too.
+	gone := filepath.Join(dir, "new.jsonl")
+	if err := copyRegularIf(src, gone, func() error {
+		writeFile(t, gone, "theirs\n", time.Time{})
+		return unchangedSince(gone, nil)
+	}); err == nil || readStr(t, gone) != "theirs\n" {
+		t.Fatalf("copy over a file that appeared: %v", err)
+	}
+}

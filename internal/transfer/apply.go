@@ -301,7 +301,13 @@ func (o Options) now() time.Time {
 // directory, then renames it into place. The target is never truncated in place.
 // The copy keeps its own times: a copy must look newer than its original, since
 // the index gives a session's usage to the file created first.
-func copyRegular(src, dst string) error {
+func copyRegular(src, dst string) error { return copyRegularIf(src, dst, nil) }
+
+// copyRegularIf is copyRegular with a check that runs once the copy is on
+// disk, just before it replaces dst. When the check fails, dst is left as
+// it was. The rename is synced to the directory, so a later step that
+// removes a source never outlives the copy.
+func copyRegularIf(src, dst string, check func() error) error {
 	if err := mkdirAll(filepath.Dir(dst)); err != nil {
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
@@ -339,10 +345,49 @@ func copyRegular(src, dst string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
 	if err := os.Rename(tmpName, dst); err != nil {
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
 	done = true
+	if err := syncDir(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	return nil
+}
+
+// syncDir makes a change to a directory's entries durable: a rename into
+// it, a link, a new file or folder.
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+		return err // file systems that cannot sync a directory say so with these
+	}
+	return nil
+}
+
+// unchangedSince reports, as an error, that path is not the file it was
+// when before was taken (nil before: when it did not exist). A transcript
+// that changed since is being written by a process, and replacing it would
+// lose what that process added.
+func unchangedSince(path string, before os.FileInfo) error {
+	st, err := os.Lstat(path)
+	switch {
+	case before == nil && err == nil:
+		return fmt.Errorf("copy %s: it appeared while ccli was copying; nothing was replaced, run the command again", path)
+	case before == nil:
+		return nil
+	case err != nil || st.Size() != before.Size() || !st.ModTime().Equal(before.ModTime()):
+		return fmt.Errorf("copy %s: it changed while ccli was copying (has Claude Code resumed it?); nothing was replaced", path)
+	}
 	return nil
 }
 
@@ -579,12 +624,19 @@ func relocate(src, dst string) error {
 		if !errors.Is(err, syscall.EXDEV) {
 			return fmt.Errorf("archive %s: %w", src, err)
 		}
+		// copyEntry syncs every file and folder it makes before the
+		// source goes.
 		if err := copyEntry(src, dst); err != nil {
 			return err
 		}
 		if err := os.RemoveAll(src); err != nil {
 			return fmt.Errorf("remove %s: %w", src, err)
 		}
+	} else if err := syncDir(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("archive %s: %w", dst, err)
+	}
+	if err := syncDir(filepath.Dir(src)); err != nil {
+		return fmt.Errorf("archive %s: %w", src, err)
 	}
 	return nil
 }
@@ -659,15 +711,19 @@ func mkdirAll(path string) error {
 		}
 		return err
 	}
-	return os.Chmod(path, 0o700)
+	if err := os.Chmod(path, 0o700); err != nil {
+		return err
+	}
+	return syncDir(parent)
 }
 
 // copyTranscript copies src over dst (see copyRegular) and, for a
 // transcript (.jsonl), records the bytes the target did not have before.
 func copyTranscript(src, dst string, res *Result) error {
 	var before int64
+	var prev os.FileInfo
 	if st, err := os.Lstat(dst); err == nil && st.Mode().IsRegular() {
-		before = st.Size()
+		before, prev = st.Size(), st
 	}
 	jsonl := strings.HasSuffix(dst, ".jsonl")
 	var undo func()
@@ -678,7 +734,9 @@ func copyTranscript(src, dst string, res *Result) error {
 			}
 		}
 	}
-	if err := copyRegular(src, dst); err != nil {
+	// The plan saw dst at this size; a process that resumed the session in
+	// the target since would lose its new lines to the rename.
+	if err := copyRegularIf(src, dst, func() error { return unchangedSince(dst, prev) }); err != nil {
 		if undo != nil {
 			undo()
 		}

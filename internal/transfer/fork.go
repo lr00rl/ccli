@@ -292,6 +292,9 @@ func forkFile(src, dst string, upto int64, rw func([]byte) []byte, res *Result) 
 	}
 	os.Remove(name)
 	done = true
+	if err := syncDir(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("fork %s: %w", dst, err)
+	}
 	res.Written = append(res.Written, dst)
 	if jsonl {
 		res.Imports = append(res.Imports, im)
