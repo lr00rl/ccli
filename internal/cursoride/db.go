@@ -88,3 +88,45 @@ func fileURI(s string) string {
 	}
 	return p
 }
+
+// Composer is what a composer's header says about its state now.
+type Composer struct {
+	// ContextPercent is how full the model's context window is
+	// (contextUsagePercent); nil when the header has none.
+	ContextPercent *float64 `json:"context_used_percent,omitempty"`
+	// LinesAdded, LinesRemoved and FilesChanged are Cursor's own count of
+	// the chat's changes. Some chats that edited files read zero here.
+	LinesAdded   int `json:"lines_added"`
+	LinesRemoved int `json:"lines_removed"`
+	FilesChanged int `json:"files_changed"`
+}
+
+// ReadComposer reads the header of one composer. path is "<db>#<composerId>".
+func ReadComposer(path string) (Composer, error) {
+	var c Composer
+	dbPath, id, ok := Split(path)
+	if !ok {
+		return c, os.ErrNotExist
+	}
+	gate.Lock()
+	defer gate.Unlock()
+	db, err := open(dbPath)
+	if err != nil {
+		return c, err
+	}
+	defer db.Close()
+	var raw []byte
+	if err := db.QueryRow(`SELECT value FROM composerHeaders WHERE composerId = ?`, id).Scan(&raw); err != nil {
+		return c, err
+	}
+	var v struct {
+		Context *float64 `json:"contextUsagePercent"`
+		Added   int      `json:"totalLinesAdded"`
+		Removed int      `json:"totalLinesRemoved"`
+		Files   int      `json:"filesChangedCount"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return c, err
+	}
+	return Composer{ContextPercent: v.Context, LinesAdded: v.Added, LinesRemoved: v.Removed, FilesChanged: v.Files}, nil
+}

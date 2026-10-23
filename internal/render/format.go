@@ -111,6 +111,17 @@ func fit(s string, w int) string {
 	return runewidth.Truncate(s, w, "…")
 }
 
+// fitEnd is fit for paths: it cuts from the front, so the file name stays.
+func fitEnd(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(s) <= w {
+		return s
+	}
+	return runewidth.TruncatePrefix(s, w, "…")
+}
+
 // pad pads s (may contain color) to w display columns.
 func pad(s string, w int, right bool) string {
 	n := w - width(s)

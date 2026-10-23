@@ -323,6 +323,14 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 		cost = t.dim(fmt.Sprintf("billed in %s: this transcript is the copy a Cursor IDE agent wrote, and the IDE holds the conversation", d.CopiedFrom))
 	}
 	kv("cost", cost)
+	if c := d.Composer; c != nil {
+		if c.ContextPercent != nil {
+			kv("context", fmt.Sprintf("%.0f%% of the context window in use", *c.ContextPercent))
+		}
+		if c.LinesAdded > 0 || c.LinesRemoved > 0 || c.FilesChanged > 0 {
+			kv("changes", fmt.Sprintf("+%d -%d lines in %s", c.LinesAdded, c.LinesRemoved, plural(c.FilesChanged, "file"))+t.dim(" (Cursor's count)"))
+		}
+	}
 	if d.Team != "" {
 		kv("team", d.Team+agentSuffix(d.AgentName))
 	}
@@ -412,6 +420,10 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 		}
 	}
 
+	if d.Edits != nil {
+		t.edits(d, all)
+	}
+
 	t.println()
 	t.println(t.accent("Turns"))
 	t.printf("  %s\n", t.dim("ccli log "+query.ShortID(d.ID)+" lists every prompt with what it cost · ccli view "+query.ShortID(d.ID)+" browses them"))
@@ -424,6 +436,48 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 	} else {
 		t.printf("  %s\n", t.warn(d.Resume.Reason))
 	}
+}
+
+// shownEdits is how many written files show lists without --all.
+const shownEdits = 10
+
+// edits lists the files Cursor's agents wrote, newest first.
+func (t Term) edits(d *query.SessionDetail, all bool) {
+	e := d.Edits
+	t.println()
+	t.println(t.accent("Files written"))
+	head := plural(len(e.Files), "file")
+	if len(e.Models) > 0 {
+		head += " by " + strings.Join(e.Models, ", ")
+	}
+	t.printf("  %s\n", t.dim(head+", newest first, from Cursor's AI code tracking"))
+	n := len(e.Files)
+	if !all {
+		n = min(n, shownEdits)
+	}
+	for _, f := range e.Files[:n] {
+		p := f.Path
+		if !t.Verbose {
+			p = underProject(p, d.Cwd)
+		}
+		line := "  " + t.dim(f.Last.In(t.Loc).Format("01-02 15:04")) + "  " + fitEnd(p, max(20, t.Width-16))
+		if len(e.Models) > 1 {
+			line += t.dim("  " + strings.Join(f.Models, ", "))
+		}
+		t.println(line)
+	}
+	if n < len(e.Files) {
+		t.printf("  %s\n", t.dim(fmt.Sprintf("+%d more: ccli show %s --all lists every one", len(e.Files)-n, query.ShortID(d.ID))))
+	}
+}
+
+// underProject writes a path inside the session's folder relative to it,
+// and any other under the home folder as ~/...
+func underProject(p, cwd string) string {
+	if cwd != "" && cwd != "/" && strings.HasPrefix(p, strings.TrimSuffix(cwd, "/")+"/") {
+		return strings.TrimPrefix(p, strings.TrimSuffix(cwd, "/")+"/")
+	}
+	return ShortHome(p)
 }
 
 func agentSuffix(name string) string {

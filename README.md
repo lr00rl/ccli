@@ -469,6 +469,15 @@ tool, use `export`.
 Pi keeps the dollar amount it recorded. Cursor's tokens and dollars come from
 the usage page, as [How it counts](#how-it-counts) describes.
 
+For a Cursor CLI or IDE session, `show` also lists the files its agents
+wrote, newest first, with the models that wrote them. Cursor records these
+in `~/.cursor/ai-tracking/ai-code-tracking.db` for the chat and its
+subagents. `show` lists ten; `--all` lists every one. For an IDE chat it
+adds how full the context window is, from the chat's header, and
+Cursor's own count of the chat's changes (`+95 -1 lines in 3 files`). That
+count reads zero for some chats that did edit files, so `show` leaves it out
+when it is zero, and the list of files written is the fuller record.
+
 ## Commands
 
 | Command | What it does |
@@ -594,7 +603,9 @@ ccli reads transcripts and keeps its own index in
 `~/.local/share/ccli/ccli.db`. It never reads the Keychain, never writes
 `settings.json` or `.claude.json`, and never calls a model. In a Codex home
 it reads only the session logs: never `auth.json`, `config.toml` or Codex's
-own databases. Cursor is the one exception for logins: Cursor's transcripts
+own databases. For Cursor it reads the CLI's chats and `store.db`, the IDE's
+`state.vscdb`, and, for `show`, the AI code tracking database in
+`~/.cursor/ai-tracking`. Cursor is the one exception for logins: Cursor's transcripts
 have no usage figures, so ccli reads the login the Cursor IDE stored and
 sends it to Cursor, and nowhere else, to fetch them.
 
