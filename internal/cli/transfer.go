@@ -600,7 +600,7 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 			}
 		}
 		return false
-	}}
+	}, ArchiveDir: filepath.Join(store.DataDir(), "archive")}
 	op, err := transfer.Plan(id, newest.acct, target, transfer.Copy, opt)
 	if err != nil {
 		return err
@@ -625,6 +625,9 @@ func (a *app) syncFor(ctx context.Context, id, in string, apply bool) error {
 		return err
 	}
 	fmt.Fprintf(a.errw, "ccli: brought %s up to date in %s from %s (%s)\n", short, target.Name, newest.acct.Name, op.Action)
+	for _, line := range render.TransferNotes(res) {
+		fmt.Fprintf(a.errw, "ccli: %s\n", line)
+	}
 	_, err = a.refresh(ctx, false)
 	return err
 }

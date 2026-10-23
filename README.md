@@ -348,6 +348,18 @@ Things that catch people out:
   latest activity) or `ccli resume <id> -a <account>` instead.
 - A copy starts at $0 with an empty MODEL column. Usage stays where it was
   made; the copy counts only what you do in it.
+- `/rewind` backups can clash. Claude Code keeps a backup of each file it
+  edits under a numbered name (`file-history/<id>/<hash>@v3`), and it numbers
+  them per process: after a resume it writes `@v1`, `@v2` again and replaces
+  its own older backups, in one account as much as across two. When a copy
+  meets a backup of the same name with different content, the newer one
+  takes the name, as Claude Code would do, and the older one goes to
+  `~/.local/share/ccli/archive/<time>/<account>/`. A target backup that is as
+  new or newer is left alone, and the copy lists it. Either way the
+  conversation is complete; only `/rewind`'s restore of code at an older
+  checkpoint may bring back a newer version of that file, which Claude Code
+  already does after a resume. Use git when an old version of the code
+  matters.
 
 If both copies went on separately, they have diverged, and ccli will not
 merge them. They are two conversations with a shared beginning, and Claude
@@ -595,8 +607,9 @@ minutes before asking again, and with no IDE login it does not ask at all. `hide
 `fork`, `statusline` and `index` do not ask Cursor.
 
 Only `copy`, `move`, `fork`, `resume -a` and `clean` write into an
-account, and only the files of the session involved: `clean` moves an empty
-Claude Code transcript into ccli's archive, and `clean --undo` moves it back. `hide` and `tag` write only to ccli's
+account, and only the files of the session involved: a copy moves an older
+`/rewind` backup it replaces into ccli's archive, `clean` moves an empty
+Claude Code transcript there, and `clean --undo` moves it back. `hide` and `tag` write only to ccli's
 own index. `export --out` writes only the path you give, never inside an
 agent's home. A transcript that
 cannot be read is reported and retried on the next run.

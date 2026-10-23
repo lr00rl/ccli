@@ -2,6 +2,8 @@ package render
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lr00rl/ccli/internal/query"
@@ -145,6 +147,9 @@ func (t Term) Results(verb string, rs []transfer.Result, info map[string]query.S
 			if len(r.Skipped) > 0 {
 				msg += fmt.Sprintf(", %d unchanged", len(r.Skipped))
 			}
+			if len(r.Replaced) > 0 {
+				msg += fmt.Sprintf(", %s replaced", plural(len(r.Replaced), "older /rewind backup"))
+			}
 			if len(r.Conflicts) > 0 {
 				msg += t.warn(fmt.Sprintf(", %d conflicts left alone", len(r.Conflicts)))
 			}
@@ -152,8 +157,8 @@ func (t Term) Results(verb string, rs []transfer.Result, info map[string]query.S
 				msg += ", source archived"
 			}
 			t.printf("%s %s %s %s\n", t.money("✓"), query.ShortID(op.SessionID), title, t.dim(msg))
-			for _, c := range r.Conflicts {
-				t.printf("    %s %s\n", t.warn("conflict"), ShortHome(c))
+			for _, line := range TransferNotes(r) {
+				t.println("    " + line)
 			}
 			if r.Archive != "" {
 				t.printf("    %s %s\n", t.dim("archive"), ShortHome(r.Archive))
@@ -162,6 +167,23 @@ func (t Term) Results(verb string, rs []transfer.Result, info map[string]query.S
 	}
 	past := map[string]string{"copy": "copied", "move": "moved"}[verb]
 	t.println(t.dim(fmt.Sprintf("%d of %d sessions %s.", done, len(rs), past)))
+}
+
+// TransferNotes explains the files a copy replaced or left alone.
+func TransferNotes(r transfer.Result) []string {
+	var out []string
+	if len(r.Replaced) > 0 {
+		out = append(out, fmt.Sprintf("replaced %s with the newer one of the same name, as Claude Code does; the older is in %s",
+			plural(len(r.Replaced), "/rewind backup"), ShortHome(r.SetAside)))
+	}
+	for _, c := range r.Conflicts {
+		why := "differs from the copy's and is not a prefix of it"
+		if strings.Contains(c, string(filepath.Separator)+"file-history"+string(filepath.Separator)) {
+			why = "a /rewind backup at least as new as the copy's"
+		}
+		out = append(out, fmt.Sprintf("left alone %s (%s)", ShortHome(c), why))
+	}
+	return out
 }
 
 // ForkPlan prints what fork would do. last is the turn a cut fork ends

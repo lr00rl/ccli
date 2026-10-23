@@ -1271,3 +1271,55 @@ func TestAppendTailLeavesAChangedTargetAlone(t *testing.T) {
 		t.Fatalf("temporary files left: %v", ents)
 	}
 }
+
+// Claude Code reuses a /rewind backup's name after a resume. A copy lets
+// the newer backup take the name and moves the older one to the archive;
+// an older or equally old incoming backup leaves the target's alone.
+func TestNewerRewindBackupReplacesOlder(t *testing.T) {
+	root := t.TempDir()
+	archive := filepath.Join(root, "archive")
+	a := makeAcct(t, root, "a")
+	b := makeAcct(t, root, "b")
+	writeFile(t, transcriptPath(a, "k", id1), "line-1\nline-2\n", time.Time{})
+	writeFile(t, transcriptPath(b, "k", id1), "line-1\n", time.Time{})
+	hist := func(acct account.Account, name string) string {
+		return filepath.Join(acct.Dir, "file-history", id1, name)
+	}
+	sep, oct := time.Now().Add(-30*24*time.Hour).Truncate(time.Second), time.Now().Add(-time.Hour).Truncate(time.Second)
+	writeFile(t, hist(a, "f@v3"), "october\n", oct)
+	writeFile(t, hist(b, "f@v3"), "september\n", sep)
+	writeFile(t, hist(a, "g@v1"), "older here\n", sep)
+	writeFile(t, hist(b, "g@v1"), "newer there\n", oct)
+
+	// Without an archive to put the old one in, nothing is replaced.
+	op, err := Plan(id1, a, b, Copy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Apply(op, Options{})
+	if err != nil || len(res.Replaced) != 0 || len(res.Conflicts) != 2 || readStr(t, hist(b, "f@v3")) != "september\n" {
+		t.Fatalf("without an archive: %+v %v", res, err)
+	}
+
+	writeFile(t, transcriptPath(a, "k", id1), "line-1\nline-2\nline-3\n", time.Time{})
+	op, err = Plan(id1, a, b, Copy, Options{ArchiveDir: archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = Apply(op, Options{ArchiveDir: archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readStr(t, hist(b, "f@v3")) != "october\n" || len(res.Replaced) != 1 || res.Replaced[0] != hist(b, "f@v3") {
+		t.Fatalf("the newer backup did not take the name: %+v", res)
+	}
+	if st, _ := os.Stat(hist(b, "f@v3")); !st.ModTime().Equal(oct) {
+		t.Fatalf("replaced backup time = %v, want the source's %v", st.ModTime(), oct)
+	}
+	if got := readStr(t, filepath.Join(res.SetAside, "file-history", id1, "f@v3")); got != "september\n" {
+		t.Fatalf("the older backup is not in the archive: %q", got)
+	}
+	if readStr(t, hist(b, "g@v1")) != "newer there\n" || len(res.Conflicts) != 1 || res.Conflicts[0] != hist(b, "g@v1") {
+		t.Fatalf("a newer target backup was not left alone: %+v", res)
+	}
+}
