@@ -647,7 +647,9 @@ on the next open, except for sessions tagged in the meantime.
   newer of the two (by modification time) takes the name; an older target
   backup moves to `archive/<time>/<target account>/` first, and a target
   backup that is as new or newer is left alone and reported. Without an
-  archive folder, nothing is replaced. No write passes through a
+  archive folder, nothing is replaced. Copied backups keep their source's
+  modification time, so a later copy compares the times Claude Code wrote
+  them, not when ccli copied them. No write passes through a
   symlinked folder in the target. A new copy gets its own file times, so it
   is always newer than its original (the index relies on that when no ledger
   entry says which is which).

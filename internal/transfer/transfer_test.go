@@ -1323,3 +1323,24 @@ func TestNewerRewindBackupReplacesOlder(t *testing.T) {
 		t.Fatalf("a newer target backup was not left alone: %+v", res)
 	}
 }
+
+// A /rewind backup a copy creates keeps its source's time, so a later copy
+// does not take it for the newer one.
+func TestCopiedRewindBackupKeepsItsTime(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "a")
+	b := makeAcct(t, root, "b")
+	writeFile(t, transcriptPath(a, "k", id1), "line-1\n", time.Time{})
+	sep := time.Now().Add(-30 * 24 * time.Hour).Truncate(time.Second)
+	writeFile(t, filepath.Join(a.Dir, "file-history", id1, "f@v1"), "september\n", sep)
+	op, err := Plan(id1, a, b, Copy, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(op, Options{ArchiveDir: filepath.Join(root, "archive")}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Join(b.Dir, "file-history", id1, "f@v1")); err != nil || !st.ModTime().Equal(sep) {
+		t.Fatalf("copied backup: %v %v, want time %v", st.ModTime(), err, sep)
+	}
+}

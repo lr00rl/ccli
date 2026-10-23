@@ -77,7 +77,8 @@ type Result struct {
 	Removed  []string `json:"removed,omitempty"`
 	Imports  []Import `json:"imports,omitempty"` // transcript bytes written into the target
 
-	intend Intend
+	intend  Intend
+	history bool // merging /rewind backups: copies keep the source's time
 }
 
 // Intend is called with the transcript bytes a copy is about to write, before
@@ -263,7 +264,10 @@ func Apply(op Op, opt Options) (Result, error) {
 				return res, err
 			}
 		}
-		if err := mergeTree(src.FileHistory, src.Account.Dir, planned.to.Dir, &res); err != nil {
+		res.history = true
+		err := mergeTree(src.FileHistory, src.Account.Dir, planned.to.Dir, &res)
+		res.history = false
+		if err != nil {
 			return res, err
 		}
 		if len(res.Replaced) == 0 {
@@ -513,7 +517,10 @@ func mergeFile(src, dst string, res *Result) error {
 	_, err := os.Lstat(dst)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return copyTranscript(src, dst, res)
+			if err := copyTranscript(src, dst, res); err != nil {
+				return err
+			}
+			return keepTime(src, dst, res)
 		}
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
@@ -525,12 +532,32 @@ func mergeFile(src, dst string, res *Result) error {
 	case Same:
 		res.Skipped = append(res.Skipped, dst)
 	case AAhead:
-		return copyTranscript(src, dst, res)
+		if err := copyTranscript(src, dst, res); err != nil {
+			return err
+		}
+		return keepTime(src, dst, res)
 	default:
-		if res.SetAside != "" {
+		if res.history && res.SetAside != "" {
 			return replaceOlder(src, dst, res)
 		}
 		res.Conflicts = append(res.Conflicts, dst)
+	}
+	return nil
+}
+
+// keepTime gives a copied /rewind backup its source's modification time:
+// the newer-wins rule compares those times, so a copy must not look newer
+// than the backup it copies.
+func keepTime(src, dst string, res *Result) error {
+	if !res.history {
+		return nil
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	if err := os.Chtimes(dst, st.ModTime(), st.ModTime()); err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
 	}
 	return nil
 }
@@ -560,20 +587,28 @@ func replaceOlder(src, dst string, res *Result) error {
 	if err != nil {
 		return err
 	}
+	// Two copies in the same second may set aside the same name.
+	for i, base := 1, aside; ; i++ {
+		if _, err := os.Lstat(aside); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		aside = fmt.Sprintf("%s.%d", base, i)
+	}
 	if err := relocate(dst, aside); err != nil {
 		return err
 	}
 	if err := copyRegularIf(src, dst, func() error { return unchangedSince(dst, nil) }); err != nil {
-		if rerr := relocate(aside, dst); rerr != nil {
+		// Put the older backup back, unless something took its place.
+		if back, rerr := moveBack(aside, dst); rerr != nil || !back {
 			return fmt.Errorf("%w; the older backup is in %s", err, aside)
 		}
 		return err
 	}
+	res.Written = append(res.Written, dst)
+	res.Replaced = append(res.Replaced, dst)
 	if err := os.Chtimes(dst, ss.ModTime(), ss.ModTime()); err != nil {
 		return fmt.Errorf("copy %s: %w", dst, err)
 	}
-	res.Written = append(res.Written, dst)
-	res.Replaced = append(res.Replaced, dst)
 	return nil
 }
 
