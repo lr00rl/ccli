@@ -1184,3 +1184,30 @@ func TestCopyLeavesAChangedTargetAlone(t *testing.T) {
 		t.Fatalf("copy over a file that appeared: %v", err)
 	}
 }
+
+// Where a restore cannot hard-link, it copies into a file it creates only
+// if none exists, so a transcript written since the check is kept.
+func TestCopyExclusiveKeepsANewFile(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "archived.jsonl"), filepath.Join(dir, "restored.jsonl")
+	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	writeFile(t, src, "archived\n", old)
+	st, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dst, "written since\n", time.Time{})
+	if err := copyExclusive(src, dst, st); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("copy onto an existing file: %v", err)
+	}
+	if readStr(t, dst) != "written since\n" {
+		t.Fatal("the new file was replaced")
+	}
+	os.Remove(dst)
+	if err := copyExclusive(src, dst, st); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Lstat(dst); readStr(t, dst) != "archived\n" || !got.ModTime().Equal(old) {
+		t.Fatalf("restored %q at %v", readStr(t, dst), got.ModTime())
+	}
+}

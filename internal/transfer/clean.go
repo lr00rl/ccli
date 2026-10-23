@@ -3,6 +3,7 @@ package transfer
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -104,13 +105,61 @@ func moveBack(src, dst string) (bool, error) {
 		}
 		switch err := os.Link(src, dst); {
 		case err == nil:
+			if err := syncDir(filepath.Dir(dst)); err != nil {
+				return false, fmt.Errorf("restore %s: %w", dst, err)
+			}
 			return true, os.Remove(src)
 		case errors.Is(err, os.ErrExist):
 			return false, nil
 		}
-		// Another device, or no hard links: a plain move.
+		// Another device, or no hard links. A rename would replace a dst
+		// written since the check above, so copy into a file that is
+		// created only if dst still does not exist.
+		switch err := copyExclusive(src, dst, st); {
+		case errors.Is(err, os.ErrExist):
+			return false, nil
+		case err != nil:
+			return false, err
+		}
+		return true, os.Remove(src)
 	}
 	return true, relocate(src, dst)
+}
+
+// copyExclusive copies the regular file src (st) to dst, which it creates
+// and which must not exist yet, keeping src's mode and time. The copy is
+// synced before it returns.
+func copyExclusive(src, dst string, st os.FileInfo) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("restore %s: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, st.Mode().Perm())
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return err
+		}
+		return fmt.Errorf("restore %s: %w", dst, err)
+	}
+	_, err = io.Copy(out, in)
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chtimes(dst, st.ModTime(), st.ModTime())
+	}
+	if err == nil {
+		err = syncDir(filepath.Dir(dst))
+	}
+	if err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("restore %s: %w", dst, err)
+	}
+	return nil
 }
 
 // removeEmpty removes root and the folders under it that Restore emptied.
