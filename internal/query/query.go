@@ -1,10 +1,10 @@
-// Package query answers questions about the index. Every ccli view calls a
-// Service; the terminal renderer formats its results, and a web server can
-// serve the same calls as JSON.
+// Package query answers questions about the index. Every ccli view reads
+// through a DB; the terminal renderer formats its results, and each result
+// serializes as JSON. A consumer that wants an interface declares the one
+// it uses, as the TUI does with its Source.
 package query
 
 import (
-	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -16,15 +16,6 @@ import (
 	"github.com/lr00rl/ccli/internal/cursorusage"
 	"github.com/lr00rl/ccli/internal/store"
 )
-
-// Service is the read interface shared by the terminal and a future web UI.
-type Service interface {
-	Accounts(ctx context.Context, f Filter) ([]AccountSummary, error)
-	Sessions(ctx context.Context, f Filter) (SessionPage, error)
-	Session(ctx context.Context, ref string) (*SessionDetail, error)
-	Overview(ctx context.Context, f Filter) (*Overview, error)
-	Projects(ctx context.Context, f Filter) (ProjectPage, error)
-}
 
 // Filter narrows a query. Zero values mean "no limit".
 type Filter struct {
@@ -176,7 +167,7 @@ type SessionPage struct {
 	Cost     Cost         `json:"cost"`
 }
 
-// DB is the Service backed by the index.
+// DB answers queries from the index.
 type DB struct {
 	st    *store.Store
 	accts []account.Account
@@ -196,7 +187,7 @@ type DB struct {
 // before the DB is shared; details are read-only once built.
 func (d *DB) CacheSessions() { d.cache = map[string]*SessionDetail{} }
 
-// New builds a Service over the store.
+// New builds a DB over the store.
 func New(st *store.Store, accts []account.Account) *DB {
 	// Keyed by account too: a session copied between accounts has the same
 	// id in each, and a process runs only one of the copies.

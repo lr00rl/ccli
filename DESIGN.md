@@ -393,18 +393,12 @@ price".
 
 ## Query interface
 
-Every command calls `query.Service`; the terminal renderer only formats its
-results. `ccli web` will serve the same calls over HTTP.
-
-```go
-type Service interface {
-    Accounts(ctx context.Context, f Filter) ([]AccountSummary, error)
-    Sessions(ctx context.Context, f Filter) (SessionPage, error)
-    Session(ctx context.Context, ref string) (*SessionDetail, error)
-    Overview(ctx context.Context, f Filter) (*Overview, error)
-    Projects(ctx context.Context, f Filter) (ProjectPage, error)
-}
-```
+Every command reads through `query.DB`; the terminal renderer only formats
+its results, and every result serializes as JSON. The main calls are
+`Accounts(filter)`, `Sessions(filter)`, `Session(ref)`, `Overview(filter)`
+and `Projects(filter)`. There is no shared interface: a consumer that wants
+one declares what it uses where it uses it, as the TUI does with its
+`Source`, and a planned `ccli web` would do the same.
 
 The turn views add `Turns(ref)` (the turn list with each turn's cost and the
 cost of the agents it started), `TurnRange(ref, from, to, all)` (turns read
