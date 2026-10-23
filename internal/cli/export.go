@@ -27,22 +27,27 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 	thinking := fs.Bool("thinking", false, "include the model's thinking")
 	withContext := fs.Bool("context", false, "include text the tool added (skills, reminders, peer messages)")
 	all := fs.Bool("all", false, "include turns started by tasks, other sessions and the system")
+	in := copyFlag(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) < 1 || len(pos) > 2 {
-		return errors.New("usage: ccli export <session> [turn | from-to | last] [--out file] [--format md|jsonl]")
+		return errors.New("usage: ccli export [-a account] <session> [turn | from-to | last] [--out file] [--format md|jsonl]")
 	}
-	svc, err := a.prepare(ctx, c, nil)
+	if pos[0], err = withAccount(pos[0], *in); err != nil {
+		return err
+	}
+	svc, err := a.prepare(ctx, c, accountsOf(*in))
 	if err != nil {
 		return err
 	}
 	defer a.close()
-	acct, _, err := svc.Resolve(ctx, pos[0])
+	acct, id, err := svc.Resolve(ctx, pos[0])
 	if err != nil {
 		return err
 	}
+	a.noteCopy(ctx, svc, pos[0], acct, id)
 	a.refreshCursorFor(ctx, []string{acct}, nil)
 	ref := pos[0]
 	list, err := svc.Turns(ctx, ref)

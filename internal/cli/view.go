@@ -24,12 +24,20 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 	dirFlag(fs, &scope)
 	toolFlag(fs, &scope)
 	tools := fs.Bool("tools", false, "expand tool calls inside each turn")
+	in := fs.String("a", "", "with a session: its copy in this account (same as <account>:<id>); without one: list only this account")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) > 1 {
-		return errors.New("usage: ccli view [session]")
+		return errors.New("usage: ccli view [-a account] [session]")
+	}
+	if len(pos) == 1 {
+		if pos[0], err = withAccount(pos[0], *in); err != nil {
+			return err
+		}
+	} else if *in != "" {
+		scope.Accounts = []string{*in}
 	}
 	if len(pos) == 1 && (len(scope.Dirs) > 0 || len(scope.Tools) > 0) {
 		return errors.New("-dir and -tool narrow the session list; leave them out when opening one session")
@@ -37,7 +45,7 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return errors.New("ccli view needs a terminal; ccli log prints the same turns")
 	}
-	svc, err := a.prepare(ctx, c, nil)
+	svc, err := a.prepare(ctx, c, accountsOf(*in))
 	if err != nil {
 		return err
 	}
@@ -48,6 +56,7 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 		if err != nil {
 			return err
 		}
+		a.noteCopy(ctx, svc, pos[0], acct, id)
 		ref = acct + ":" + id
 		a.refreshCursorFor(ctx, []string{acct}, nil)
 	} else {

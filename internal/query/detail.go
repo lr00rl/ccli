@@ -116,6 +116,24 @@ type Resume struct {
 // ErrNotFound is returned when no session matches a reference.
 var ErrNotFound = errors.New("no session matches")
 
+// CopiesOf lists the accounts that hold a session, by name.
+func (d *DB) CopiesOf(ctx context.Context, id string) ([]string, error) {
+	rows, err := d.sql().QueryContext(ctx, `SELECT DISTINCT account FROM files WHERE session_id = ? AND kind = 'main' ORDER BY account`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // Resolve finds the session for a reference: a full id or a unique prefix,
 // optionally "account:" in front.
 func (d *DB) Resolve(ctx context.Context, ref string) (account, id string, err error) {

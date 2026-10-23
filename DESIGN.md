@@ -393,6 +393,15 @@ price".
 
 ## Query interface
 
+A session id can be in several accounts: each is a copy, its own
+transcript, and the index keys sessions by account and id. Commands that
+read one session (`show`, `log`, `export`, `view`) take `<account>:<id>` or
+`-a`, and otherwise use the copy with the latest activity and name the
+others on stderr (`query.DB.CopiesOf`). `Turns` marks each turn whose prompt
+lies in a byte range the ledger says ccli copied in (`TurnRow.CopiedFrom`:
+the source account, or `account:id` for a fork). Marks that belong to the
+id (hide, tag) apply to every copy.
+
 Every command reads through `query.DB`; the terminal renderer only formats
 its results, and every result serializes as JSON. The main calls are
 `Accounts(filter)`, `Sessions(filter)`, `Session(ref)`, `Overview(filter)`

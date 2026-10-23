@@ -392,6 +392,30 @@ To bring work's sessions into default: ccli copy --from work --to default  (prin
 "work is ahead" means default's transcript is an exact prefix of work's: the
 session went on in work after default last saw it.
 
+### Which copy you are looking at
+
+`746cbfa4` is in both accounts under the same id. `show`, `log`, `export`
+and `view` read one copy: the one you name with `-a` (or as
+`default:746cbfa4`), or else the one used last, and they say which on
+stderr:
+
+```
+$ ccli log 746cbfa4
+ccli: 746cbfa4 is also in work; this is the copy in default, the one used last (-a work picks another)
+Why does the nightly export take forty minutes now?
+746cbfa4 · default · 25 prompts typed · $0
+```
+
+In a copy's turn list, the turns that came in with a copy show `copied` in
+the COST column, and a line under the table explains them:
+
+```
+turns 18 to 25 came with a copy from work; their usage counts in work (ccli log 746cbfa4 -a work)
+```
+
+The README's "Sessions, copies and accounts" table lists what every command
+works on and what `-a` means for it.
+
 ### Continue a session in the other account, and come back
 
 Say `746cbfa4` went on in work, and now you want to continue it in default.

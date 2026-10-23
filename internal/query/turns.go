@@ -38,6 +38,10 @@ type TurnRow struct {
 	AgentCost  float64   `json:"agent_cost"` // subagents and workflow runs it started
 	Offset     int64     `json:"-"`
 	Next       int64     `json:"-"` // where the next turn starts; 0 = end of file
+	// CopiedFrom names the account a turn came in from with a copy, or for
+	// a fork the session it was forked from as account:id. Its usage
+	// counts there.
+	CopiedFrom string `json:"copied_from,omitempty"`
 }
 
 // Total is the turn's cost with what its agents spent.
@@ -324,8 +328,37 @@ func (d *DB) Turns(ctx context.Context, ref string) (*TurnList, error) {
 		if err := d.sql().QueryRowContext(ctx, `SELECT f.offset FROM files f WHERE f.id = ?`, g.main.ID).Scan(&l.Read); err != nil {
 			return nil, err
 		}
+		if err := d.markCopied(ctx, l); err != nil {
+			return nil, err
+		}
 	}
 	return l, nil
+}
+
+// markCopied sets CopiedFrom on the turns whose prompt lies in a byte range
+// ccli copied into the transcript.
+func (d *DB) markCopied(ctx context.Context, l *TurnList) error {
+	rows, err := d.sql().QueryContext(ctx, `SELECT mode, session_id, from_account, from_offset, to_offset FROM transfers WHERE path = ?`, l.Path)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mode, sid, from string
+		var lo, hi int64
+		if err := rows.Scan(&mode, &sid, &from, &lo, &hi); err != nil {
+			return err
+		}
+		if mode == "fork" {
+			from += ":" + sid
+		}
+		for i := range l.Turns {
+			if t := &l.Turns[i]; t.Offset >= lo && t.Offset < hi {
+				t.CopiedFrom = from
+			}
+		}
+	}
+	return rows.Err()
 }
 
 // ErrNoTranscript is returned when a turn's transcript is gone from disk.

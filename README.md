@@ -489,8 +489,44 @@ and per-day figures) on `sessions`, `show`, `log`, `stats`, `quota`,
 `accounts` and `view`. On `view` it starts with tool calls expanded. Both
 can sit before the command or after it.
 
-`ccli <command> -h` lists a command's flags. Session ids can be shortened to
-any unique prefix, or written `account:id` to pick one account's copy.
+`ccli <command> -h` lists a command's flags.
+
+### Sessions, copies and accounts
+
+| Thing | What it is | How you name it |
+| --- | --- | --- |
+| account | a folder a tool keeps its sessions in: `~/.claude` is `default`, `~/.claude-work` is `work`, and Codex, pi and Cursor homes | its name, after `-a` |
+| session | one conversation, known by its id | the id, or any unique prefix of at least 4 characters |
+| copy | the same session, with the same id, in another account; `copy`, `move` and `resume -a` make one. Each copy is its own transcript. Copies share their beginning, and each counts only the work done in it | `<account>:<id>`, or the id with `-a <account>` |
+| fork | a new session with a new id, made from a session, whole or through one turn | its own id |
+| turn | a prompt and the work it led to, numbered in `ccli log` | `ccli log <id> <turn>`, `ccli fork <id> --turn <turn>` |
+| agent | a subagent's transcript; it belongs to the session that started it | `ccli log <id> --agent <agent id>` |
+
+When a session is in more than one account and you name no account, ccli
+uses the copy used last and says so on stderr:
+
+```
+ccli: 1087b979 is also in default; this is the copy in talcum, the one used last (-a default picks another)
+```
+
+`-a` always names the account you are looking at or working in:
+
+| Commands | Work on | `-a` means |
+| --- | --- | --- |
+| `sessions`, `prompts`, `projects`, `stats`, `quota`, `clean` | many sessions | only these accounts (repeat it or separate with commas) |
+| `show`, `log`, `export`, `view <id>` | one copy | read the copy in this account |
+| `view` without an id | the session list | list only this account |
+| `resume` | one copy | resume in this account, after bringing its copy up to date |
+| `fork` | a copy, into a new session | put the new session in this account; `--from` or `<account>:<id>` picks the copy to fork |
+| `copy`, `move` | a copy, into another account | not used: `--from` and `--to` name both ends |
+| `diff` | two accounts | not used: name the two accounts |
+| `hide`, `unhide`, `tag` | every copy of the id | not used: the mark belongs to the session id |
+
+In a copy's `ccli log`, the turns that came in with the copy show `copied`
+in the COST column, and a line under the table says where they came from
+and where their usage counts. ccli knows this for the copies it made; a
+transcript copied by hand has no such record, and its copied turns simply
+show no cost.
 
 ## How it counts
 

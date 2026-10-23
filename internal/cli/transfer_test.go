@@ -139,3 +139,31 @@ func TestResumeRejectsBothSyncFlags(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, errw.String())
 	}
 }
+
+// With the session in two accounts, the read commands say which copy they
+// show, and -a (or account:id) picks the other; log marks the turns that
+// came in with the copy.
+func TestReadCommandsPickACopy(t *testing.T) {
+	twoAccounts(t)
+	runCLI(t, "copy", roundTrip, "--to", "work", "--apply")
+	for _, cmd := range [][]string{{"show", roundTrip}, {"log", roundTrip}, {"export", roundTrip}} {
+		var out, errw bytes.Buffer
+		if code := Main(cmd, &out, &errw); code != 0 || !strings.Contains(errw.String(), "is also in") {
+			t.Fatalf("%v: exit %d, stderr %q", cmd, code, errw.String())
+		}
+	}
+	work := string(runCLI(t, "log", roundTrip, "-a", "work"))
+	if !strings.Contains(work, "· work ·") || !strings.Contains(work, "turns 1 to 2 came with a copy from default") || !strings.Contains(work, "copied") {
+		t.Fatalf("log -a work:\n%s", work)
+	}
+	if def := string(runCLI(t, "log", "default:"+roundTrip)); !strings.Contains(def, "· default ·") || strings.Contains(def, "came with a copy") {
+		t.Fatalf("log default:id:\n%s", def)
+	}
+	var out, errw bytes.Buffer
+	if code := Main([]string{"log", "default:" + roundTrip, "-a", "work"}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "different accounts") {
+		t.Fatalf("conflicting accounts: exit %d\n%s", code, errw.String())
+	}
+	if code := Main([]string{"show", roundTrip, "-a", "nosuch"}, &out, &errw); code == 0 {
+		t.Fatal("an unknown account was accepted")
+	}
+}

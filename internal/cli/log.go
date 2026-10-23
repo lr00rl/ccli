@@ -41,12 +41,16 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 	agent := fs.String("agent", "", "print a subagent's transcript (agent id or prefix)")
 	run := fs.String("run", "", "list a workflow run's agents (run id or prefix)")
 	noPager := fs.Bool("no-pager", false, "do not page long output")
+	in := copyFlag(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) < 1 || len(pos) > 2 {
-		return errors.New("usage: ccli log <session> [turn | from-to | last] [--detail full|reply] [--tools] [--thinking] [--agent id] [--run id]")
+		return errors.New("usage: ccli log [-a account] <session> [turn | from-to | last] [--detail full|reply] [--tools] [--thinking] [--agent id] [--run id]")
+	}
+	if pos[0], err = withAccount(pos[0], *in); err != nil {
+		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(*detail)) {
 	case "", "full", "reply":
@@ -58,12 +62,13 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 	if a.verbose && !reply {
 		opt.Tools = true
 	}
-	svc, err := a.prepare(ctx, c, nil)
+	svc, err := a.prepare(ctx, c, accountsOf(*in))
 	if err != nil {
 		return err
 	}
 	defer a.close()
-	if acct, _, err := svc.Resolve(ctx, pos[0]); err == nil {
+	if acct, id, err := svc.Resolve(ctx, pos[0]); err == nil {
+		a.noteCopy(ctx, svc, pos[0], acct, id)
 		a.refreshCursorFor(ctx, []string{acct}, nil)
 	}
 	ref := pos[0]
