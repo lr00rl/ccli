@@ -2,6 +2,9 @@ package store
 
 import "context"
 
+// readTables hold the rows read from a transcript, each keyed by file_id.
+var readTables = []string{"responses", "activity", "tools", "links", "processes", "snapshots", "spawns", "turns"}
+
 // Forget removes one session of one account from the index: its files and
 // every row read from them, and its workflow runs. Tags, hide marks and the
 // transfer ledger are kept, since they are keyed by session id and other
@@ -13,7 +16,7 @@ func (s *Store) Forget(ctx context.Context, account, sessionID string) (int, err
 	}
 	defer tx.Rollback()
 	files := `SELECT id FROM files WHERE account = ? AND session_id = ?`
-	for _, table := range []string{"responses", "activity", "tools", "links", "processes", "snapshots", "spawns", "turns"} {
+	for _, table := range readTables {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id IN (`+files+`)`, account, sessionID); err != nil {
 			return 0, err
 		}

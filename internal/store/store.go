@@ -479,17 +479,8 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 		f.Parser = 0
 	}
 	if u.Reset {
-		for _, q := range []string{
-			"DELETE FROM responses WHERE file_id = ?",
-			"DELETE FROM activity WHERE file_id = ?",
-			"DELETE FROM tools WHERE file_id = ?",
-			"DELETE FROM links WHERE file_id = ?",
-			"DELETE FROM processes WHERE file_id = ?",
-			"DELETE FROM snapshots WHERE file_id = ?",
-			"DELETE FROM spawns WHERE file_id = ?",
-			"DELETE FROM turns WHERE file_id = ?",
-		} {
-			if _, err := tx.ExecContext(ctx, q, f.ID); err != nil {
+		for _, table := range readTables {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id = ?`, f.ID); err != nil {
 				return err
 			}
 		}
