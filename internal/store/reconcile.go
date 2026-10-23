@@ -5,13 +5,15 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sort"
+	"strings"
 
 	"github.com/lr00rl/ccli/internal/transcript"
 )
 
 // ReconcileVersion changes when the reconciliation rules change; a database
 // reconciled under another version is redone in full.
-const ReconcileVersion = "4"
+const ReconcileVersion = "5"
 
 // SessionKey names a session within an account.
 type SessionKey struct {
@@ -19,17 +21,20 @@ type SessionKey struct {
 	SessionID string
 }
 
-// Reconcile settles every session marked dirty. Claude Code's own per-process
+// Reconcile settles every session marked dirty. Claude Code's own running
 // totals (cost-state) are compared with the responses recorded in the
-// transcripts, and for each process and model the shortfall becomes one
-// "adjustment" response dated at the process's end. A shortfall is never
-// negative, so recorded calls are never subtracted.
+// transcripts, and for each running total and model the shortfall becomes
+// one "adjustment" response dated at the end of the session's last
+// snapshot. A shortfall is never negative, so recorded calls are never
+// subtracted.
 //
-// A copied or forked transcript repeats its original's cost-state lines, so
-// one process can appear in several sessions. Its responses are counted in
-// whichever of those sessions the store placed them, and its shortfall is
-// added once: to a file that holds the snapshot as its own (not copied in by
-// ccli), the earliest created of them.
+// Claude Code keeps one running total per session and carries it on across
+// resumes, in another account too once ccli has copied the session there.
+// So a session's share of a total is the growth between consecutive
+// snapshots in its own transcript, counted where the later snapshot is its
+// own: a snapshot ccli copied in from another account only moves the base.
+// A snapshot that several files hold as their own (a transcript copied by
+// hand) counts once, in the file created first.
 //
 // The marks are cleared in the same transaction, so a run that stops early
 // leaves them for the next one. normalize maps model names to price-table keys;
@@ -54,13 +59,13 @@ func (s *Store) Reconcile(ctx context.Context, normalize func(string) string, we
 			return 0, err
 		}
 	}
-	// Sessions sharing a process with a marked one are redone too: which of
-	// them owns the process, and what each has recorded, may have changed.
+	// Sessions sharing a running total with a marked one are redone too:
+	// which file a shared snapshot counts in may have changed.
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO dirty(account, session_id)
 		SELECT DISTINCT f2.account, f2.session_id FROM dirty d
 		JOIN files f1 ON f1.account = d.account AND f1.session_id = d.session_id
-		JOIN processes p1 ON p1.file_id = f1.id
-		JOIN processes p2 ON p2.start_ms = p1.start_ms
+		JOIN snapshots p1 ON p1.file_id = f1.id
+		JOIN snapshots p2 ON p2.start_ms = p1.start_ms
 		JOIN files f2 ON f2.id = p2.file_id`); err != nil {
 		return 0, err
 	}
@@ -115,63 +120,78 @@ func (a *sums) add(b sums) {
 	a.unpriced += b.unpriced
 }
 
-// snapshot is one file's latest cost-state record of a process.
-type snapshot struct {
-	fileID, end int64
-	sess        SessionKey
-	rank        int64 // creation order: birth time, else first line time
-	imported    bool  // ccli copied this snapshot in from another account
-	models      map[string]sums
+// holding is one file's snapshots of a running total, in file order.
+type holding struct {
+	fileID int64
+	sess   SessionKey
+	rank   int64 // creation order: birth time, else first line time
+	snaps  []*snapshot
 }
+
+// snapshot is one cost-state line: the running total at that point.
+type snapshot struct {
+	end      int64
+	imported bool // ccli copied this line in from another account
+	models   map[string]sums
+	key      string // the totals, to find the same snapshot in another file
+}
+
+// window is a time range (from, to] of a session's own growth.
+type window struct{ from, to int64 }
 
 func reconcileOne(ctx context.Context, tx *sql.Tx, k SessionKey, normalize func(string) string, weigh WeighFunc) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM responses WHERE kind = 'adjustment' AND account = ? AND session_id = ?`, k.Account, k.SessionID); err != nil {
 		return err
 	}
-	starts, err := int64s(ctx, tx, `SELECT DISTINCT p.start_ms FROM processes p JOIN files f ON f.id = p.file_id
+	starts, err := int64s(ctx, tx, `SELECT DISTINCT p.start_ms FROM snapshots p JOIN files f ON f.id = p.file_id
 		WHERE f.account = ? AND f.session_id = ? ORDER BY p.start_ms`, k.Account, k.SessionID)
 	if err != nil {
 		return err
 	}
 	for _, start := range starts {
-		snaps, err := holders(ctx, tx, start, normalize)
+		hs, err := holdings(ctx, tx, start, normalize)
 		if err != nil {
 			return err
 		}
-		owner, best := snaps[0], snaps[0]
-		for _, sn := range snaps[1:] {
-			if owner.imported != sn.imported {
-				if owner.imported {
-					owner = sn
+		// Which file each distinct snapshot counts in: the earliest created
+		// of those holding it as their own.
+		counts := map[string]*holding{}
+		for _, h := range hs {
+			for _, sn := range h.snaps {
+				if c := counts[sn.key]; !sn.imported && (c == nil || h.rank < c.rank || h.rank == c.rank && h.fileID < c.fileID) {
+					counts[sn.key] = h
 				}
+			}
+		}
+		grown := map[string]sums{}
+		var wins []window
+		var fileID, end int64
+		for _, h := range hs {
+			if h.sess != k {
 				continue
 			}
-			if sn.rank < owner.rank || sn.rank == owner.rank && sn.fileID < owner.fileID {
-				owner = sn
+			base, from := map[string]sums{}, start-1
+			for _, sn := range h.snaps {
+				if !sn.imported && counts[sn.key] == h {
+					for model, v := range sn.models {
+						acc := grown[model]
+						acc.add(less(v, base[model]))
+						grown[model] = acc
+					}
+					wins = append(wins, window{from, max(sn.end, from)})
+					fileID, end = h.fileID, max(sn.end, start)
+				}
+				base, from = sn.models, sn.end
 			}
 		}
-		if owner.sess != k {
-			continue // another session's file holds the original
-		}
-		sessions := map[SessionKey]bool{}
-		for _, sn := range snaps {
-			sessions[sn.sess] = true
-			// Snapshots are cumulative; a copy taken mid-run holds an earlier one.
-			if sn.end > best.end || sn.end == best.end && sn == owner {
-				best = sn
-			}
-		}
-		end := best.end
-		if end < start {
-			end = start
+		if len(wins) == 0 {
+			continue // all of this total's growth counts in other files
 		}
 		have := map[string]sums{}
-		for sess := range sessions {
-			if err := recorded(ctx, tx, sess, start, end, normalize, have); err != nil {
-				return err
-			}
+		if err := recorded(ctx, tx, k, wins, normalize, have); err != nil {
+			return err
 		}
-		for model, want := range best.models {
+		for model, want := range grown {
 			got := have[model]
 			d := sums{
 				input:  pos(want.input - got.input),
@@ -197,7 +217,7 @@ func reconcileOne(ctx context.Context, tx *sql.Tx, k SessionKey, normalize func(
 				VALUES(?,?,?,?,'adjustment',?,?,'standard',?,?,?,?,0,?,?)
 				ON CONFLICT(key) DO UPDATE SET file_id=excluded.file_id, ts=excluded.ts, input=excluded.input, output=excluded.output,
 				  cache_read=excluded.cache_read, cache_5m=excluded.cache_5m, web_search=excluded.web_search, cost=excluded.cost`,
-				key, owner.fileID, k.Account, k.SessionID, end, model, d.input, d.output, d.read, d.write, d.web, nullCost(d.cost, costed)); err != nil {
+				key, fileID, k.Account, k.SessionID, end, model, d.input, d.output, d.read, d.write, d.web, nullCost(d.cost, costed)); err != nil {
 				return err
 			}
 		}
@@ -205,29 +225,38 @@ func reconcileOne(ctx context.Context, tx *sql.Tx, k SessionKey, normalize func(
 	return nil
 }
 
-// holders returns every file's snapshot of the process that started at start.
-func holders(ctx context.Context, tx *sql.Tx, start int64, normalize func(string) string) ([]*snapshot, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT p.file_id, p.end_ms, p.model, p.input, p.output, p.cache_read, p.cache_write, p.web_search, p.cost,
+// less is a snapshot's growth over an earlier one of the same total.
+func less(a, b sums) sums {
+	return sums{input: pos(a.input - b.input), output: pos(a.output - b.output), read: pos(a.read - b.read),
+		write: pos(a.write - b.write), web: pos(a.web - b.web)}
+}
+
+// holdings returns every file's snapshots of the running total that
+// started at start, each file's in the order they appear in it.
+func holdings(ctx context.Context, tx *sql.Tx, start int64, normalize func(string) string) ([]*holding, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT p.file_id, p.offset, p.end_ms, p.model, p.input, p.output, p.cache_read, p.cache_write, p.web_search, p.cost,
 		f.account, f.session_id, f.born, f.first_ts, p.imported
-		FROM processes p JOIN files f ON f.id = p.file_id WHERE p.start_ms = ? ORDER BY p.file_id`, start)
+		FROM snapshots p JOIN files f ON f.id = p.file_id WHERE p.start_ms = ? ORDER BY p.file_id, p.offset, p.model`, start)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*snapshot
-	byFile := map[int64]*snapshot{}
+	var out []*holding
+	byFile := map[int64]*holding{}
+	type at struct{ file, offset int64 }
+	bySnap := map[at]*snapshot{}
 	for rows.Next() {
-		var fileID, end, born, first int64
+		var fileID, offset, end, born, first int64
 		var imported bool
 		var model string
 		var v sums
 		var sess SessionKey
-		if err := rows.Scan(&fileID, &end, &model, &v.input, &v.output, &v.read, &v.write, &v.web, &v.cost,
+		if err := rows.Scan(&fileID, &offset, &end, &model, &v.input, &v.output, &v.read, &v.write, &v.web, &v.cost,
 			&sess.Account, &sess.SessionID, &born, &first, &imported); err != nil {
 			return nil, err
 		}
-		sn := byFile[fileID]
-		if sn == nil {
+		h := byFile[fileID]
+		if h == nil {
 			rank := born
 			if rank == 0 {
 				rank = first
@@ -235,22 +264,52 @@ func holders(ctx context.Context, tx *sql.Tx, start int64, normalize func(string
 			if rank == 0 {
 				rank = math.MaxInt64
 			}
-			sn = &snapshot{fileID: fileID, end: end, sess: sess, rank: rank, imported: imported, models: map[string]sums{}}
-			byFile[fileID] = sn
-			out = append(out, sn)
+			h = &holding{fileID: fileID, sess: sess, rank: rank}
+			byFile[fileID] = h
+			out = append(out, h)
+		}
+		sn := bySnap[at{fileID, offset}]
+		if sn == nil {
+			sn = &snapshot{end: end, imported: imported, models: map[string]sums{}}
+			bySnap[at{fileID, offset}] = sn
+			h.snaps = append(h.snaps, sn)
 		}
 		m := normalize(model)
 		acc := sn.models[m]
 		acc.add(v)
 		sn.models[m] = acc
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, h := range out {
+		for _, sn := range h.snaps {
+			models := make([]string, 0, len(sn.models))
+			for m := range sn.models {
+				models = append(models, m)
+			}
+			sort.Strings(models)
+			var b strings.Builder
+			for _, m := range models {
+				v := sn.models[m]
+				fmt.Fprintf(&b, "%s:%d,%d,%d,%d,%d;", m, v.input, v.output, v.read, v.write, v.web)
+			}
+			sn.key = b.String()
+		}
+	}
+	return out, nil
 }
 
-// recorded adds a session's transcript responses within [start, end] to have.
-func recorded(ctx context.Context, tx *sql.Tx, sess SessionKey, start, end int64, normalize func(string) string, have map[string]sums) error {
+// recorded adds a session's transcript responses within its windows to have.
+func recorded(ctx context.Context, tx *sql.Tx, sess SessionKey, wins []window, normalize func(string) string, have map[string]sums) error {
+	var cond []string
+	args := []any{sess.Account, sess.SessionID}
+	for _, w := range wins {
+		cond = append(cond, "(ts > ? AND ts <= ?)")
+		args = append(args, w.from, w.to)
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT model, input, output, cache_read, cache_5m + cache_1h, web_search, COALESCE(cost, 0), cost IS NULL
-		FROM responses WHERE account = ? AND session_id = ? AND kind <> 'adjustment' AND ts BETWEEN ? AND ?`, sess.Account, sess.SessionID, start, end)
+		FROM responses WHERE account = ? AND session_id = ? AND kind <> 'adjustment' AND (`+strings.Join(cond, " OR ")+`)`, args...)
 	if err != nil {
 		return err
 	}

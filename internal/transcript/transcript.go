@@ -207,11 +207,15 @@ type LimitWindow struct {
 	ResetsAt    int64 // unix seconds
 }
 
-// Process is one Claude Code process's own accounting for a session, from
-// its cost-state line. It covers API calls the transcript does not record.
+// Process is one snapshot of Claude Code's own accounting for a session,
+// from a cost-state line. It covers API calls the transcript does not
+// record. Claude Code keeps one running total per session, named by Start,
+// and carries it on when the session is resumed, in this account or in
+// another one after a copy, so each snapshot includes every earlier one.
 type Process struct {
-	Start    int64 // process start, unix ms
+	Start    int64 // when the running total began, unix ms
 	End      int64 // timestamp of the last line before the snapshot
+	Offset   int64 // file offset of the cost-state line
 	Models   []ModelUsage
 	Imported bool // the snapshot was copied in from another account
 }
@@ -523,7 +527,7 @@ func (p *parser) costState(l line) {
 	if l.StartTime <= 0 || len(l.ModelUsage) == 0 {
 		return
 	}
-	pr := Process{Start: l.StartTime, End: res.State.PrevTS, Imported: p.imported()}
+	pr := Process{Start: l.StartTime, End: res.State.PrevTS, Offset: p.offset, Imported: p.imported()}
 	if pr.End == 0 {
 		pr.End = res.LastTS
 	}
@@ -532,12 +536,8 @@ func (p *parser) costState(l line) {
 			CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, WebSearch: u.WebSearch, CostUSD: u.CostUSD})
 	}
 	sort.Slice(pr.Models, func(i, j int) bool { return pr.Models[i].Model < pr.Models[j].Model })
-	for i := range res.Processes {
-		if res.Processes[i].Start == pr.Start {
-			res.Processes[i] = pr
-			return
-		}
-	}
+	// Every snapshot is kept: what a file adds to a running total is the
+	// growth between its snapshots, so the earlier ones matter too.
 	res.Processes = append(res.Processes, pr)
 }
 

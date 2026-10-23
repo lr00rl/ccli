@@ -295,8 +295,11 @@ so one file can be re-parsed without touching others.
 - `links`: continuation links (`continued-in`) per file.
 - `spawns`: per file, each Agent, Task and Workflow call: its tool-use id,
   tool, turn, and what it started (agent id, run id or `teammate:<name>`).
-- `processes`: each file's latest `cost-state` snapshot per process and
-  model, and whether it was copied in.
+- `snapshots`: every `cost-state` line of each file, per running total
+  (its `startTime`) and model, with its offset and whether ccli copied it
+  in. It replaced `processes`, which kept only a file's newest snapshot;
+  opening an older index re-reads the files that had one, once, and leaves
+  `processes` empty.
 - `runs`: workflow run event counts from `journal.jsonl` and what its state
   file says, with each file's mtime so unchanged files are not read again.
 - `transfers`: the ledger of copies ccli made: time, mode (copy, move,
@@ -363,20 +366,25 @@ run ends by reconciling the dirty sessions and clearing the marks, so a run
 that stops early leaves the work to the next one. A price table change marks
 every session.
 
-For each process in a dirty session, the latest `cost-state` snapshot is
-compared per model with the responses recorded between the process's start
-and end. Where the snapshot shows more tokens, one `adjustment` response
-carries the missing tokens, priced from the table at base rates, so a price
-override applies to them as to every recorded call. Nothing is subtracted,
-Claude Code's own cost figure is not used, and an unpriced model's adjustment
-carries no cost.
+Claude Code keeps one running total per session, named by its
+`startTime`, and carries it on across resumes: in the same account, in
+another account once ccli copied the session there, in a session Claude Code
+continued into, and in both branches of a fork. Each `cost-state` line is the
+total so far. A session's share of a total is the growth between
+consecutive snapshots in its own transcript, counted at each snapshot that is
+its own: a snapshot ccli copied in only moves the base for the next one. A
+snapshot several files hold as their own (a transcript copied by hand, the
+history a native fork or continuation repeats) counts once, in the file
+created first.
 
-A copied or forked transcript repeats its original's `cost-state` lines, so
-one process can appear in several sessions. It is reconciled once, by the
-session of a file holding its snapshot as its own (not copied in by ccli),
-the earliest created of them, against the responses of
-every session holding it, using the snapshot with the latest end. Sessions
-sharing a process with a dirty one are reconciled with it.
+For each total in a dirty session, that growth is compared per model with the
+session's own responses in the same time windows (from the snapshot before to
+the one counted). Where the growth shows more tokens, one `adjustment`
+response carries the missing tokens, priced from the table at base rates, so
+a price override applies to them as to every recorded call. Nothing is
+subtracted, Claude Code's own cost figure is not used, and an unpriced
+model's adjustment carries no cost. Sessions sharing a total with a dirty one
+are reconciled with it.
 
 ## Pricing
 
@@ -620,11 +628,15 @@ on the next open, except for sessions tagged in the meantime.
   diverged from each other, the sync refuses and names them.
 - Accounts that share these folders through a symlink are refused, and so is
   a target that holds the session under another project folder.
-- The transcript is written to a temporary file and renamed into place.
+- A new transcript is written to a temporary file and renamed into place.
+  A fast-forward appends the missing bytes to the target in place, after
+  checking that the target has not changed since the plan, so it stays the
+  same file with its creation time and only the new bytes are written.
   Subagent, tool-result, scratchpad and file-history folders are copied file
   by file without overwriting a file that differs. No write passes through a
-  symlinked folder in the target. Copies get their own file times, so a copy
-  is always newer than its original (the index relies on that).
+  symlinked folder in the target. A new copy gets its own file times, so it
+  is always newer than its original (the index relies on that when no ledger
+  entry says which is which).
 - `move` moves the source files into `$XDG_DATA_HOME/ccli/archive/<time>/`
   instead of deleting them, and only after every file is verified in the
   target byte for byte; a session folder holding a symlink or another file

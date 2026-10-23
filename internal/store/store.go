@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS processes(
   PRIMARY KEY(file_id, start_ms, model)
 );
 CREATE INDEX IF NOT EXISTS processes_start ON processes(start_ms);
+CREATE TABLE IF NOT EXISTS snapshots(
+  file_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, offset INTEGER NOT NULL, end_ms INTEGER NOT NULL, model TEXT NOT NULL,
+  input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
+  web_search INTEGER NOT NULL, cost REAL NOT NULL, imported INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(file_id, start_ms, offset, model)
+);
+CREATE INDEX IF NOT EXISTS snapshots_start ON snapshots(start_ms);
 CREATE TABLE IF NOT EXISTS dirty(account TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY(account, session_id));
 CREATE TABLE IF NOT EXISTS spawns(file_id INTEGER NOT NULL, tool_use_id TEXT NOT NULL, PRIMARY KEY(file_id, tool_use_id));
 CREATE INDEX IF NOT EXISTS spawns_tool ON spawns(tool_use_id);
@@ -186,8 +193,30 @@ func migrate(db *sql.DB) error {
 	if err := titlesToTags(db); err != nil {
 		return err
 	}
+	if err := processesToSnapshots(db); err != nil {
+		return err
+	}
 	_, err := db.Exec(indexes)
 	return err
+}
+
+// processesToSnapshots moves from the processes table, which kept only a
+// file's newest cost-state snapshot of each running total, to snapshots,
+// which keeps them all. The files that had one are read again from the
+// start; nothing writes processes any more, so this runs once.
+func processesToSnapshots(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("UPDATE files SET parser = 0 WHERE id IN (SELECT DISTINCT file_id FROM processes)"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM processes"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
@@ -449,6 +478,7 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 			"DELETE FROM tools WHERE file_id = ?",
 			"DELETE FROM links WHERE file_id = ?",
 			"DELETE FROM processes WHERE file_id = ?",
+			"DELETE FROM snapshots WHERE file_id = ?",
 			"DELETE FROM spawns WHERE file_id = ?",
 			"DELETE FROM turns WHERE file_id = ?",
 		} {
@@ -604,13 +634,9 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 		}
 	}
 	for _, p := range r.Processes {
-		// A newer snapshot of the same process replaces the older one.
-		if _, err := tx.ExecContext(ctx, "DELETE FROM processes WHERE file_id = ? AND start_ms = ?", f.ID, p.Start); err != nil {
-			return err
-		}
 		for _, m := range p.Models {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO processes(file_id, start_ms, end_ms, model, input, output, cache_read, cache_write, web_search, cost, imported)
-				VALUES(?,?,?,?,?,?,?,?,?,?,?)`, f.ID, p.Start, p.End, m.Model, m.Input, m.Output, m.CacheRead, m.CacheWrite, m.WebSearch, m.CostUSD, boolInt(p.Imported)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO snapshots(file_id, start_ms, offset, end_ms, model, input, output, cache_read, cache_write, web_search, cost, imported)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, f.ID, p.Start, p.Offset, p.End, m.Model, m.Input, m.Output, m.CacheRead, m.CacheWrite, m.WebSearch, m.CostUSD, boolInt(p.Imported)); err != nil {
 				return err
 			}
 		}
@@ -953,7 +979,7 @@ func (s *Store) Reprice(ctx context.Context, cost CostFunc, hash string) error {
 
 func markAllDirty(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO dirty(account, session_id)
-		SELECT DISTINCT f.account, f.session_id FROM processes p JOIN files f ON f.id = p.file_id`)
+		SELECT DISTINCT f.account, f.session_id FROM snapshots p JOIN files f ON f.id = p.file_id`)
 	return err
 }
 

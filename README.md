@@ -541,10 +541,12 @@ each response once. A response that also appears in another file belongs to
 the file that made it: never to one ccli copied it into, and otherwise to the
 file created first.
 
-Claude Code also makes calls it never writes to the transcript. Each process
-records its own running totals (`cost-state`), and where those show tokens the
-transcript lacks, ccli adds the missing tokens to the session at base list
-price. `ccli show` says how much of a session's cost came from such calls.
+Claude Code also makes calls it never writes to the transcript. It keeps a
+running total for each session (`cost-state`) and carries it on when the
+session is resumed, continued, forked or copied to another account. Where the
+part of that total a session added itself shows tokens its transcript lacks,
+ccli adds the missing tokens to that session at base list price. `ccli show`
+says how much of a session's cost came from such calls.
 
 A prompt counts as typed when a person sent it: typed, a slash command, an
 accepted suggestion, or sent from the desktop or a phone. Background task

@@ -374,6 +374,40 @@ func syncDir(dir string) error {
 	return nil
 }
 
+// appendTail extends dst, which is a byte prefix of src as it was when
+// prev was taken, with the rest of src, in place. The file keeps its
+// identity and creation time, which tell an original from its copies, and
+// only the new bytes are written. An append that fails is cut back.
+func appendTail(src, dst string, prev os.FileInfo) error {
+	if err := unchangedSince(dst, prev); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	defer in.Close()
+	if _, err := in.Seek(prev.Size(), io.SeekStart); err != nil {
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	_, err = io.Copy(out, in)
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Truncate(dst, prev.Size())
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	return nil
+}
+
 // unchangedSince reports, as an error, that path is not the file it was
 // when before was taken (nil before: when it did not exist). A transcript
 // that changed since is being written by a process, and replacing it would
@@ -735,8 +769,14 @@ func copyTranscript(src, dst string, res *Result) error {
 		}
 	}
 	// The plan saw dst at this size; a process that resumed the session in
-	// the target since would lose its new lines to the rename.
-	if err := copyRegularIf(src, dst, func() error { return unchangedSince(dst, prev) }); err != nil {
+	// the target since would lose its new lines.
+	var err error
+	if prev != nil {
+		err = appendTail(src, dst, prev)
+	} else {
+		err = copyRegularIf(src, dst, func() error { return unchangedSince(dst, prev) })
+	}
+	if err != nil {
 		if undo != nil {
 			undo()
 		}
