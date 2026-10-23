@@ -14,6 +14,7 @@ import (
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/render"
 	"github.com/lr00rl/ccli/internal/store"
+	"github.com/lr00rl/ccli/internal/transcript"
 	"github.com/lr00rl/ccli/internal/transfer"
 )
 
@@ -387,6 +388,9 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 	if len(pos) != 1 || *in == "" || *turn < 0 {
 		return errors.New("usage: ccli fork <session> -a <account> [--turn N] [--from <account>] [--apply]")
 	}
+	if flagSet(fs, "turn") && *turn == 0 {
+		return errors.New("--turn counts from 1: turn 0 in ccli log --all is what came before the first prompt, and a fork cannot end there")
+	}
 	svc, err := a.prepare(ctx, c, nil)
 	if err != nil {
 		return err
@@ -452,7 +456,8 @@ func cmdFork(ctx context.Context, a *app, args []string) error {
 
 // forkCut works out where a fork that keeps the conversation through turn
 // ends: at the prompt of the turn after it, without the agents started
-// later. Turn 0, and the last turn, keep everything.
+// later; for the last turn, where the index stopped reading. Turn 0 keeps
+// everything.
 func forkCut(ctx context.Context, svc *query.DB, acct, id string, turn int) (transfer.Cut, query.TurnRow, error) {
 	if turn == 0 {
 		return transfer.Cut{}, query.TurnRow{}, nil
@@ -463,19 +468,26 @@ func forkCut(ctx context.Context, svc *query.DB, acct, id string, turn int) (tra
 		return transfer.Cut{}, query.TurnRow{}, err
 	}
 	short := query.ShortID(id)
-	if len(tl.Turns) == 0 {
+	if tl.Missing {
+		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s: %w", short, query.ErrNoTranscript)
+	}
+	if len(tl.Turns) == 0 || tl.Turns[len(tl.Turns)-1].Seq < 1 {
 		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s has no turns to fork from", short)
 	}
-	first, final := tl.Turns[0].Seq, tl.Turns[len(tl.Turns)-1].Seq
+	final := tl.Turns[len(tl.Turns)-1].Seq
 	i := slices.IndexFunc(tl.Turns, func(t query.TurnRow) bool { return t.Seq == turn })
 	if i < 0 {
-		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s has no turn %d; its turns run %d to %d (ccli log %s --all lists them)", short, turn, first, final, short)
+		return transfer.Cut{}, query.TurnRow{}, fmt.Errorf("%s has no turn %d; its turns run 1 to %d (ccli log %s --all lists them)", short, turn, final, short)
 	}
 	last := tl.Turns[i]
-	cut := transfer.Cut{Turn: turn, Turns: final, Upto: last.Next}
-	if last.Next == 0 {
-		return cut, last, nil // the last turn: nothing is left out
+	cut := transfer.Cut{Turn: turn, Turns: final, Prompt: transcript.StartsTurn}
+	if i == len(tl.Turns)-1 {
+		// The last turn the index has read. Lines written since may hold a
+		// later turn, so the fork stops where the index did.
+		cut.Upto, cut.End = tl.Read, true
+		return cut, last, nil
 	}
+	cut.Upto = tl.Turns[i+1].Offset
 	det, err := svc.Session(ctx, ref)
 	if err != nil {
 		return transfer.Cut{}, query.TurnRow{}, err

@@ -515,7 +515,9 @@ Why does the nightly export take forty minutes now?
 ```
 
 `ccli log` hides the turns that tasks and other sessions started; `--all`
-lists them, and their numbers work with `--turn` too. Then plan the fork:
+lists them, and their numbers work with `--turn` too, from 1 up (a turn 0
+there is what came before the first prompt, and a fork cannot end in it).
+Then plan the fork:
 
 ```
 $ ccli fork 746cbfa4 --turn 5 -a default
@@ -531,8 +533,13 @@ Dry run, nothing was forked. Add --apply to do it (a new id is drawn each time).
 
 Add `--apply` to write it, then `ccli resume <new id>` to continue. The fork
 keeps the transcript up to the prompt of the next turn, and leaves out the
-transcripts of agents started after the turn you chose. Without `--turn`, a
-fork keeps the whole conversation.
+transcripts of agents started after the turn you chose. ccli checks that
+cut against the transcript twice, when it plans and again just before it
+writes; if the transcript no longer matches its index there, it stops and
+asks you to run the command again. Forking through the last turn keeps
+everything ccli has read; if the session wrote more since, the plan says
+how much it leaves out. Without `--turn`, a fork keeps the whole
+conversation.
 
 Read the last line of the plan carefully. Only the conversation goes back.
 The files the session changed after that turn stay changed, and the fork's

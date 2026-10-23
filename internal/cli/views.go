@@ -382,6 +382,9 @@ func cmdResume(ctx context.Context, a *app, args []string) error {
 	if len(pos) != 1 {
 		return errors.New("usage: ccli resume [-a account [--no-sync]] [-print] [-fork] <session id or prefix>")
 	}
+	if *noSync && flagSet(fs, "sync") {
+		return errors.New("give --sync or --no-sync, not both")
+	}
 	svc, err := a.prepare(ctx, c, nil)
 	if err != nil {
 		return err
@@ -464,6 +467,13 @@ func withoutVar(env []string, name string) []string {
 		}
 	}
 	return out
+}
+
+// flagSet reports whether the command line gave the flag.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 // parse accepts flags before and after positional arguments ("show ID

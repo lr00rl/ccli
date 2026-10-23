@@ -591,13 +591,19 @@ on the next open, except for sessions tagged in the meantime.
   under a new random id, rewriting only the `sessionId` and `session_id`
   fields. A running session can be forked; its partial last line is left
   out. The whole copy is recorded as imported, so the fork starts at $0.
-  `--turn N` ends the copy at the offset of the prompt of the turn after N,
-  taken from the index and checked against the file (the byte before it
-  ends a line, a JSON object starts there), and leaves out the subagent and
-  workflow transcripts the index ties to a later turn, with their
-  `.meta.json`. Files outside the transcript (file-history, tool results)
-  are copied whole. Only the conversation is cut; nothing in the working
-  folder changes.
+  `--turn N` (N from 1) ends the copy at the offset of the prompt of the
+  turn after N, taken from the index and checked against the file: the
+  byte before it ends a line, and the line there starts a turn by the
+  parser's own rule (`transcript.StartsTurn`, so a tool result, meta line,
+  compaction summary or sidechain message does not pass). Through the last
+  turn, the copy ends where the index stopped reading (`files.offset`), so a
+  turn written since is not taken along. It leaves out the subagent and
+  workflow transcripts the index ties to a later turn (or, when the index
+  could not place one, that started after the cut), with their
+  `.meta.json`; every one of them must be in the session's folders. `Fork`
+  repeats these checks against the files just before it writes. Files
+  outside the transcript (file-history, tool results) are copied whole.
+  Only the conversation is cut; nothing in the working folder changes.
 - `resume -a <acct>` resumes the session in that account. If another
   account holds a newer copy (this one is a prefix of it), it first
   fast-forwards it the way `copy` does; with `--no-sync` nothing is written

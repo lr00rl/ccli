@@ -85,6 +85,9 @@ func TestForkAtTurn(t *testing.T) {
 	if code := Main([]string{"fork", roundTrip, "--turn", "7", "-a", "work"}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "has no turn 7") {
 		t.Fatalf("fork at a missing turn: exit %d\n%s", code, errw.String())
 	}
+	if code := Main([]string{"fork", roundTrip, "--turn", "0", "-a", "work"}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "counts from 1") {
+		t.Fatalf("fork at turn 0: exit %d\n%s", code, errw.String())
+	}
 	var res struct {
 		Plan struct {
 			NewID string `json:"new_session_id"`
@@ -104,5 +107,35 @@ func TestForkAtTurn(t *testing.T) {
 	}
 	if want := strings.ReplaceAll(turn1, roundTrip, res.Plan.NewID); string(got) != want {
 		t.Fatalf("forked transcript:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A fork through the last turn keeps the whole conversation the index has
+// read, and says so.
+func TestForkThroughLastTurn(t *testing.T) {
+	root, turn1, turn2 := twoAccounts(t)
+	plan := string(runCLI(t, "fork", roundTrip, "--turn", "2", "-a", "work"))
+	if !strings.Contains(plan, "keeps the conversation through turn 2, the last one") || strings.Contains(plan, "only the conversation goes back") {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	var res struct {
+		Plan struct {
+			NewID string `json:"new_session_id"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(runCLI(t, "fork", roundTrip, "--turn", "2", "-a", "work", "--apply", "--json"), &res); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, ".claude-work", "projects", "-work-app", res.Plan.NewID+".jsonl"))
+	if want := strings.ReplaceAll(turn1+turn2, roundTrip, res.Plan.NewID); string(got) != want {
+		t.Fatalf("forked transcript:\n%s", got)
+	}
+}
+
+func TestResumeRejectsBothSyncFlags(t *testing.T) {
+	twoAccounts(t)
+	var out, errw bytes.Buffer
+	if code := Main([]string{"resume", roundTrip, "-a", "work", "--sync", "--no-sync", "--print"}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "not both") {
+		t.Fatalf("exit %d\n%s", code, errw.String())
 	}
 }

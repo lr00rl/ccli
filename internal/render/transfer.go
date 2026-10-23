@@ -175,7 +175,8 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow, last query.TurnR
 	}
 	t.printf("fork %s from %s into %s as a new session %s\n", query.ShortID(p.SessionID), p.From, p.To, query.ShortID(p.NewSessionID))
 	cut := p.Turn > 0 && p.Turn < p.Turns
-	if cut {
+	switch {
+	case cut:
 		t.printf("  keeps the conversation through turn %d of %d, which began: %s\n", p.Turn, p.Turns, fit(last.Headline, max(20, t.Width-50)))
 		left := fmt.Sprintf("  leaves out turns %d to %d", p.Turn+1, p.Turns)
 		if p.Turn+1 == p.Turns {
@@ -185,6 +186,11 @@ func (t Term) ForkPlan(p transfer.ForkPlan, s query.SessionRow, last query.TurnR
 			left += " and " + plural(p.Left, "agent transcript") + " started in them"
 		}
 		t.println(t.dim(left))
+	case p.Turn > 0:
+		t.printf("  keeps the conversation through turn %d, the last one\n", p.Turn)
+		if p.Unread > 0 {
+			t.println(t.dim("  leaves out the last " + humanSize(p.Unread) + ", written after ccli read the transcript; run the command again to include it"))
+		}
 	}
 	writes := "a " + humanSize(p.Bytes) + " transcript"
 	if p.Folders > 0 {

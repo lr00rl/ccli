@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/transcript"
 )
 
 const (
@@ -1024,25 +1025,44 @@ func TestForkCutAtTurn(t *testing.T) {
 	root := t.TempDir()
 	a := makeAcct(t, root, "default")
 	b := makeAcct(t, root, "work")
-	turn1 := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"one"}}` + "\n" +
-		`{"type":"assistant","sessionId":"` + id1 + `","message":{"content":"reply one"}}` + "\n"
-	turn2 := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"two"}}` + "\n"
+	user := func(content string) string {
+		return `{"type":"user","sessionId":"` + id1 + `","message":{"role":"user","content":` + content + `}}` + "\n"
+	}
+	reply := `{"type":"assistant","sessionId":"` + id1 + `","message":{"content":"reply"}}` + "\n"
+	result := user(`[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`)
+	turn1 := user(`"one"`) + reply + result + reply
+	turn2 := user(`"two"`) + reply
 	writeFile(t, transcriptPath(a, "proj", id1), turn1+turn2, time.Time{})
 	subs := filepath.Join(a.Dir, "projects", "proj", id1, "subagents")
 	writeFile(t, filepath.Join(subs, "agent-early.jsonl"), `{"session_id":"`+id1+`"}`+"\n", time.Time{})
 	writeFile(t, filepath.Join(subs, "agent-late.jsonl"), `{"session_id":"`+id1+`"}`+"\n", time.Time{})
 	writeFile(t, filepath.Join(subs, "agent-late.meta.json"), `{"agentType":"x"}`, time.Time{})
+	late := filepath.Join(subs, "agent-late.jsonl")
+	at := func(upto int) Cut {
+		return Cut{Turn: 1, Turns: 2, Upto: int64(upto), Prompt: transcript.StartsTurn}
+	}
 
-	// An offset that is not the start of a line means the index is stale.
-	if p, err := PlanFork(id1, a, b, id2, Cut{Turn: 1, Turns: 2, Upto: int64(len(turn1)) - 3}); err != nil || p.Reason == "" {
-		t.Fatalf("a cut inside a line was not refused: %+v %v", p, err)
+	// A cut that does not land on a turn's prompt means the index is stale:
+	// inside a line, at a reply, or at a tool result, which is a user line
+	// too but starts no turn.
+	for name, upto := range map[string]int{
+		"inside a line": len(turn1) - 3,
+		"a reply":       len(user(`"one"`)),
+		"a tool result": len(user(`"one"`) + reply),
+	} {
+		if p, err := PlanFork(id1, a, b, id2, at(upto)); err != nil || p.Reason == "" {
+			t.Fatalf("a cut at %s was not refused: %+v %v", name, p, err)
+		}
 	}
-	// So does one that starts a line that is not a prompt.
-	firstLine := int64(strings.Index(turn1, "\n") + 1)
-	if p, err := PlanFork(id1, a, b, id2, Cut{Turn: 1, Turns: 2, Upto: firstLine}); err != nil || p.Reason == "" {
-		t.Fatalf("a cut at a reply line was not refused: %+v %v", p, err)
+	// So does an agent to leave out that is not in the session's folders.
+	bad := at(len(turn1))
+	bad.Leave = []string{filepath.Join(subs, "agent-gone.jsonl")}
+	if p, _ := PlanFork(id1, a, b, id2, bad); !strings.Contains(p.Reason, "agent-gone") {
+		t.Fatalf("a missing agent to leave out was not refused: %q", p.Reason)
 	}
-	cut := Cut{Turn: 1, Turns: 2, Upto: int64(len(turn1)), Leave: []string{filepath.Join(subs, "agent-late.jsonl")}}
+
+	cut := at(len(turn1))
+	cut.Leave = []string{late}
 	p, err := PlanFork(id1, a, b, id2, cut)
 	if err != nil || p.Reason != "" || p.Bytes != int64(len(turn1)) || p.Turn != 1 || p.Left != 1 {
 		t.Fatalf("plan: %+v %v", p, err)
@@ -1064,8 +1084,36 @@ func TestForkCutAtTurn(t *testing.T) {
 			t.Fatalf("%s from after the cut was copied", f)
 		}
 	}
-	if len(res.Imports) != 2 || res.Imports[0].To != int64(len(turn1)) && res.Imports[1].To != int64(len(turn1)) {
-		t.Fatalf("imports = %+v", res.Imports)
+}
+
+// A fork through the last turn stops where the index stopped reading, so a
+// turn written since is not taken along.
+func TestForkThroughLastTurnStopsAtTheIndex(t *testing.T) {
+	root := t.TempDir()
+	a := makeAcct(t, root, "default")
+	b := makeAcct(t, root, "work")
+	read := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"one"}}` + "\n"
+	later := `{"type":"user","sessionId":"` + id1 + `","message":{"content":"two"}}` + "\n"
+	writeFile(t, transcriptPath(a, "proj", id1), read+later, time.Time{})
+	p, err := PlanFork(id1, a, b, id2, Cut{Turn: 1, Turns: 1, Upto: int64(len(read)), End: true, Prompt: transcript.StartsTurn})
+	if err != nil || p.Reason != "" || p.Bytes != int64(len(read)) || p.Unread != int64(len(later)) {
+		t.Fatalf("plan: %+v %v", p, err)
+	}
+	// The transcript is replaced between the plan and the fork: the cut no
+	// longer ends a line, and nothing is written.
+	writeFile(t, transcriptPath(a, "proj", id1), "x"+read+later, time.Time{})
+	if _, err := Fork(p, nil); err == nil || !strings.Contains(err.Error(), "fork stopped") {
+		t.Fatalf("fork after the transcript changed: %v", err)
+	}
+	if _, err := os.Lstat(transcriptPath(b, "proj", id2)); err == nil {
+		t.Fatal("a stale fork was written")
+	}
+	writeFile(t, transcriptPath(a, "proj", id1), read+later, time.Time{})
+	if _, err := Fork(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readStr(t, transcriptPath(b, "proj", id2)); got != strings.ReplaceAll(read, id1, id2) {
+		t.Fatalf("forked transcript = %q", got)
 	}
 }
 

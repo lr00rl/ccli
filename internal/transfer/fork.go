@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,10 +26,13 @@ type ForkPlan struct {
 	Bytes        int64  `json:"bytes"`   // transcript bytes to write
 	Folders      int    `json:"folders"` // session folders copied along
 	// Turn is the last turn the fork keeps, of Turns; 0 when it keeps the
-	// whole conversation. Left counts the agent transcripts left out.
+	// whole conversation. Left counts the agent transcripts left out, and
+	// Unread the bytes written after the index last read the transcript,
+	// which a fork through its last turn leaves out.
 	Turn   int    `json:"turn,omitempty"`
 	Turns  int    `json:"turns,omitempty"`
 	Left   int    `json:"agents_left_out,omitempty"`
+	Unread int64  `json:"unread_bytes,omitempty"`
 	Reason string `json:"reason,omitempty"`
 	from   account.Account
 	to     account.Account
@@ -41,10 +43,72 @@ type ForkPlan struct {
 // after it, without the transcripts of agents started later. The zero Cut
 // keeps everything.
 type Cut struct {
-	Turn  int      // last turn kept
-	Turns int      // turns in the session
-	Upto  int64    // transcript bytes kept: where the next turn's prompt starts; 0 = all
+	Turn  int   // last turn kept
+	Turns int   // turns in the session
+	Upto  int64 // transcript bytes kept: where the next turn's prompt starts; 0 = all
+	// End is set when Turn is the last turn the index has read: Upto is then
+	// where the index stopped reading, not the start of a prompt.
+	End   bool
 	Leave []string // agent transcripts (absolute paths) to leave out
+	// Prompt reports whether a transcript line starts a turn. The line at
+	// Upto must, unless End is set.
+	Prompt func(line []byte) bool
+}
+
+const reasonStaleCut = "the transcript does not match ccli's index at that turn; run ccli index and try again"
+
+// checkCut says why a cut does not fit the session's files now, or "" when
+// it does: Upto ends a line within the complete bytes and, unless the cut
+// is at the end, starts a turn; every transcript to leave out is in the
+// session's folders.
+func checkCut(src Files, cut Cut, complete int64) (string, error) {
+	if cut.Upto > 0 {
+		if cut.Upto > complete || !cut.End && cut.Upto == complete {
+			return reasonStaleCut, nil
+		}
+		f, err := os.Open(src.Transcript)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		var prev [1]byte
+		if _, err := f.ReadAt(prev[:], cut.Upto-1); err != nil {
+			return "", err
+		}
+		if prev[0] != '\n' {
+			return reasonStaleCut, nil
+		}
+		if !cut.End {
+			ln, err := bufio.NewReader(io.NewSectionReader(f, cut.Upto, complete-cut.Upto)).ReadBytes('\n')
+			if err != nil {
+				return "", err
+			}
+			if cut.Prompt == nil || !cut.Prompt(ln) {
+				return reasonStaleCut, nil
+			}
+		}
+	}
+	if len(cut.Leave) == 0 {
+		return "", nil
+	}
+	have := map[string]bool{}
+	for _, dir := range src.sidecars() {
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				have[path] = true
+			}
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	for _, path := range cut.Leave {
+		if !have[filepath.Clean(path)] {
+			return fmt.Sprintf("ccli's index lists %s as an agent of this session, but it is not in the session's folders; run ccli index and try again", path), nil
+		}
+	}
+	return "", nil
 }
 
 // NewID returns a random (version 4) session id.
@@ -93,14 +157,12 @@ func PlanFork(sessionID string, from, to account.Account, newID string, cut Cut)
 	if p.Bytes, err = completeLines(src.Transcript, st.Size()); err != nil {
 		return ForkPlan{}, err
 	}
+	if p.Reason, err = checkCut(src, cut, p.Bytes); err != nil || p.Reason != "" {
+		return p, err
+	}
 	if cut.Upto > 0 {
-		ok, err := promptStart(src.Transcript, cut.Upto, p.Bytes)
-		if err != nil {
-			return ForkPlan{}, err
-		}
-		if !ok {
-			p.Reason = "the transcript does not match ccli's index at that turn; run ccli index and try again"
-			return p, nil
+		if cut.End {
+			p.Unread = p.Bytes - cut.Upto
 		}
 		p.Bytes = cut.Upto
 	}
@@ -131,6 +193,24 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 	if err := checkParents(p.to.Dir, dst.transcript); err != nil {
 		return res, err
 	}
+	// The plan checked the cut; check it again against the files as they
+	// are now, before anything is written.
+	if p.cut.Upto > 0 || len(p.cut.Leave) > 0 {
+		st, err := os.Lstat(src.Transcript)
+		if err != nil {
+			return res, err
+		}
+		complete, err := completeLines(src.Transcript, st.Size())
+		if err != nil {
+			return res, err
+		}
+		if reason, err := checkCut(src, p.cut, complete); err != nil || reason != "" {
+			if err == nil {
+				err = errors.New(reason)
+			}
+			return res, fmt.Errorf("fork stopped: %w", err)
+		}
+	}
 	rw := idRewriter(p.SessionID, p.NewSessionID)
 	if err := forkFile(src.Transcript, dst.transcript, p.cut.Upto, rw, &res); err != nil {
 		return res, err
@@ -139,6 +219,7 @@ func Fork(p ForkPlan, intend Intend) (Result, error) {
 	// .meta.json goes with it.
 	leave := map[string]bool{}
 	for _, path := range p.cut.Leave {
+		path = filepath.Clean(path)
 		leave[path] = true
 		leave[strings.TrimSuffix(path, ".jsonl")+".meta.json"] = true
 	}
@@ -300,36 +381,6 @@ func forkFile(src, dst string, upto int64, rw func([]byte) []byte, res *Result) 
 		res.Imports = append(res.Imports, im)
 	}
 	return nil
-}
-
-// promptStart reports whether offset at, within the file's first complete
-// bytes, starts a line holding a user message, which is where every turn of
-// a Claude Code transcript begins. It checks that an offset from the index
-// still fits the file.
-func promptStart(path string, at, complete int64) (bool, error) {
-	if at <= 0 || at >= complete {
-		return false, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	var prev [1]byte
-	if _, err := f.ReadAt(prev[:], at-1); err != nil {
-		return false, err
-	}
-	if prev[0] != '\n' {
-		return false, nil
-	}
-	ln, err := bufio.NewReader(io.NewSectionReader(f, at, complete-at)).ReadBytes('\n')
-	if err != nil {
-		return false, err
-	}
-	var l struct {
-		Type string `json:"type"`
-	}
-	return json.Unmarshal(ln, &l) == nil && l.Type == "user", nil
 }
 
 // completeLines returns how many of a file's first size bytes end in a

@@ -49,6 +49,7 @@ type TurnList struct {
 	Path    string     `json:"path"`
 	Missing bool       `json:"transcript_missing"`
 	Turns   []TurnRow  `json:"turns"`
+	Read    int64      `json:"-"` // bytes of the transcript the index has read
 }
 
 // Human counts the turns a person started.
@@ -320,6 +321,9 @@ func (d *DB) Turns(ctx context.Context, ref string) (*TurnList, error) {
 	l := &TurnList{Session: g.det.SessionRow, Turns: g.turns}
 	if g.main != nil {
 		l.Path, l.Missing = g.main.Path, g.main.Missing
+		if err := d.sql().QueryRowContext(ctx, `SELECT f.offset FROM files f WHERE f.id = ?`, g.main.ID).Scan(&l.Read); err != nil {
+			return nil, err
+		}
 	}
 	return l, nil
 }

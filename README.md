@@ -377,8 +377,9 @@ ccli fork 746cbfa4 --turn 12 -a default --apply    # then: ccli resume <new id>
 ```
 
 The fork keeps the conversation through turn 12, up to the prompt of turn
-13, and leaves out the transcripts of agents started after it. Without
-`--turn` the fork keeps the whole conversation.
+13, and leaves out the transcripts of agents started after it. Turn numbers
+start at 1. Forking through the last turn keeps everything ccli has read of
+the transcript. Without `--turn` the fork keeps the whole conversation.
 
 Only the conversation goes back. Files on disk stay as they are now: what
 the session changed after turn 12 is not undone, and the fork knows nothing
