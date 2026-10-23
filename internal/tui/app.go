@@ -77,7 +77,7 @@ func newScreen(title string, r role) *screen {
 type viewer struct {
 	ctx      context.Context
 	src      Source
-	scope    query.Filter // Dirs and Tools narrow the session list
+	scope    query.Filter // Accounts, Dirs and Tools narrow the session list
 	loc      *time.Location
 	stack    []*screen
 	w, h     int
@@ -117,7 +117,7 @@ type Options struct {
 }
 
 // Run starts the browser at the sessions list, or at a session's turns when
-// ref names one. scope's Dirs and Tools narrow the sessions list.
+// ref names one. scope's Accounts, Dirs and Tools narrow the sessions list.
 func Run(ctx context.Context, src Source, ref string, scope query.Filter, opt Options) error {
 	v := &viewer{ctx: ctx, src: src, loc: time.Local, rendered: map[string]string{}, scope: scope, opt: render.LogOptions{Tools: opt.Tools}}
 	var first *screen

@@ -88,6 +88,8 @@ func (t Term) Turns(l *query.TurnList, all bool) {
 			} else {
 				cost = t.money(cost)
 			}
+		} else if tr.CopiedFrom != "" {
+			cost = t.dim("copied") // counted where it came from; see the note below the table
 		}
 		agents := ""
 		if tr.Agents > 0 {
@@ -126,6 +128,9 @@ func (t Term) Turns(l *query.TurnList, all bool) {
 	id := query.ShortID(s.ID)
 	if hidden > 0 {
 		t.println(t.dim(fmt.Sprintf("%d turns started by tasks, other sessions or the system are hidden (--all shows them)", hidden)))
+	}
+	for _, n := range copiedNotes(l) {
+		t.println(t.dim(n))
 	}
 	t.println(t.dim(fmt.Sprintf("ccli log %s <turn> prints a turn in full · ccli view %s browses them", id, id)))
 	if s.Tool == account.Claude {
@@ -603,4 +608,37 @@ func shortPaths(s string) string {
 		s = strings.ReplaceAll(s, h+"/", "~/")
 	}
 	return s
+}
+
+// copiedNotes explains the turns that came in with a copy or a fork, one
+// line for each run of turns from the same place.
+func copiedNotes(l *query.TurnList) []string {
+	var turns []query.TurnRow
+	for _, tr := range l.Turns {
+		if tr.Seq > 0 {
+			turns = append(turns, tr)
+		}
+	}
+	var out []string
+	for i := 0; i < len(turns); {
+		from, j := turns[i].CopiedFrom, i
+		for j+1 < len(turns) && turns[j+1].CopiedFrom == from {
+			j++
+		}
+		if from != "" {
+			span := fmt.Sprintf("turns %d to %d", turns[i].Seq, turns[j].Seq)
+			if i == j {
+				span = fmt.Sprintf("turn %d", turns[i].Seq)
+			}
+			if acct, sid, fork := strings.Cut(from, ":"); fork {
+				out = append(out, fmt.Sprintf("%s came from %s in %s when this session was forked from it; their usage counts there (ccli log %s -a %s)",
+					span, query.ShortID(sid), acct, query.ShortID(sid), acct))
+			} else {
+				out = append(out, fmt.Sprintf("%s came with a copy from %s; their usage counts in %s (ccli log %s -a %s)",
+					span, acct, acct, query.ShortID(l.Session.ID), acct))
+			}
+		}
+		i = j + 1
+	}
+	return out
 }

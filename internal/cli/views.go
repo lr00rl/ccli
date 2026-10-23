@@ -290,9 +290,8 @@ func cmdSessions(ctx context.Context, a *app, args []string) error {
 
 func cmdShow(ctx context.Context, a *app, args []string) error {
 	var c common
-	var accts accountsFlag
 	fs := newFlags("show", a, &c)
-	fs.Var(&accts, "a", "account, when the session exists in more than one")
+	in := copyFlag(fs)
 	all := fs.Bool("all", false, "list every subagent")
 	pos, err := parse(fs, args)
 	if err != nil {
@@ -301,22 +300,20 @@ func cmdShow(ctx context.Context, a *app, args []string) error {
 	if len(pos) != 1 {
 		return errors.New("usage: ccli show [-a account] <session id or prefix>")
 	}
-	if len(accts) > 1 {
-		return errors.New("show takes one account")
+	ref, err := withAccount(pos[0], *in)
+	if err != nil {
+		return err
 	}
-	ref := pos[0]
-	if len(accts) == 1 && !strings.Contains(ref, ":") {
-		ref = accts[0] + ":" + ref
-	}
-	svc, err := a.prepare(ctx, c, accts)
+	svc, err := a.prepare(ctx, c, accountsOf(*in))
 	if err != nil {
 		return err
 	}
 	defer a.close()
-	acct, _, err := svc.Resolve(ctx, ref)
+	acct, id, err := svc.Resolve(ctx, ref)
 	if err != nil {
 		return err
 	}
+	a.noteCopy(ctx, svc, ref, acct, id)
 	a.refreshCursorFor(ctx, []string{acct}, nil)
 	d, err := svc.Session(ctx, ref)
 	if err != nil {
@@ -467,6 +464,63 @@ func withoutVar(env []string, name string) []string {
 		}
 	}
 	return out
+}
+
+// copyFlag adds -a to a command that reads one session: its copy in that
+// account, when the session is in more than one. It means the same as
+// writing the reference as <account>:<id>.
+func copyFlag(fs *flag.FlagSet) *string {
+	return fs.String("a", "", "the session's copy in this account, when it is in more than one (same as <account>:<id>)")
+}
+
+// withAccount writes an -a account into a session reference. It refuses a
+// reference that already names another account.
+func withAccount(ref, acct string) (string, error) {
+	if acct == "" {
+		return ref, nil
+	}
+	if i := strings.IndexByte(ref, ':'); i > 0 {
+		if ref[:i] != acct {
+			return "", fmt.Errorf("-a %s and %s name different accounts; give one", acct, ref)
+		}
+		return ref, nil
+	}
+	return acct + ":" + ref, nil
+}
+
+// accountsOf is the account list prepare checks: the -a account, if any.
+func accountsOf(acct string) []string {
+	if acct == "" {
+		return nil
+	}
+	return []string{acct}
+}
+
+// noteCopy says on stderr which copy a reference that names no account
+// resolved to, when the session is in more than one account.
+func (a *app) noteCopy(ctx context.Context, svc *query.DB, ref, acct, id string) {
+	if strings.Contains(ref, ":") {
+		return
+	}
+	all, err := svc.CopiesOf(ctx, id)
+	if err != nil {
+		return
+	}
+	var others []string
+	for _, o := range all {
+		if o != acct {
+			others = append(others, o)
+		}
+	}
+	if len(others) == 0 {
+		return
+	}
+	pick := others[0]
+	if len(others) > 1 {
+		pick = "<account>"
+	}
+	fmt.Fprintf(a.errw, "ccli: %s is also in %s; this is the copy in %s, the one used last (-a %s picks another)\n",
+		query.ShortID(id), strings.Join(others, ", "), acct, pick)
 }
 
 // flagSet reports whether the command line gave the flag.

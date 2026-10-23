@@ -28,9 +28,12 @@ func (v *viewer) sessionsScreen() (*screen, error) {
 }
 
 // scopeText names what the session list is narrowed to, for its title:
-// " in ~/code/app" and " (codex)", or nothing.
+// " in talcum", " in ~/code/app" and " (codex)", or nothing.
 func (v *viewer) scopeText() string {
 	s := ""
+	if len(v.scope.Accounts) > 0 {
+		s = " in " + strings.Join(v.scope.Accounts, ", ")
+	}
 	if len(v.scope.Dirs) > 0 {
 		s = " in " + render.ShortHome(v.scope.Dirs[0])
 	}
@@ -46,7 +49,7 @@ func (v *viewer) scopeText() string {
 
 // sessionFilter selects the hidden sessions, or the others.
 func (v *viewer) sessionFilter(hidden bool) query.Filter {
-	f := query.Filter{Loc: v.loc, Sort: "last", Dirs: v.scope.Dirs, Tools: v.scope.Tools}
+	f := query.Filter{Loc: v.loc, Sort: "last", Dirs: v.scope.Dirs, Tools: v.scope.Tools, Accounts: v.scope.Accounts}
 	if hidden {
 		f.Show = query.HiddenOnly
 	}

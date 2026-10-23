@@ -392,6 +392,7 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 			}
 			t.println(line + t.dim(fmt.Sprintf("  %s in %s", humanSize(m.Bytes), plural(m.Files, "file"))))
 		}
+		t.println(t.dim("  what a copy brought in counts toward the account it came from; this copy counts only the work done in it"))
 	}
 
 	if len(d.Skills) > 0 || len(d.Tools) > 0 || len(d.Commands) > 0 {
