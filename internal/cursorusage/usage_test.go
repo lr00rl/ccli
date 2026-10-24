@@ -528,8 +528,11 @@ func TestLockIsTakenOnceAndExpires(t *testing.T) {
 	if !ok {
 		t.Fatal("a lock left behind was not taken over")
 	}
+	release() // the first holder, finishing late, must not remove the new lock
+	if !Busy(dir) {
+		t.Fatal("a late release removed the lock that took over")
+	}
 	release2()
-	release() // removing an already removed lock is harmless
 	if Busy(dir) {
 		t.Fatal("released lock still busy")
 	}

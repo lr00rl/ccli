@@ -206,17 +206,27 @@ const lockFor = 2 * time.Minute
 
 // Lock claims the update of the cache across processes, so commands that
 // each find it stale start one read between them. ok is false when another
-// process holds it.
+// process holds it. release removes the lock only while it is still this
+// one's, not one that took over after it was counted as left behind.
 func Lock(dataDir string) (release func(), ok bool) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, false
 	}
 	p := filepath.Join(dataDir, "cursor-usage.lock")
+	token := fmt.Sprintf("%d %d", os.Getpid(), time.Now().UnixNano())
 	for range 2 {
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			f.Close()
-			return func() { os.Remove(p) }, true
+			_, werr := f.WriteString(token)
+			if cerr := f.Close(); werr != nil || cerr != nil {
+				os.Remove(p)
+				return nil, false
+			}
+			return func() {
+				if b, err := os.ReadFile(p); err == nil && string(b) == token {
+					os.Remove(p)
+				}
+			}, true
 		}
 		if !os.IsExist(err) || Busy(dataDir) {
 			return nil, false

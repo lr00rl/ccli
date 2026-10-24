@@ -216,7 +216,7 @@ func (t Term) narrowSessions(ss []query.SessionRow, showAccount, tagged bool) {
 		if s.Subagents > 0 {
 			ttl += fmt.Sprintf(" +%d agents", s.Subagents)
 		}
-		line := fit(ttl, t.Width-2)
+		line := fit(ttl, max(t.Width-2, 1))
 		meta := strings.Join(nonEmpty(s.Project, shortModels(s.Models), Dur(s.ActiveMS), Num(s.Tokens.InOut())+" tokens"), " · ")
 		if left := t.Width - 2 - width(line) - 3; left >= 8 && meta != "" {
 			line += t.dim(" · " + fit(meta, left))
