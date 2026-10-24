@@ -154,8 +154,8 @@ func TestReadCommandsPickACopy(t *testing.T) {
 		var out, errw bytes.Buffer
 		if code := Main(cmd, &out, &errw); code == 0 ||
 			!strings.Contains(errw.String(), "-a <account>") ||
-			!strings.Contains(errw.String(), "default:"+roundTrip[:8]) ||
-			!strings.Contains(errw.String(), "work:"+roundTrip[:8]) {
+			!strings.Contains(errw.String(), "default:"+roundTrip) ||
+			!strings.Contains(errw.String(), "work:"+roundTrip) {
 			t.Fatalf("%v: exit %d, stdout %q, stderr %q", cmd, code, out.String(), errw.String())
 		}
 		if slices.Contains(cmd, "--json") {
@@ -213,5 +213,62 @@ func TestReadCommandsPickACopy(t *testing.T) {
 	}
 	if code := Main([]string{"show", roundTrip, "-a", "nosuch"}, &out, &errw); code == 0 {
 		t.Fatal("an unknown account was accepted")
+	}
+}
+
+func TestCopyChoicesAreExactAndFollowTableOrder(t *testing.T) {
+	root, turn1, turn2 := twoAccounts(t)
+	runCLI(t, "copy", roundTrip, "--to", "work", "--apply")
+	otherID := "bbbbbbbb-0000-4000-8000-000000000099"
+	writeTranscript(t, root, ".claude", otherID, strings.ReplaceAll(turn1+turn2, roundTrip, otherID))
+	workPath := filepath.Join(root, ".claude-work", "projects", "-work-app", roundTrip+".jsonl")
+	f, err := os.OpenFile(workPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := fmt.Sprintf(`{"type":"user","timestamp":%q,"sessionId":%q,"cwd":"/work/app","message":{"content":"later"}}`+"\n",
+		time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), roundTrip)
+	if _, err := f.WriteString(later); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := Main([]string{"show", roundTrip}, &out, &errw); code != 1 {
+		t.Fatalf("exit %d: %s", code, errw.String())
+	}
+	workRow, defaultRow := strings.Index(out.String(), "work ← default"), strings.LastIndex(out.String(), "default")
+	workChoice, defaultChoice := strings.Index(errw.String(), "work:"+roundTrip), strings.Index(errw.String(), "default:"+roundTrip)
+	if workRow < 0 || defaultRow < 0 || workRow >= defaultRow || workChoice < 0 || defaultChoice < 0 || workChoice >= defaultChoice {
+		t.Fatalf("choice order differs from table:\n%s\n%s", out.String(), errw.String())
+	}
+	for _, acct := range []string{"work", "default"} {
+		ref := acct + ":" + roundTrip
+		if !strings.Contains(errw.String(), ref) {
+			t.Fatalf("missing exact reference %s in %s", ref, errw.String())
+		}
+		if got := string(runCLI(t, "show", ref, "--json")); !strings.Contains(got, `"account": "`+acct+`"`) {
+			t.Fatalf("suggested reference %s did not open that copy: %s", ref, got)
+		}
+	}
+}
+
+func TestReadIgnoresSideFileInAnotherAccount(t *testing.T) {
+	root, turn1, _ := twoAccounts(t)
+	path := filepath.Join(root, ".claude-work", "projects", "-work-app", roundTrip, "subagents", "agent-side.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(turn1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := Main([]string{"show", roundTrip, "--json"}, &out, &errw); code != 0 {
+		t.Fatalf("side file caused a false copy conflict: exit %d, %s", code, errw.String())
+	}
+	if !strings.Contains(out.String(), `"account": "default"`) {
+		t.Fatalf("opened the wrong account: %s", out.String())
 	}
 }

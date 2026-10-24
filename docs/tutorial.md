@@ -403,12 +403,12 @@ for both copies, give the account choices on stderr, and stop:
 ```
 $ ccli log 746cbfa4
 LAST    ACCOUNT         ID        PROJECT  TITLE       MODEL     ACTIVE  TOKENS  CACHED  COST
-2h ago  default         746cbfa4  app      Fix export  opus-5-5      12m    120K      8M  $3.40
 1h ago  work ← default  746cbfa4  app      Fix export  opus-5-5       8m     65K      4M  $1.80
+2h ago  default         746cbfa4  app      Fix export  opus-5-5      12m    120K      8M  $3.40
 2 sessions · 185K tokens · 12M cached · $5.20 list price
 ccli: choose one with -a <account> or:
-  default:746cbfa4
-  work:746cbfa4
+  work:746cbfa4-0000-4000-8000-000000000001
+  default:746cbfa4-0000-4000-8000-000000000001
 ```
 
 In a copy's turn list, the turns that came in with a copy show `copied` in

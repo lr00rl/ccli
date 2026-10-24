@@ -133,9 +133,9 @@ func (e *AmbiguousCopies) Error() string {
 	return fmt.Sprintf("session %s is in multiple accounts", e.ID)
 }
 
-// CopiesOf lists the accounts that hold a session, by name.
+// CopiesOf lists the accounts that hold a main transcript, by name.
 func (d *DB) CopiesOf(ctx context.Context, id string) ([]string, error) {
-	rows, err := d.sql().QueryContext(ctx, `SELECT DISTINCT account FROM files WHERE session_id = ? ORDER BY account`, id)
+	rows, err := d.sql().QueryContext(ctx, `SELECT DISTINCT account FROM files WHERE session_id = ? AND kind = 'main' ORDER BY account`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +165,9 @@ func (d *DB) ResolveUnique(ctx context.Context, ref string) (account, id string,
 	}
 	if len(accounts) > 1 {
 		return "", "", &AmbiguousCopies{ID: id, Accounts: accounts}
+	}
+	if len(accounts) == 1 {
+		return accounts[0], id, nil
 	}
 	return account, id, nil
 }

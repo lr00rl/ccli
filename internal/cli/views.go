@@ -520,8 +520,8 @@ func (a *app) resolveReadSession(ctx context.Context, svc *query.DB, ref string,
 		a.term(c).Sessions(page, true)
 	}
 	fmt.Fprintln(a.errw, "ccli: choose one with -a <account> or:")
-	for _, acct := range copies.Accounts {
-		fmt.Fprintf(a.errw, "  %s:%s\n", acct, query.ShortID(copies.ID))
+	for _, row := range page.Sessions {
+		fmt.Fprintf(a.errw, "  %s:%s\n", row.Account, row.ID)
 	}
 	return "", "", exitCode(1)
 }
