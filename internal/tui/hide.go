@@ -129,9 +129,14 @@ func (v *viewer) ask(s *screen, hide bool) {
 	if n := s.list.offScreen(); n > 0 {
 		what += fmt.Sprintf(" (%d not in the current filter)", n)
 	}
-	q := fmt.Sprintf("Hide %s? Lists leave them out; totals still count them.", what)
+	// Hiding goes by session id, so it reaches the copies in other accounts.
+	them := "it"
+	if len(refs) > 1 {
+		them = "them"
+	}
+	q := fmt.Sprintf("Hide %s from lists, in every account? Totals still count %s.", what, them)
 	if !hide {
-		q = fmt.Sprintf("Bring back %s?", what)
+		q = fmt.Sprintf("Bring back %s, in every account?", what)
 	}
 	v.confirm = &confirmation{question: q, yes: func() tea.Cmd { return v.setHidden(s, refs, hide) }}
 }

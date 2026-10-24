@@ -75,7 +75,8 @@ func (v *viewer) askTag(s *screen) {
 	it := s.list.all[idx]
 	ref, current := it.id, it.tag
 	src, ctx := v.src, v.ctx
-	v.edit = &editLine{prompt: "tag:", text: current, limit: query.MaxTag, submit: func(text string) tea.Cmd {
+	// A tag goes by session id, so every account's copy shows it.
+	v.edit = &editLine{prompt: "tag (all accounts):", text: current, limit: query.MaxTag, submit: func(text string) tea.Cmd {
 		text = strings.Join(strings.Fields(text), " ")
 		if text == current {
 			v.status = "left as it was"

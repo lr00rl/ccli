@@ -295,6 +295,7 @@ func (v *viewer) turnItems(ref string, l *query.TurnList) []item {
 				}
 				return ds[0], nil
 			},
+			transcript: true,
 			draw: func(v *viewer, data any, w int) string {
 				if v.tools {
 					return v.toolPane(data, w)
@@ -422,6 +423,7 @@ func (v *viewer) agentItem(ref string, n query.AgentNode, prefix string) item {
 			}
 			return a, err
 		},
+		transcript: true,
 		draw: func(v *viewer, data any, w int) string {
 			return v.capture(w, func(t render.Term) { t.AgentLog(data.(*query.AgentLog), v.opt) })
 		},
