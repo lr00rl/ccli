@@ -453,9 +453,12 @@ price".
 
 A session id can be in several accounts: each is a copy, its own
 transcript, and the index keys sessions by account and id. Commands that
-read one session (`show`, `log`, `export`, `view`) take `<account>:<id>` or
-`-a`, and otherwise use the copy with the latest activity and name the
-others on stderr (`query.DB.CopiesOf`). `Turns` marks each turn whose prompt
+read one session (`show`, `log`, `export`, `view <id>`) take `<account>:<id>`
+or `-a`. When the id is in several accounts and neither is given, they print
+the matching rows through the same `Sessions` renderer as `ccli sessions`,
+then list usable `account:id` references on stderr and exit nonzero. The
+rows include hidden and empty copies; a missing row fails the command.
+`view` without an id still lists every matching copy. `Turns` marks each turn whose prompt
 lies in a byte range the ledger says ccli copied in (`TurnRow.CopiedFrom`:
 the source account, or `account:id` for a fork). Marks that belong to the
 id (hide, tag) apply to every copy.

@@ -89,8 +89,9 @@ everything into the folder directly below the one you asked about.
 `ccli projects /` covers the whole machine.
 
 Any command that takes a session accepts an id prefix, such as `7a93706c`.
-When the same session exists in two accounts, ccli picks the copy with the
-latest activity; name the account to choose: `work:7a93706c`.
+When the same session exists in two accounts, `show`, `log`, `export`, and
+`view <id>` show the `sessions` table for both copies and ask for an account. Choose one with
+`work:7a93706c` or `-a work`.
 
 `ccli show 7a93706c` prints one session: its models, how its cost splits
 between the main conversation, its subagents and its workflow runs, the tree
@@ -396,14 +397,18 @@ session went on in work after default last saw it.
 
 `746cbfa4` is in both accounts under the same id. `show`, `log`, `export`
 and `view` read one copy: the one you name with `-a` (or as
-`default:746cbfa4`), or else the one used last, and they say which on
-stderr:
+`default:746cbfa4`). Without an account, they show the `sessions` columns
+for both copies, give the account choices on stderr, and stop:
 
 ```
 $ ccli log 746cbfa4
-ccli: 746cbfa4 is also in work; this is the copy in default, the one used last (-a work picks another)
-Why does the nightly export take forty minutes now?
-746cbfa4 · default · 25 prompts typed · $0
+LAST    ACCOUNT         ID        PROJECT  TITLE       MODEL     ACTIVE  TOKENS  CACHED  COST
+1h ago  work ← default  746cbfa4  app      Fix export  opus-5-5       8m     65K      4M  $1.80
+2h ago  default         746cbfa4  app      Fix export  opus-5-5      12m    120K      8M  $3.40
+2 sessions · 185K tokens · 12M cached · $5.20 list price
+ccli: choose one with -a <account> or:
+  work:746cbfa4-0000-4000-8000-000000000001
+  default:746cbfa4-0000-4000-8000-000000000001
 ```
 
 In a copy's turn list, the turns that came in with a copy show `copied` in
@@ -723,8 +728,8 @@ your status line command.
 `ccli sessions --days 0 -q <prefix>`; the index only knows transcripts it has
 read.
 
-**The wrong copy opens**: a session in two accounts resolves to the copy with
-the latest activity. Name the account, as in `work:7a93706c`.
+**A session is in multiple accounts**: choose one of the listed accounts,
+as in `work:7a93706c` or `-a work`.
 
 **"ccli view needs a terminal"**: `view` cannot run with its output piped.
 `ccli log` prints the same turns.

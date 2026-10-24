@@ -523,12 +523,23 @@ can sit before the command or after it.
 | turn | a prompt and the work it led to, numbered in `ccli log` | `ccli log <id> <turn>`, `ccli fork <id> --turn <turn>` |
 | agent | a subagent's transcript; it belongs to the session that started it | `ccli log <id> --agent <agent id>` |
 
-When a session is in more than one account and you name no account, ccli
-uses the copy used last and says so on stderr:
+When a session is in more than one account and you name no account, one-session
+read commands show the same columns as `sessions` and require a choice:
 
 ```
-ccli: 1087b979 is also in default; this is the copy in talcum, the one used last (-a default picks another)
+LAST    ACCOUNT         ID        PROJECT  TITLE       MODEL     ACTIVE  TOKENS  CACHED  COST
+1h ago  work ← default  7a93706c  app      Fix export  opus-5-5       8m     65K      4M  $1.80
+2h ago  default         7a93706c  app      Fix export  opus-5-5      12m    120K      8M  $3.40
+2 sessions · 185K tokens · 12M cached · $5.20 list price
+ccli: choose one with -a <account> or:
+  work:7a93706c-0000-4000-8000-000000000001
+  default:7a93706c-0000-4000-8000-000000000001
 ```
+
+With `--json` the choice is an object of its own, and the exit status is 1:
+`error` is `"ambiguous"`, `ref` and `id` say what was asked and what it
+matched, `choose` holds a full reference per copy, and `sessions` the rows
+above.
 
 `-a` always names the account you are looking at or working in:
 

@@ -43,13 +43,12 @@ func cmdExport(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
-	acct, id, err := svc.Resolve(ctx, pos[0])
+	acct, id, err := a.resolveReadSession(ctx, svc, pos[0], c)
 	if err != nil {
 		return err
 	}
-	a.noteCopy(ctx, svc, pos[0], acct, id)
 	a.refreshCursorFor(ctx, []string{acct}, nil)
-	ref := pos[0]
+	ref := acct + ":" + id
 	list, err := svc.Turns(ctx, ref)
 	if err != nil {
 		return err

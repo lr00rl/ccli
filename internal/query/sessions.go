@@ -206,6 +206,36 @@ func (d *DB) Sessions(ctx context.Context, f Filter) (SessionPage, error) {
 	return page, nil
 }
 
+// SessionCopies returns the same rows as Sessions, scoped to every account
+// holding one exact session id. Hidden sessions and drafts remain visible so
+// an ambiguity report never omits a candidate.
+func (d *DB) SessionCopies(ctx context.Context, id string) (SessionPage, error) {
+	accounts, err := d.CopiesOf(ctx, id)
+	if err != nil {
+		return SessionPage{}, err
+	}
+	if len(accounts) == 0 {
+		return SessionPage{}, fmt.Errorf("%w %q", ErrNotFound, id)
+	}
+	f := Filter{Accounts: accounts, Search: id, Sort: "last", Show: AnyHidden, Drafts: true}
+	page := SessionPage{Filter: f}
+	for _, acct := range accounts {
+		rows, err := d.querySessions(ctx, f, &skey{acct, id})
+		if err != nil {
+			return SessionPage{}, err
+		}
+		if len(rows) != 1 || rows[0].ID != id {
+			return SessionPage{}, fmt.Errorf("session %s in account %s has no list row", id, acct)
+		}
+		page.Sessions = append(page.Sessions, rows[0])
+		page.Tokens.add(rows[0].Tokens)
+		page.Cost.add(rows[0].Cost)
+	}
+	sortSessions(page.Sessions, f.Sort)
+	page.Matched = len(page.Sessions)
+	return page, nil
+}
+
 func sortSessions(ss []SessionRow, by string) {
 	less := func(i, j int) bool { return ss[i].Last.After(ss[j].Last) }
 	switch by {
