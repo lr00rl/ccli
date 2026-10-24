@@ -92,10 +92,10 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 	var rows [][]string
 	copies := false
 	for _, s := range p.Sessions {
+		copies = copies || showAccount && s.CopiedFrom != ""
 		r := []string{t.Ago(s.Last)}
 		if showAccount {
 			r = append(r, t.accountCell(s))
-			copies = copies || s.CopiedFrom != ""
 		}
 		// The mark stands apart from the id, so a double-click selects
 		// the id alone.
@@ -124,7 +124,11 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 			Num(s.Tokens.InOut()), Num(s.Tokens.CacheRead), t.money(costText(s.Cost)))
 		rows = append(rows, r)
 	}
-	t.table(cols, rows)
+	if t.fits(cols, rows) {
+		t.table(cols, rows)
+	} else {
+		t.narrowSessions(p.Sessions, showAccount, tagged)
+	}
 	more := ""
 	if p.Matched > len(p.Sessions) {
 		more = fmt.Sprintf(", showing %d (use -n)", len(p.Sessions))
@@ -133,23 +137,104 @@ func (t Term) Sessions(p query.SessionPage, showAccount bool) {
 	if p.Filter.Show == query.HiddenOnly {
 		count = plural(p.Matched, "hidden session")
 	}
-	t.println(t.dim(fmt.Sprintf("%s%s · %s tokens · %s cached · %s %s", count, more,
-		Num(p.Tokens.InOut()), Num(p.Tokens.CacheRead), costText(p.Cost), priceWord(p.Sessions))))
+	t.packed(" · ", count+more, Num(p.Tokens.InOut())+" tokens", Num(p.Tokens.CacheRead)+" cached",
+		costText(p.Cost)+" "+priceWord(p.Sessions))
 	if p.Hidden > 0 {
 		t.println(t.dim(fmt.Sprintf("%s left out: ccli sessions --hidden lists them", plural(p.Hidden, "hidden session"))))
 	}
 	if p.Drafts > 0 {
 		t.draftsLeftOut(p.Drafts)
 	}
-	legend := "● running   × transcript deleted (history kept)   + unpriced models left out"
+	legend := []string{"● running", "× transcript deleted (history kept)", "+ unpriced models left out"}
 	if copies {
-		legend += "   ← copied from that account"
+		legend = append(legend, "← copied from that account")
 	}
-	t.println(t.dim(legend))
+	t.packed("   ", legend...)
+}
+
+// packed prints items dimmed, joined by sep, starting a new line before an
+// item that would pass the terminal's width.
+func (t Term) packed(sep string, items ...string) {
+	line := ""
+	for _, it := range items {
+		switch {
+		case line == "":
+			line = it
+		case width(line)+width(sep)+width(it) > t.Width:
+			t.println(t.dim(line))
+			line = it
+		default:
+			line += sep + it
+		}
+	}
+	if line != "" {
+		t.println(t.dim(line))
+	}
 }
 
 // accountCell names the session's account and, for a session ccli copied or
 // moved in, the account it came from.
+// narrowSessions lists sessions two lines each when the table does not fit
+// the terminal: when, account, id, tag and cost, then the title and the rest
+// as far as they fit.
+func (t Term) narrowSessions(ss []query.SessionRow, showAccount, tagged bool) {
+	acctW, costW := 0, 0
+	for _, s := range ss {
+		if showAccount {
+			acctW = max(acctW, width(t.accountCell(s)))
+		}
+		costW = max(costW, width(costText(s.Cost)))
+	}
+	room := max(t.Width-costW-2, 1)
+	for _, s := range ss {
+		head := pad(t.Ago(s.Last), len("2006-01-02"), false)
+		if showAccount {
+			head += "  " + pad(t.accountCell(s), acctW, false)
+		}
+		id := query.ShortID(s.ID)
+		switch {
+		case s.Live:
+			id = t.paint(cLive, id+" ●")
+		case s.Missing:
+			id = t.dim(id + " ×")
+		}
+		head += "  " + id
+		if tagged && s.Tag != "" {
+			head += "  " + t.tag(s.Tag)
+		}
+		if width(head) > room {
+			head = fit(stripANSI(head), room)
+		}
+		t.println(pad(head, room, false) + "  " + pad(t.money(costText(s.Cost)), costW, true))
+		ttl := s.Title
+		if ttl == "" {
+			ttl = "(untitled)"
+		}
+		if s.AgentName != "" {
+			ttl = "[" + s.AgentName + "] " + ttl
+		}
+		if s.Subagents > 0 {
+			ttl += fmt.Sprintf(" +%d agents", s.Subagents)
+		}
+		line := fit(ttl, t.Width-2)
+		meta := strings.Join(nonEmpty(s.Project, shortModels(s.Models), Dur(s.ActiveMS), Num(s.Tokens.InOut())+" tokens"), " · ")
+		if left := t.Width - 2 - width(line) - 3; left >= 8 && meta != "" {
+			line += t.dim(" · " + fit(meta, left))
+		}
+		t.println("  " + line)
+	}
+}
+
+func nonEmpty(parts ...string) []string {
+	var out []string
+	for _, p := range parts {
+		if p != "" && p != "-" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (t Term) accountCell(s query.SessionRow) string {
 	if s.CopiedFrom == "" {
 		return s.Account

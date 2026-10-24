@@ -78,7 +78,9 @@ ccli sessions --tool codex            # only Codex sessions (or claude, pi, curs
 ![ccli sessions](docs/images/sessions.png)
 
 Teammates of an agent team appear with their name in brackets. A red id is a
-session that is running now.
+session that is running now. In a terminal too narrow for the table, each
+session takes two lines: when, account, id and cost, then the title and as
+much of the rest as fits.
 
 To stop seeing sessions you are done with, hide them:
 

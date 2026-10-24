@@ -56,3 +56,32 @@ func TestSessionRowMarksAndCopySource(t *testing.T) {
 		t.Fatalf("mark is glued to the id:\n%s", out)
 	}
 }
+
+// A terminal too narrow for the table gets two lines a session, none wider
+// than the terminal, still with the id, the cost and the title.
+func TestNarrowSessionsFitTheTerminal(t *testing.T) {
+	var b bytes.Buffer
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	id := "1087b979-d8ea-4833-8f31-8baa6290d05e"
+	Term{W: &b, Width: 48, Now: now, Loc: time.UTC}.Sessions(query.SessionPage{Matched: 1, Sessions: []query.SessionRow{
+		{Account: "talcum", ID: id, Title: "Tmux-radar 的 tmux 兼容实现优化，一个很长的标题", Project: "tmux-radar", Last: now, Live: true,
+			CopiedFrom: "default", Models: []string{"opus-5-5"}, ActiveMS: 3_600_000, Cost: query.Cost{USD: 55.86}},
+	}}, true)
+	out := b.String()
+	for _, want := range []string{"1087b979 ●", "talcum ← default", "$55.86", "Tmux-radar 的 tmux"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "LAST") {
+		t.Fatalf("narrow list kept the table header:\n%s", out)
+	}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.Contains(line, "left out:") {
+			continue // a sentence, wrapped by the terminal
+		}
+		if width(line) > 48 {
+			t.Fatalf("line wider than the terminal (%d): %q", width(line), line)
+		}
+	}
+}

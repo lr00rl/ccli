@@ -262,6 +262,27 @@ type column struct {
 	flex  bool
 }
 
+// fits says whether table can print the rows one line each in the
+// terminal's width, with every flex column at its narrowest.
+func (t Term) fits(cols []column, rows [][]string) bool {
+	total := 2 * (len(cols) - 1)
+	for i, c := range cols {
+		w := width(c.title)
+		for _, r := range rows {
+			w = max(w, width(r[i]))
+		}
+		if c.flex {
+			least := c.min
+			if least == 0 {
+				least = 12
+			}
+			w = min(w, least)
+		}
+		total += w
+	}
+	return total <= t.Width
+}
+
 // table prints rows with columns sized to fit the terminal; flex columns
 // shrink first.
 func (t Term) table(cols []column, rows [][]string) {
