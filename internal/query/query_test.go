@@ -2,9 +2,11 @@ package query_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -235,6 +237,43 @@ func TestResolve(t *testing.T) {
 	// Without an account, the copy with the transcript and latest activity wins.
 	if acct, _, err := fx.svc.Resolve(ctx, "aaaa"); err != nil || acct == "" {
 		t.Errorf("aaaa -> %s %v", acct, err)
+	}
+}
+
+func TestResolveUniqueRequiresAccountForCopies(t *testing.T) {
+	fx := setup(t)
+	ctx := context.Background()
+	if acct, id, err := fx.svc.ResolveUnique(ctx, "work:aaaa"); err != nil || acct != "work" || id != lead {
+		t.Fatalf("work:aaaa -> %s %s %v", acct, id, err)
+	}
+	var copies *query.AmbiguousCopies
+	if _, _, err := fx.svc.ResolveUnique(ctx, "aaaa"); !errors.As(err, &copies) ||
+		copies.ID != lead || !slices.Equal(copies.Accounts, []string{"default", "work"}) {
+		t.Fatalf("ambiguous copy: %v", err)
+	}
+	if acct, id, err := fx.svc.ResolveUnique(ctx, "bbbb"); err != nil || acct != "default" || id != next {
+		t.Fatalf("unique prefix -> %s %s %v", acct, id, err)
+	}
+}
+
+func TestSessionCopiesUsesSessionRows(t *testing.T) {
+	fx := setup(t)
+	page, err := fx.svc.SessionCopies(context.Background(), lead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Matched != 2 || len(page.Sessions) != 2 {
+		t.Fatalf("copies: %+v", page)
+	}
+	byAccount := map[string]query.SessionRow{}
+	for _, row := range page.Sessions {
+		byAccount[row.Account] = row
+		if row.ID != lead || row.Title == "" || row.Project == "" || row.Last.IsZero() {
+			t.Fatalf("incomplete session row: %+v", row)
+		}
+	}
+	if byAccount["default"].Tokens.Input == 0 || len(byAccount["default"].Models) == 0 || byAccount["work"].Tokens.Input != 0 {
+		t.Fatalf("copy usage: default=%+v work=%+v", byAccount["default"].Tokens, byAccount["work"].Tokens)
 	}
 }
 

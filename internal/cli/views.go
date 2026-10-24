@@ -309,11 +309,11 @@ func cmdShow(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
-	acct, id, err := svc.Resolve(ctx, ref)
+	acct, id, err := a.resolveReadSession(ctx, svc, ref, c)
 	if err != nil {
 		return err
 	}
-	a.noteCopy(ctx, svc, ref, acct, id)
+	ref = acct + ":" + id
 	a.refreshCursorFor(ctx, []string{acct}, nil)
 	d, err := svc.Session(ctx, ref)
 	if err != nil {
@@ -496,31 +496,34 @@ func accountsOf(acct string) []string {
 	return []string{acct}
 }
 
-// noteCopy says on stderr which copy a reference that names no account
-// resolved to, when the session is in more than one account.
-func (a *app) noteCopy(ctx context.Context, svc *query.DB, ref, acct, id string) {
-	if strings.Contains(ref, ":") {
-		return
+// resolveReadSession shows the regular sessions table when an id has copies
+// in several accounts, then requires an explicit account before reading one.
+func (a *app) resolveReadSession(ctx context.Context, svc *query.DB, ref string, c common) (account, id string, err error) {
+	account, id, err = svc.ResolveUnique(ctx, ref)
+	var copies *query.AmbiguousCopies
+	if !errors.As(err, &copies) {
+		return account, id, err
 	}
-	all, err := svc.CopiesOf(ctx, id)
+	a.refreshCursorFor(ctx, copies.Accounts, nil)
+	page, err := svc.SessionCopies(ctx, copies.ID)
 	if err != nil {
-		return
+		return "", "", err
 	}
-	var others []string
-	for _, o := range all {
-		if o != acct {
-			others = append(others, o)
+	if len(page.Sessions) != len(copies.Accounts) {
+		return "", "", fmt.Errorf("session %s: copy list changed while reading; retry", copies.ID)
+	}
+	if c.json {
+		if err := a.printJSON(page); err != nil {
+			return "", "", err
 		}
+	} else {
+		a.term(c).Sessions(page, true)
 	}
-	if len(others) == 0 {
-		return
+	fmt.Fprintln(a.errw, "ccli: choose one with -a <account> or:")
+	for _, acct := range copies.Accounts {
+		fmt.Fprintf(a.errw, "  %s:%s\n", acct, query.ShortID(copies.ID))
 	}
-	pick := others[0]
-	if len(others) > 1 {
-		pick = "<account>"
-	}
-	fmt.Fprintf(a.errw, "ccli: %s is also in %s; this is the copy in %s, the one used last (-a %s picks another)\n",
-		query.ShortID(id), strings.Join(others, ", "), acct, pick)
+	return "", "", exitCode(1)
 }
 
 // flagSet reports whether the command line gave the flag.

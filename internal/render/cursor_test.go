@@ -31,7 +31,7 @@ func TestSessionShowsCursorEditsAndComposer(t *testing.T) {
 		return b.String()
 	}
 	out := show(false)
-	for _, want := range []string{"46% of the context window in use", "12 files by grok-4.7", "f00.go", "+2 more: ccli show be14583f --all"} {
+	for _, want := range []string{"46% of the context window in use", "12 files by grok-4.7", "f00.go", "+2 more: ccli show cursor-ide:be14583f --all"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,21 +141,68 @@ func TestResumeRejectsBothSyncFlags(t *testing.T) {
 	}
 }
 
-// With the session in two accounts, the read commands say which copy they
-// show, and -a (or account:id) picks the other; log marks the turns that
-// came in with the copy.
+// With the session in two accounts, read commands require a chosen copy.
+// Once chosen, log marks the turns that came in with the copy.
 func TestReadCommandsPickACopy(t *testing.T) {
 	twoAccounts(t)
 	runCLI(t, "copy", roundTrip, "--to", "work", "--apply")
-	for _, cmd := range [][]string{{"show", roundTrip}, {"log", roundTrip}, {"export", roundTrip}} {
+	for _, cmd := range [][]string{
+		{"show", roundTrip}, {"show", roundTrip, "--json"},
+		{"log", roundTrip}, {"log", roundTrip, "last"}, {"log", roundTrip, "--detail", "reply"},
+		{"export", roundTrip},
+	} {
 		var out, errw bytes.Buffer
-		if code := Main(cmd, &out, &errw); code != 0 || !strings.Contains(errw.String(), "is also in") {
-			t.Fatalf("%v: exit %d, stderr %q", cmd, code, errw.String())
+		if code := Main(cmd, &out, &errw); code == 0 ||
+			!strings.Contains(errw.String(), "-a <account>") ||
+			!strings.Contains(errw.String(), "default:"+roundTrip[:8]) ||
+			!strings.Contains(errw.String(), "work:"+roundTrip[:8]) {
+			t.Fatalf("%v: exit %d, stdout %q, stderr %q", cmd, code, out.String(), errw.String())
+		}
+		if slices.Contains(cmd, "--json") {
+			var page struct {
+				Sessions []struct {
+					Account string   `json:"account"`
+					ID      string   `json:"id"`
+					Title   string   `json:"title"`
+					Models  []string `json:"models"`
+				} `json:"sessions"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &page); err != nil || len(page.Sessions) != 2 {
+				t.Fatalf("%v: invalid candidates: %v %s", cmd, err, out.String())
+			}
+			accounts := []string{page.Sessions[0].Account, page.Sessions[1].Account}
+			slices.Sort(accounts)
+			if !slices.Equal(accounts, []string{"default", "work"}) {
+				t.Fatalf("%v: wrong accounts in candidates: %s", cmd, out.String())
+			}
+			for _, row := range page.Sessions {
+				if row.ID != roundTrip || row.Title == "" {
+					t.Fatalf("%v: incomplete candidate: %+v", cmd, row)
+				}
+			}
+			continue
+		}
+		for _, want := range []string{"LAST", "ACCOUNT", "ID", "PROJECT", "TITLE", "MODEL", "ACTIVE", "TOKENS", "CACHED", "COST", "default", "work", "first", "opus-5-5"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("%v: missing %q in candidates:\n%s", cmd, want, out.String())
+			}
+		}
+		if strings.Count(out.String(), roundTrip[:8]) != 2 || !strings.Contains(out.String(), "2 sessions") {
+			t.Fatalf("%v: candidate list lost a copy:\n%s", cmd, out.String())
 		}
 	}
+	if show := string(runCLI(t, "show", roundTrip, "-a", "work")); !strings.Contains(show, "ccli log work:"+roundTrip[:8]) ||
+		!strings.Contains(show, "ccli view work:"+roundTrip[:8]) ||
+		!strings.Contains(show, "ccli resume work:"+roundTrip[:8]) {
+		t.Fatalf("show -a work has ambiguous follow-up commands:\n%s", show)
+	}
 	work := string(runCLI(t, "log", roundTrip, "-a", "work"))
-	if !strings.Contains(work, "· work ·") || !strings.Contains(work, "turns 1 to 2 came with a copy from default") || !strings.Contains(work, "copied") {
+	if !strings.Contains(work, "· work ·") || !strings.Contains(work, "turns 1 to 2 came with a copy from default") || !strings.Contains(work, "copied") ||
+		!strings.Contains(work, "ccli view work:"+roundTrip[:8]) {
 		t.Fatalf("log -a work:\n%s", work)
+	}
+	if exported := string(runCLI(t, "export", "work:"+roundTrip)); !strings.Contains(exported, "first") {
+		t.Fatalf("export work:id:\n%s", exported)
 	}
 	if def := string(runCLI(t, "log", "default:"+roundTrip)); !strings.Contains(def, "· default ·") || strings.Contains(def, "came with a copy") {
 		t.Fatalf("log default:id:\n%s", def)

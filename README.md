@@ -523,11 +523,17 @@ can sit before the command or after it.
 | turn | a prompt and the work it led to, numbered in `ccli log` | `ccli log <id> <turn>`, `ccli fork <id> --turn <turn>` |
 | agent | a subagent's transcript; it belongs to the session that started it | `ccli log <id> --agent <agent id>` |
 
-When a session is in more than one account and you name no account, ccli
-uses the copy used last and says so on stderr:
+When a session is in more than one account and you name no account, one-session
+read commands show the same columns as `sessions` and require a choice:
 
 ```
-ccli: 1087b979 is also in default; this is the copy in talcum, the one used last (-a default picks another)
+LAST    ACCOUNT         ID        PROJECT  TITLE       MODEL     ACTIVE  TOKENS  CACHED  COST
+2h ago  default         7a93706c  app      Fix export  opus-5-5      12m    120K      8M  $3.40
+1h ago  work ← default  7a93706c  app      Fix export  opus-5-5       8m     65K      4M  $1.80
+2 sessions · 185K tokens · 12M cached · $5.20 list price
+ccli: choose one with -a <account> or:
+  default:7a93706c
+  work:7a93706c
 ```
 
 `-a` always names the account you are looking at or working in:

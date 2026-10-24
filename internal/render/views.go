@@ -426,13 +426,14 @@ func (t Term) Session(d *query.SessionDetail, all bool) {
 
 	t.println()
 	t.println(t.accent("Turns"))
-	t.printf("  %s\n", t.dim("ccli log "+query.ShortID(d.ID)+" lists every prompt with what it cost · ccli view "+query.ShortID(d.ID)+" browses them"))
+	ref := d.Account + ":" + query.ShortID(d.ID)
+	t.printf("  %s\n", t.dim("ccli log "+ref+" lists every prompt with what it cost · ccli view "+ref+" browses them"))
 	t.println()
 
 	t.println(t.accent("Resume"))
 	if d.Resume.Available {
 		t.printf("  %s\n", d.Resume.Command)
-		t.printf("  %s\n", t.dim("or: ccli resume "+query.ShortID(d.ID)))
+		t.printf("  %s\n", t.dim("or: ccli resume "+ref))
 	} else {
 		t.printf("  %s\n", t.warn(d.Resume.Reason))
 	}
@@ -467,7 +468,7 @@ func (t Term) edits(d *query.SessionDetail, all bool) {
 		t.println(line)
 	}
 	if n < len(e.Files) {
-		t.printf("  %s\n", t.dim(fmt.Sprintf("+%d more: ccli show %s --all lists every one", len(e.Files)-n, query.ShortID(d.ID))))
+		t.printf("  %s\n", t.dim(fmt.Sprintf("+%d more: ccli show %s:%s --all lists every one", len(e.Files)-n, d.Account, query.ShortID(d.ID))))
 	}
 }
 
@@ -586,7 +587,7 @@ func (t Term) tree(d *query.SessionDetail, all bool) {
 	}
 	walk("", "  ", 0)
 	if hidden > 0 {
-		t.printf("  %s\n", t.dim(fmt.Sprintf("… %d more agents (ccli show --all %s)", hidden, query.ShortID(d.ID))))
+		t.printf("  %s\n", t.dim(fmt.Sprintf("… %d more agents (ccli show --all %s:%s)", hidden, d.Account, query.ShortID(d.ID))))
 	}
 	shownRuns := 0
 	for _, r := range d.Runs {
@@ -605,7 +606,7 @@ func (t Term) tree(d *query.SessionDetail, all bool) {
 		t.printf("  %s%s\n", t.dim(when), runLine(t, r)+t.dim(turn))
 	}
 	if len(d.Runs) > shownRuns {
-		t.printf("  %s\n", t.dim(fmt.Sprintf("… %d more workflow runs (ccli show --all %s)", len(d.Runs)-shownRuns, query.ShortID(d.ID))))
+		t.printf("  %s\n", t.dim(fmt.Sprintf("… %d more workflow runs (ccli show --all %s:%s)", len(d.Runs)-shownRuns, d.Account, query.ShortID(d.ID))))
 	}
 }
 

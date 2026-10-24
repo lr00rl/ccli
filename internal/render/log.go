@@ -125,7 +125,7 @@ func (t Term) Turns(l *query.TurnList, all bool) {
 	cols = append(cols, column{title: "PROMPT", flex: true, min: 20})
 	t.table(cols, rows)
 	t.println()
-	id := query.ShortID(s.ID)
+	id := s.Account + ":" + query.ShortID(s.ID)
 	if hidden > 0 {
 		t.println(t.dim(fmt.Sprintf("%d turns started by tasks, other sessions or the system are hidden (--all shows them)", hidden)))
 	}
@@ -160,7 +160,7 @@ func (t Term) Turn(d *query.TurnDetail, opt LogOptions) {
 		}
 	}
 	nav := []string{}
-	id := query.ShortID(d.Session.ID)
+	id := d.Session.Account + ":" + query.ShortID(d.Session.ID)
 	if d.Prev >= 0 {
 		nav = append(nav, fmt.Sprintf("ccli log %s %d", id, d.Prev))
 	}
@@ -544,7 +544,7 @@ func (t Term) RunAgents(r *query.RunInfo, nodes []query.AgentNode, status map[st
 	}
 	t.table([]column{{title: "  AGENT"}, {title: "PHASE"}, {title: "STATUS"}, {title: "COST", right: true}, {title: "LABEL", flex: true}}, rows)
 	t.println()
-	t.println(t.dim(fmt.Sprintf("ccli log %s --agent <id> prints one agent's transcript", query.ShortID(sessionID))))
+	t.println(t.dim(fmt.Sprintf("ccli log %s --agent <id> prints one agent's transcript", sessionID)))
 }
 
 // Prompts prints prompts across sessions.

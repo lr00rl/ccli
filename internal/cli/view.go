@@ -52,11 +52,10 @@ func cmdView(ctx context.Context, a *app, args []string) error {
 	defer a.close()
 	ref := ""
 	if len(pos) == 1 {
-		acct, id, err := svc.Resolve(ctx, pos[0])
+		acct, id, err := a.resolveReadSession(ctx, svc, pos[0], c)
 		if err != nil {
 			return err
 		}
-		a.noteCopy(ctx, svc, pos[0], acct, id)
 		ref = acct + ":" + id
 		a.refreshCursorFor(ctx, []string{acct}, nil)
 	} else {

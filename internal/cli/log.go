@@ -67,11 +67,12 @@ func cmdLog(ctx context.Context, a *app, args []string) error {
 		return err
 	}
 	defer a.close()
-	if acct, id, err := svc.Resolve(ctx, pos[0]); err == nil {
-		a.noteCopy(ctx, svc, pos[0], acct, id)
-		a.refreshCursorFor(ctx, []string{acct}, nil)
+	acct, id, err := a.resolveReadSession(ctx, svc, pos[0], c)
+	if err != nil {
+		return err
 	}
-	ref := pos[0]
+	a.refreshCursorFor(ctx, []string{acct}, nil)
+	ref := acct + ":" + id
 	t := a.term(c)
 	switch {
 	case *agent != "":

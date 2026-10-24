@@ -123,9 +123,19 @@ type Resume struct {
 // ErrNotFound is returned when no session matches a reference.
 var ErrNotFound = errors.New("no session matches")
 
+// AmbiguousCopies reports the accounts that hold the same session id.
+type AmbiguousCopies struct {
+	ID       string
+	Accounts []string
+}
+
+func (e *AmbiguousCopies) Error() string {
+	return fmt.Sprintf("session %s is in multiple accounts", e.ID)
+}
+
 // CopiesOf lists the accounts that hold a session, by name.
 func (d *DB) CopiesOf(ctx context.Context, id string) ([]string, error) {
-	rows, err := d.sql().QueryContext(ctx, `SELECT DISTINCT account FROM files WHERE session_id = ? AND kind = 'main' ORDER BY account`, id)
+	rows, err := d.sql().QueryContext(ctx, `SELECT DISTINCT account FROM files WHERE session_id = ? ORDER BY account`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +149,24 @@ func (d *DB) CopiesOf(ctx context.Context, id string) ([]string, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// ResolveUnique requires an account when several accounts contain the same id.
+// Use it before reading one session so a reference never selects a copy by
+// activity alone.
+func (d *DB) ResolveUnique(ctx context.Context, ref string) (account, id string, err error) {
+	account, id, err = d.Resolve(ctx, ref)
+	if err != nil || strings.IndexByte(ref, ':') > 0 {
+		return account, id, err
+	}
+	accounts, err := d.CopiesOf(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	if len(accounts) > 1 {
+		return "", "", &AmbiguousCopies{ID: id, Accounts: accounts}
+	}
+	return account, id, nil
 }
 
 // Resolve finds the session for a reference: a full id or a unique prefix,
@@ -185,9 +213,8 @@ func (d *DB) Resolve(ctx context.Context, ref string) (account, id string, err e
 		sort.Strings(names)
 		return "", "", fmt.Errorf("%q matches %d sessions (%s); use a longer prefix", ref, len(ids), strings.Join(names, ", "))
 	}
-	// The same session copied into several accounts: the copy still on disk
-	// with the latest activity is the one in use. Callers list the others
-	// (as "copy" links) so the choice is visible.
+	// Callers that permit implicit selection use the existing copy with the
+	// latest activity. One-session read commands use ResolveUnique instead.
 	return hits[0].account, hits[0].id, nil
 }
 
