@@ -507,3 +507,30 @@ func TestEventsReadOnlySinceTheCache(t *testing.T) {
 		t.Fatalf("read after a week started at %v, want a year back", s.starts)
 	}
 }
+
+func TestLockIsTakenOnceAndExpires(t *testing.T) {
+	dir := t.TempDir()
+	release, ok := Lock(dir)
+	if !ok || !Busy(dir) {
+		t.Fatal("first lock not taken")
+	}
+	if _, again := Lock(dir); again {
+		t.Fatal("lock taken twice")
+	}
+	old := time.Now().Add(-lockFor - time.Minute)
+	if err := os.Chtimes(filepath.Join(dir, "cursor-usage.lock"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if Busy(dir) {
+		t.Fatal("a lock left behind still counts as busy")
+	}
+	release2, ok := Lock(dir)
+	if !ok {
+		t.Fatal("a lock left behind was not taken over")
+	}
+	release2()
+	release() // removing an already removed lock is harmless
+	if Busy(dir) {
+		t.Fatal("released lock still busy")
+	}
+}
