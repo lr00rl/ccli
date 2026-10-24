@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/lr00rl/ccli/internal/account"
@@ -58,5 +59,13 @@ func TestCursorLinksFailureIsNotKept(t *testing.T) {
 	}
 	if len(l.kids["parent"]) != 1 || l.ideCopy(account.Cursor, "composer") != "cursor-ide" || !l.billedHere(account.Cursor, "parent") {
 		t.Fatalf("joins after a failed load: kids %v, ide %v", l.kids, l.ideIDs)
+	}
+}
+
+func TestByBilledOrdersByBilledCost(t *testing.T) {
+	u := cursorusage.Use{Models: map[string]*cursorusage.Model{"grok-x": {USD: 2}, "billed-only": {USD: 5}}}
+	got := byBilled([]string{"local", "grok-x"}, u)
+	if want := []string{"billed-only", "grok-x", "local"}; !slices.Equal(got, want) {
+		t.Fatalf("models %v, want %v", got, want)
 	}
 }

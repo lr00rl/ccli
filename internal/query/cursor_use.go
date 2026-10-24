@@ -3,6 +3,8 @@ package query
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
@@ -42,9 +44,7 @@ func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) error {
 			continue
 		}
 		rows[i].Tokens, rows[i].Cost = mergeBilled(rows[i].Tool, rows[i].Tokens, rows[i].Cost, u)
-		if m := u.Primary(); m != "" && !hasModel(rows[i].Models, m) {
-			rows[i].Models = append([]string{modelName(m)}, rows[i].Models...)
-		}
+		rows[i].Models = byBilled(rows[i].Models, u)
 	}
 	return nil
 }
@@ -388,11 +388,23 @@ func hitsOf(led *cursorusage.Ledger, id string, children []string, since, until 
 	return out
 }
 
-func hasModel(ms []string, m string) bool {
-	for _, s := range ms {
-		if s == m {
-			return true
+// byBilled orders a Cursor session's models by billed cost, costliest
+// first, and adds the billed models its transcript does not name. Models
+// with no billed cost keep their order after those.
+func byBilled(models []string, u cursorusage.Use) []string {
+	usd := map[string]float64{}
+	for raw, m := range u.Models {
+		usd[modelName(raw)] += m.USD
+	}
+	out := slices.Clone(models)
+	var extra []string
+	for name := range usd {
+		if !slices.Contains(out, name) {
+			extra = append(extra, name)
 		}
 	}
-	return false
+	sort.Strings(extra)
+	out = append(out, extra...)
+	sort.SliceStable(out, func(a, b int) bool { return usd[out[a]] > usd[out[b]] })
+	return out
 }

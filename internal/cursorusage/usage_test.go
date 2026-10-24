@@ -37,8 +37,8 @@ func TestAddEventCentsAndModels(t *testing.T) {
 	if got.USD < 1.534 || got.USD > 1.535 {
 		t.Fatalf("usd %v, want 1.5345", got.USD)
 	}
-	if got.Primary() != "gpt" {
-		t.Fatalf("primary %q", got.Primary())
+	if gpt, c2 := got.Models["gpt"], got.Models["composer-2"]; gpt == nil || c2 == nil || gpt.USD != 1.5 || c2.USD < 0.0344 || c2.USD > 0.0346 {
+		t.Fatalf("models %+v", got.Models)
 	}
 }
 

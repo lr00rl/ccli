@@ -113,17 +113,6 @@ func (u *Use) Add(b *Use) {
 	}
 }
 
-// Primary is the model with the highest billed amount.
-func (u *Use) Primary() string {
-	best, bestUSD := "", -1.0
-	for name, m := range u.Models {
-		if best == "" || m.USD > bestUSD {
-			best, bestUSD = name, m.USD
-		}
-	}
-	return best
-}
-
 // Period is the account's current billing cycle. Amounts are US dollars.
 // UsedUSD is included spend against LimitUSD. BonusUSD is free usage the
 // plan adds on top, so it is not spend against that limit. Percent is
