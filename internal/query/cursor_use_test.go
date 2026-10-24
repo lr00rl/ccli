@@ -1,10 +1,14 @@
 package query
 
 import (
+	"context"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/lr00rl/ccli/internal/account"
 	"github.com/lr00rl/ccli/internal/cursorusage"
+	"github.com/lr00rl/ccli/internal/store"
 )
 
 func TestMergeBilledLeavesIDETokens(t *testing.T) {
@@ -21,5 +25,47 @@ func TestMergeBilledLeavesIDETokens(t *testing.T) {
 	cli, cost := mergeBilled(account.Cursor, Tokens{}, Cost{}, u)
 	if cli.Input != 100 || cli.Output != 40 || cost.USD != 1.25 {
 		t.Fatalf("cli %+v %+v", cli, cost)
+	}
+}
+
+// A load that fails, here because its context is cancelled, must say so and
+// must not leave empty joins behind: they would drop a subagent's billed
+// usage from every later total.
+func TestCursorLinksFailureIsNotKept(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "ccli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, f := range [][]string{
+		{"/c/parent.jsonl", "cursor", "parent", "main", ""},
+		{"/c/kid.jsonl", "cursor", "parent", "subagent", "kid"},
+		{"/ide#composer", "cursor-ide", "composer", "main", ""},
+	} {
+		if _, err := st.DB().Exec(`INSERT INTO files(path, account, session_id, project_key, kind, agent_id) VALUES (?, ?, ?, '', ?, ?)`,
+			f[0], f[1], f[2], f[3], f[4]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := New(st, []account.Account{{Name: "cursor", Tool: account.Cursor}, {Name: "cursor-ide", Tool: account.CursorIDE}})
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := d.cursorLinks(cancelled); err == nil {
+		t.Fatal("a cancelled load reported no error")
+	}
+	l, err := d.cursorLinks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.kids["parent"]) != 1 || l.ideCopy(account.Cursor, "composer") != "cursor-ide" || !l.billedHere(account.Cursor, "parent") {
+		t.Fatalf("joins after a failed load: kids %v, ide %v", l.kids, l.ideIDs)
+	}
+}
+
+func TestByBilledOrdersByBilledCost(t *testing.T) {
+	u := cursorusage.Use{Models: map[string]*cursorusage.Model{"grok-x": {USD: 2}, "billed-only": {USD: 5}}}
+	got := byBilled([]string{"local", "grok-x"}, u)
+	if want := []string{"billed-only", "grok-x", "local"}; !slices.Equal(got, want) {
+		t.Fatalf("models %v, want %v", got, want)
 	}
 }

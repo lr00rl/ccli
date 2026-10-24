@@ -37,8 +37,8 @@ func TestAddEventCentsAndModels(t *testing.T) {
 	if got.USD < 1.534 || got.USD > 1.535 {
 		t.Fatalf("usd %v, want 1.5345", got.USD)
 	}
-	if got.Primary() != "gpt" {
-		t.Fatalf("primary %q", got.Primary())
+	if gpt, c2 := got.Models["gpt"], got.Models["composer-2"]; gpt == nil || c2 == nil || gpt.USD != 1.5 || c2.USD < 0.0344 || c2.USD > 0.0346 {
+		t.Fatalf("models %+v", got.Models)
 	}
 }
 
@@ -505,5 +505,35 @@ func TestEventsReadOnlySinceTheCache(t *testing.T) {
 	}
 	if len(s.starts) != 1 || s.starts[0] > now.AddDate(-1, 0, 1).UnixMilli() {
 		t.Fatalf("read after a week started at %v, want a year back", s.starts)
+	}
+}
+
+func TestLockIsTakenOnceAndExpires(t *testing.T) {
+	dir := t.TempDir()
+	release, ok := Lock(dir)
+	if !ok || !Busy(dir) {
+		t.Fatal("first lock not taken")
+	}
+	if _, again := Lock(dir); again {
+		t.Fatal("lock taken twice")
+	}
+	old := time.Now().Add(-lockFor - time.Minute)
+	if err := os.Chtimes(filepath.Join(dir, "cursor-usage.lock"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if Busy(dir) {
+		t.Fatal("a lock left behind still counts as busy")
+	}
+	release2, ok := Lock(dir)
+	if !ok {
+		t.Fatal("a lock left behind was not taken over")
+	}
+	release() // the first holder, finishing late, must not remove the new lock
+	if !Busy(dir) {
+		t.Fatal("a late release removed the lock that took over")
+	}
+	release2()
+	if Busy(dir) {
+		t.Fatal("released lock still busy")
 	}
 }

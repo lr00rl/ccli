@@ -140,9 +140,17 @@ func (a *app) needsCursor(names []string, tools []account.Tool) bool {
 }
 
 // pullCursor reads the event ledger once per command. A fresh cache is not
-// fetched again. Debug only reports that choice.
+// fetched again, and a stale one that has usage in it is shown while a
+// process of its own updates it. Only a command with nothing to show waits
+// for Cursor. Debug reports the choice.
 func (a *app) pullCursor(ctx context.Context, dataDir string) (*cursorusage.Ledger, error) {
 	a.cursorOnce.Do(func() {
+		if cur := cursorusage.Load(dataDir); cur.Usable() && !cur.Fresh() {
+			a.updateCursorLater(dataDir, cur)
+			cur.FromCache = true
+			a.cursorLed = cur
+			return
+		}
 		opt := cursorusage.Option{Asking: func() {
 			fmt.Fprintln(a.errw, "Reading Cursor usage. This asks Cursor and can take a little while.")
 		}}

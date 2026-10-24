@@ -28,6 +28,9 @@ type item struct {
 	children func(data any) *screen
 	// copy returns the text "y" puts on the clipboard (the prompt).
 	copy func(data any) string
+	// transcript marks a preview that shows a transcript, which t, T and c
+	// change; a session's summary or a run's agents do not follow them.
+	transcript bool
 }
 
 // list is a filtered, scrollable selection over items.

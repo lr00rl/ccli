@@ -1004,6 +1004,9 @@ func (s *Store) Reprice(ctx context.Context, cost CostFunc, hash string) error {
 		ups = append(ups, upd{key, c})
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

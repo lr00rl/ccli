@@ -113,17 +113,6 @@ func (u *Use) Add(b *Use) {
 	}
 }
 
-// Primary is the model with the highest billed amount.
-func (u *Use) Primary() string {
-	best, bestUSD := "", -1.0
-	for name, m := range u.Models {
-		if best == "" || m.USD > bestUSD {
-			best, bestUSD = name, m.USD
-		}
-	}
-	return best
-}
-
 // Period is the account's current billing cycle. Amounts are US dollars.
 // UsedUSD is included spend against LimitUSD. BonusUSD is free usage the
 // plan adds on top, so it is not spend against that limit. Percent is
@@ -193,15 +182,64 @@ type Option struct {
 
 // Fresh reports whether the cache can be used without asking Cursor: it is
 // recent, or a read failed a short while ago and is not retried yet.
-func Fresh(dataDir string) bool {
-	cur := Load(dataDir)
-	if cur.Version != ledgerVersion {
+func Fresh(dataDir string) bool { return Load(dataDir).Fresh() }
+
+// Fresh is the rule of the function Fresh, for a ledger already loaded.
+func (l *Ledger) Fresh() bool {
+	if l.Version != ledgerVersion {
 		return false
 	}
-	if !cur.FailedAt.IsZero() && time.Since(cur.FailedAt) < retryAfter {
+	if !l.FailedAt.IsZero() && time.Since(l.FailedAt) < retryAfter {
 		return true
 	}
-	return cur.Error == "" && !cur.FetchedAt.IsZero() && time.Since(cur.FetchedAt) < freshFor && (len(cur.Sessions) > 0 || cur.Period != nil)
+	return l.Error == "" && !l.FetchedAt.IsZero() && time.Since(l.FetchedAt) < freshFor && l.Usable()
+}
+
+// Usable says whether a ledger has anything to show, fresh or not.
+func (l *Ledger) Usable() bool {
+	return l.Version == ledgerVersion && (len(l.Sessions) > 0 || l.Period != nil)
+}
+
+// lockFor is how long a lock file holds before it counts as left behind by
+// a run that stopped: longer than a read, which times out at 45 seconds.
+const lockFor = 2 * time.Minute
+
+// Lock claims the update of the cache across processes, so commands that
+// each find it stale start one read between them. ok is false when another
+// process holds it. release removes the lock only while it is still this
+// one's, not one that took over after it was counted as left behind.
+func Lock(dataDir string) (release func(), ok bool) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, false
+	}
+	p := filepath.Join(dataDir, "cursor-usage.lock")
+	token := fmt.Sprintf("%d %d", os.Getpid(), time.Now().UnixNano())
+	for range 2 {
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, werr := f.WriteString(token)
+			if cerr := f.Close(); werr != nil || cerr != nil {
+				os.Remove(p)
+				return nil, false
+			}
+			return func() {
+				if b, err := os.ReadFile(p); err == nil && string(b) == token {
+					os.Remove(p)
+				}
+			}, true
+		}
+		if !os.IsExist(err) || Busy(dataDir) {
+			return nil, false
+		}
+		os.Remove(p) // left behind
+	}
+	return nil, false
+}
+
+// Busy says whether another process is updating the cache.
+func Busy(dataDir string) bool {
+	st, err := os.Stat(filepath.Join(dataDir, "cursor-usage.lock"))
+	return err == nil && time.Since(st.ModTime()) < lockFor
 }
 
 // A network or auth failure keeps the previous cache. Callers can still
@@ -217,7 +255,7 @@ func RefreshOption(ctx context.Context, dataDir string, opt Option) (*Ledger, er
 	ctx = withTrace(ctx, opt.Trace)
 	ctx = withBody(ctx, opt.Body)
 	cur := Load(dataDir)
-	fresh := Fresh(dataDir)
+	fresh := cur.Fresh()
 	if fresh && !opt.Force {
 		cur.FromCache = true
 		trace(ctx, "cursor usage: no request, cache is %s old", time.Since(cur.FetchedAt).Round(time.Second))

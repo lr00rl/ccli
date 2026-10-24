@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -11,10 +12,10 @@ import (
 	"github.com/lr00rl/ccli/internal/account"
 )
 
-// sessionSQL aggregates files and responses per session. Totals cover the
-// whole session; the range filter (?1, ?2) selects sessions active in it.
-// Each %[1]s takes a WHERE clause that limits both aggregates to one session
-// (?3, ?4), or nothing for every session.
+// sessionSQL lists sessions from their files, those active in the range
+// filter (?1, ?2). %[1]s takes a WHERE clause that limits it to one session
+// (?3, ?4), or nothing for every session. Usage comes after the other
+// filters, from usageSQL, for the sessions they keep.
 const sessionSQL = `
 WITH f AS (
   SELECT account, session_id,
@@ -31,38 +32,38 @@ WITH f AS (
     MAX(team_name) AS team,
     MAX(agent_name) AS agent_name
   FROM files %[1]s GROUP BY account, session_id
-),
-r AS (
-  SELECT account, session_id,
-    SUM(input) AS i, SUM(output) AS o, SUM(cache_read) AS cr, SUM(cache_5m + cache_1h) AS cw, SUM(web_search) AS ws,
-    SUM(COALESCE(cost, 0)) AS cost,
-    SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0) AS unpriced,
-    SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END) AS unlogged,
-    SUM(kind = 'main') AS replies
-  FROM responses %[1]s GROUP BY account, session_id
 )
 SELECT f.account, f.session_id, COALESCE(m.cwd, ''), COALESCE(m.custom_title, ''), COALESCE(m.ai_title, ''),
   COALESCE(m.summary, ''), COALESCE(m.first_prompt, ''), COALESCE(f.started, 0), COALESCE(f.last, 0), f.active,
   f.typed, f.other, f.tools, f.subagents, f.runs, f.project_key, COALESCE(f.team, ''), COALESCE(f.agent_name, ''),
-  COALESCE(m.missing, 1), COALESCE(m.git_branch, ''), COALESCE(m.entrypoint, ''), COALESCE(m.version, ''),
-  COALESCE(r.i, 0), COALESCE(r.o, 0), COALESCE(r.cr, 0), COALESCE(r.cw, 0), COALESCE(r.ws, 0),
-  COALESCE(r.cost, 0), COALESCE(r.unpriced, 0), COALESCE(r.unlogged, 0), COALESCE(r.replies, 0)
+  COALESCE(m.missing, 1), COALESCE(m.git_branch, ''), COALESCE(m.entrypoint, ''), COALESCE(m.version, '')
 FROM f
 LEFT JOIN files m ON m.id = f.main_id
-LEFT JOIN r ON r.account = f.account AND r.session_id = f.session_id
 WHERE COALESCE(f.last, 0) >= ?1 AND COALESCE(f.started, 0) <= ?2`
+
+// usageSQL sums responses per session and model, for the sessions in a JSON
+// array of [account, session id] pairs. One pass gives both the totals and
+// the model list, and the (account, session_id) index keeps it to those
+// sessions.
+const usageSQL = `
+SELECT account, session_id, model,
+  SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(web_search),
+  SUM(COALESCE(cost, 0)),
+  SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END),
+  SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0),
+  SUM(kind = 'main'), COUNT(*)
+FROM responses
+WHERE (account, session_id) IN (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))
+GROUP BY account, session_id, model`
 
 func (d *DB) loadSessions(ctx context.Context, f Filter) ([]SessionRow, error) {
 	return d.querySessions(ctx, f, nil)
 }
 
 // querySessions loads the sessions the filter selects, or with only set,
-// just that one, reading only its rows.
+// just that one. Responses are read only for the sessions that pass every
+// filter but the model one, which needs them.
 func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]SessionRow, error) {
-	models, err := d.sessionModels(ctx, only)
-	if err != nil {
-		return nil, err
-	}
 	tags, err := d.st.Tags(ctx)
 	if err != nil {
 		return nil, err
@@ -89,9 +90,7 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 		var missing int
 		if err := rows.Scan(&s.Account, &s.ID, &s.Cwd, &custom, &ai, &summary, &prompt, &started, &last, &s.ActiveMS,
 			&s.Prompts, &s.OtherPrompts, &s.ToolCalls, &s.Subagents, &s.Runs, &s.ProjectKey, &s.Team, &s.AgentName,
-			&missing, &s.GitBranch, &s.Entrypoint, &s.Version,
-			&s.Tokens.Input, &s.Tokens.Output, &s.Tokens.CacheRead, &s.Tokens.CacheWrite, &s.Tokens.WebSearch,
-			&s.Cost.USD, &s.Cost.Unpriced, &s.Cost.Unlogged, &s.Replies); err != nil {
+			&missing, &s.GitBranch, &s.Entrypoint, &s.Version); err != nil {
 			return nil, err
 		}
 		if !f.wantsAccount(s.Account) {
@@ -103,7 +102,6 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 		s.Started, s.Last = ms(started), ms(last)
 		s.Missing = missing != 0
 		s.Project = projectName(s.Cwd, s.ProjectKey)
-		s.Models = models[skey{s.Account, s.ID}]
 		_, s.Live = d.live[skey{s.Account, s.ID}]
 		s.CopiedFrom = copied[skey{s.Account, s.ID}]
 		if !matches(s, f) {
@@ -114,11 +112,91 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
+	if err := d.addUsage(ctx, out); err != nil {
+		return nil, err
+	}
+	if f.Model != "" {
+		out = slices.DeleteFunc(out, func(s SessionRow) bool { return !usesModel(s, f.Model) })
+	}
 	if err := d.markHidden(ctx, out); err != nil {
 		return nil, err
 	}
-	d.applyCursorUsage(ctx, out)
+	if err := d.applyCursorUsage(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// addUsage fills in tokens, cost, replies and models from the responses of
+// the given sessions. Models come costliest first; models without a cost
+// (Cursor's, before billed usage joins) come by how often they answered.
+func (d *DB) addUsage(ctx context.Context, ss []SessionRow) error {
+	if len(ss) == 0 {
+		return nil
+	}
+	keys := make([][2]string, len(ss))
+	at := make(map[skey]int, len(ss))
+	for i, s := range ss {
+		keys[i] = [2]string{s.Account, s.ID}
+		at[skey{s.Account, s.ID}] = i
+	}
+	list, err := json.Marshal(keys)
+	if err != nil {
+		return err
+	}
+	rows, err := d.sql().QueryContext(ctx, usageSQL, string(list))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type priced struct {
+		model string
+		usd   float64
+		calls int
+	}
+	models := map[int][]priced{}
+	for rows.Next() {
+		var k skey
+		var model string
+		var t Tokens
+		var c Cost
+		var replies, calls int
+		if err := rows.Scan(&k.account, &k.id, &model, &t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &t.WebSearch,
+			&c.USD, &c.Unlogged, &c.Unpriced, &replies, &calls); err != nil {
+			return err
+		}
+		i, ok := at[k]
+		if !ok {
+			continue
+		}
+		ss[i].Tokens.add(t)
+		ss[i].Cost.add(c)
+		ss[i].Replies += replies
+		if model != "" {
+			models[i] = append(models[i], priced{model, c.USD, calls})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i, ms := range models {
+		sort.Slice(ms, func(a, b int) bool {
+			if ms[a].usd != ms[b].usd {
+				return ms[a].usd > ms[b].usd
+			}
+			if ms[a].calls != ms[b].calls {
+				return ms[a].calls > ms[b].calls
+			}
+			return ms[a].model < ms[b].model
+		})
+		for _, m := range ms {
+			if name := modelName(m.model); !slices.Contains(ss[i].Models, name) {
+				ss[i].Models = append(ss[i].Models, name)
+			}
+		}
+	}
+	return nil
 }
 
 func matches(s SessionRow, f Filter) bool {
@@ -131,22 +209,22 @@ func matches(s SessionRow, f Filter) bool {
 	if len(f.Tools) > 0 && !slices.Contains(f.Tools, s.Tool) {
 		return false
 	}
-	if f.Model != "" {
-		ok := false
-		for _, m := range s.Models {
-			if containsFold(m, f.Model) {
-				ok = true
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
 	if f.Search != "" && !containsFold(s.Title, f.Search) && !containsFold(s.Tag, f.Search) &&
 		!strings.HasPrefix(s.ID, f.Search) && !containsFold(s.Cwd, f.Search) {
 		return false
 	}
 	return true
+}
+
+// usesModel says whether one of a session's models matches the --model
+// filter. It is checked once responses are read, after the other filters.
+func usesModel(s SessionRow, model string) bool {
+	for _, m := range s.Models {
+		if containsFold(m, model) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsFold(s, sub string) bool {
@@ -283,6 +361,9 @@ func (d *DB) Accounts(ctx context.Context, f Filter) ([]AccountSummary, error) {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	rows, err = d.sql().QueryContext(ctx, `SELECT account, SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(web_search),
 		SUM(COALESCE(cost, 0)), SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END)
 		FROM responses WHERE ts BETWEEN ? AND ? GROUP BY account`, f.sinceMS(), f.untilMS())
@@ -341,44 +422,6 @@ func (d *DB) copiedFrom(ctx context.Context) (map[skey]string, error) {
 			return nil, err
 		}
 		out[k] = from
-	}
-	return out, rows.Err()
-}
-
-// sessionModels lists each session's models, costliest first.
-func (d *DB) sessionModels(ctx context.Context, only *skey) (map[skey][]string, error) {
-	const q = `SELECT account, session_id, model FROM responses %s
-		GROUP BY account, session_id, model ORDER BY account, session_id, SUM(COALESCE(cost, 0)) DESC`
-	var args []any
-	where := ""
-	if only != nil {
-		where, args = "WHERE account = ? AND session_id = ?", []any{only.account, only.id}
-	}
-	rows, err := d.sql().QueryContext(ctx, fmt.Sprintf(q, where), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[skey][]string{}
-	for rows.Next() {
-		var k skey
-		var m string
-		if err := rows.Scan(&k.account, &k.id, &m); err != nil {
-			return nil, err
-		}
-		if m == "" {
-			continue
-		}
-		m = modelName(m)
-		dup := false
-		for _, x := range out[k] {
-			if x == m {
-				dup = true
-			}
-		}
-		if !dup {
-			out[k] = append(out[k], m)
-		}
 	}
 	return out, rows.Err()
 }

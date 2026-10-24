@@ -436,7 +436,11 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	case "o":
 		idx := s.list.selected()
-		if idx < 0 || s.list.all[idx].children == nil {
+		if idx < 0 {
+			return nil
+		}
+		if s.list.all[idx].children == nil {
+			v.status = "no agents here"
 			return nil
 		}
 		data, ok := s.data[idx]
@@ -450,7 +454,11 @@ func (v *viewer) key(msg tea.KeyPressMsg) tea.Cmd {
 		v.status = "no agents here"
 	case "y":
 		idx := s.list.selected()
-		if idx < 0 || s.list.all[idx].copy == nil {
+		if idx < 0 {
+			return nil
+		}
+		if s.list.all[idx].copy == nil {
+			v.status = "nothing to copy here"
 			return nil
 		}
 		data, ok := s.data[idx]
@@ -739,16 +747,29 @@ func (v *viewer) footer() string {
 		return fitLine(warn(v.status), v.w)
 	}
 	s := v.cur()
+	// Only the keys that do something for the selected row.
+	var it item
+	if idx := s.list.selected(); idx >= 0 {
+		it = s.list.all[idx]
+	}
 	var keys []string
 	switch {
 	case s.focus || s.full:
-		keys = []string{"↑↓ scroll", "space page", "esc back"}
-		if s.role == turnsRole && v.tools {
-			keys = []string{"↑↓ scroll", "[ ] tool", "esc transcript", "o agents", "y copy prompt"}
-		} else if s.role == turnsRole {
-			keys = append(keys, "t expand", "] tools", "T thinking", "c context", "o agents", "y copy prompt")
-		} else {
-			keys = append(keys, "t tools", "T thinking", "c context", "o agents", "y copy prompt")
+		switch {
+		case s.role == turnsRole && v.tools:
+			keys = []string{"↑↓ scroll", "[ ] tool", "esc transcript"}
+		case s.role == turnsRole:
+			keys = []string{"↑↓ scroll", "space page", "esc back", "t expand", "] tools", "T thinking", "c context"}
+		case it.transcript:
+			keys = []string{"↑↓ scroll", "space page", "esc back", "t tools", "T thinking", "c context"}
+		default:
+			keys = []string{"↑↓ scroll", "space page", "esc back"}
+		}
+		if it.children != nil {
+			keys = append(keys, "o agents")
+		}
+		if it.copy != nil {
+			keys = append(keys, "y copy prompt")
 		}
 	default:
 		keys = []string{"↑↓ move", "enter open", "/ filter"}
@@ -766,7 +787,9 @@ func (v *viewer) footer() string {
 				keys = append(keys, "s sort", "a all turns", "t expand", "] tools", "o agents", "y copy prompt")
 			}
 		default:
-			keys = append(keys, "o agents")
+			if it.children != nil {
+				keys = append(keys, "o agents")
+			}
 		}
 		if len(v.stack) > 1 {
 			keys = append(keys, "esc back")

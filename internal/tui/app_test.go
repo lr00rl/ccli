@@ -330,7 +330,7 @@ func TestHideFromTheSessionsList(t *testing.T) {
 		t.Fatalf("marked %q", got)
 	}
 	v.key(key("x"))
-	if v.confirm == nil || !strings.Contains(v.confirm.question, "2 sessions") {
+	if v.confirm == nil || !strings.Contains(v.confirm.question, "2 sessions") || !strings.Contains(v.confirm.question, "in every account") {
 		t.Fatalf("x asked %+v", v.confirm)
 	}
 	v.key(key("n"))
@@ -428,7 +428,7 @@ func TestTagFromTheSessionsList(t *testing.T) {
 	col := func(line, sub string) int { return ansi.StringWidth(line[:max(0, strings.Index(line, sub))]) }
 
 	v.key(key("#"))
-	if v.edit == nil || v.edit.text != "" || !strings.Contains(ansi.Strip(v.footer()), "tag:") {
+	if v.edit == nil || v.edit.text != "" || !strings.Contains(ansi.Strip(v.footer()), "tag (all accounts):") {
 		t.Fatalf("# opened %+v, footer %q", v.edit, v.footer())
 	}
 	v.key(key("x")) // typed, not a hide
@@ -537,5 +537,31 @@ func TestTagEditorStopsAtTheLimit(t *testing.T) {
 	run(v, v.key(key("enter")))
 	if src.tags["a1"] != strings.Repeat("长", query.MaxTag) {
 		t.Fatalf("saved %q, status %q", src.tags["a1"], v.status)
+	}
+}
+
+// The footer offers only the keys that do something for the selected row:
+// a session's summary does not follow t, T or c and has nothing for o or y.
+func TestFooterOffersOnlyKeysThatApply(t *testing.T) {
+	s := newScreen("sessions", sessionsRole)
+	s.list.set([]item{{row: func(int) string { return "a session" }, load: func() (any, error) { return "", nil }}})
+	v := newTestViewer(s)
+	s.focus = true
+	foot := ansi.Strip(v.footer())
+	for _, gone := range []string{"t tools", "T thinking", "c context", "o agents", "y copy prompt"} {
+		if strings.Contains(foot, gone) {
+			t.Fatalf("session summary offers %q: %s", gone, foot)
+		}
+	}
+	turns := newScreen("turns", agentsRole)
+	turns.list.set([]item{{row: func(int) string { return "an agent" }, transcript: true,
+		children: func(any) *screen { return nil }, copy: func(any) string { return "p" }}})
+	v = newTestViewer(turns)
+	turns.focus = true
+	foot = ansi.Strip(v.footer())
+	for _, want := range []string{"t tools", "T thinking", "c context", "o agents", "y copy prompt"} {
+		if !strings.Contains(foot, want) {
+			t.Fatalf("agent transcript lacks %q: %s", want, foot)
+		}
 	}
 }

@@ -78,7 +78,9 @@ ccli sessions --tool codex            # only Codex sessions (or claude, pi, curs
 ![ccli sessions](docs/images/sessions.png)
 
 Teammates of an agent team appear with their name in brackets. A red id is a
-session that is running now.
+session that is running now. In a terminal too narrow for the table, each
+session takes two lines: when, account, id and cost, then the title and as
+much of the rest as fits.
 
 To stop seeing sessions you are done with, hide them:
 
@@ -631,9 +633,13 @@ other accounts, does not ask. The list is cached for 15 minutes in
 `~/.local/share/ccli/cursor-usage.json`, and after that ccli asks only for
 the events since the cache (from two days before its newest one), with a
 full read of the year once a week. The login is not written there, nor
-into the debug log. When the cache is stale, ccli says it is reading Cursor
-usage before it asks. After a failed read it uses what it has and waits five
-minutes before asking again, and with no IDE login it does not ask at all. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
+into the debug log. A command that finds the cache stale shows what it has
+at once and starts a ccli of its own in the background to ask Cursor, so the
+next command has fresh figures; one such update runs at a time. Only a
+command with no cache at all waits for Cursor, and says so first. Usage more
+than a day old, or an update that failed, is said on stderr. After a failed
+read it uses what it has and waits five minutes before asking again, and
+with no IDE login it does not ask at all. `hide`, `tag`, `resume`, `diff`, `copy`, `move`,
 `fork`, `statusline` and `index` do not ask Cursor.
 
 Only `copy`, `move`, `fork`, `resume -a` and `clean` write into an

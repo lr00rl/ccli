@@ -239,7 +239,13 @@ changes to recent ones. The access token Cursor stored
 for the IDE login is sent only to `api2.cursor.sh`. It is not written to the
 index or the cache. A failed read is saved with its time and not retried for
 five minutes, and a part that failed (the cycle or the event list) keeps
-what the cache had for it. A Cursor IDE composer is read again when its
+what the cache had for it. A read can take most of a minute, so a command
+that finds a stale cache with usage in it does not wait for one: it shows
+the cache and starts `ccli cursor-refresh` detached, in a session of its
+own. That command takes `cursor-usage.lock` (created exclusively; one older
+than two minutes counts as left behind) and reads; a command that finds the
+lock held starts nothing. Only a command with no usable cache reads in the
+foreground. A Cursor IDE composer is read again when its
 header's `lastUpdatedAt`, its bubble count or its newest bubble row changes,
 because Cursor writes a reply's bubbles minutes after it moves
 `lastUpdatedAt`. A Cursor CLI chat is read again when its transcript,
@@ -256,6 +262,12 @@ is filed under `subagentInfo.rootParentConversationId`. Some bubbles carry
 `tokenCount`; there is no price. There is no resume command: opening an IDE
 chat from the CLI can rewrite a transcript, so `show` says to open it from
 the Agents window. A composer is re-read when its `lastUpdatedAt` changes.
+The database can be gigabytes, and listing its composers is most of an
+index run, so a run that finds the database and its WAL as the last full
+read left them (size, time, the database header with its change counter,
+and the WAL header with its salt) keeps the composers it has without
+opening it. The stamp is saved only by a run that read every file without
+an error, and `index --rebuild` lists it regardless.
 
 `show` reads two more things for a Cursor session, both at the time it
 runs and neither kept in the index. The files the agents wrote come from
