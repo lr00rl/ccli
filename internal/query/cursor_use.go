@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
@@ -17,23 +18,26 @@ import (
 // billed amount. A CLI row takes tokens and cost, because its transcript has
 // neither. A CLI row that is the IDE's copy of a composer takes nothing and
 // names the IDE account as where it came from.
-func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) {
+func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) error {
+	links, err := d.cursorLinks(ctx)
+	if err != nil {
+		return err
+	}
 	for i := range rows {
-		if from := d.ideCopy(ctx, rows[i].Tool, rows[i].ID); from != "" && rows[i].CopiedFrom == "" {
+		if from := links.ideCopy(rows[i].Tool, rows[i].ID); from != "" && rows[i].CopiedFrom == "" {
 			rows[i].CopiedFrom = from
 		}
 	}
 	led := d.cursorLedger()
 	if led == nil || len(led.Sessions) == 0 {
-		return
+		return nil
 	}
-	kids := d.cursorChildren(ctx)
 	for i := range rows {
-		if !d.billedHere(ctx, rows[i].Tool, rows[i].ID) {
+		if !links.billedHere(rows[i].Tool, rows[i].ID) {
 			continue
 		}
 		rows[i].ownTokens, rows[i].ownCost = rows[i].Tokens, rows[i].Cost
-		u := usageOf(led, rows[i].ID, kids[rows[i].ID], time.Time{}, time.Time{})
+		u := usageOf(led, rows[i].ID, links.kids[rows[i].ID], time.Time{}, time.Time{})
 		if u.Events == 0 {
 			continue
 		}
@@ -42,6 +46,7 @@ func (d *DB) applyCursorUsage(ctx context.Context, rows []SessionRow) {
 			rows[i].Models = append([]string{modelName(m)}, rows[i].Models...)
 		}
 	}
+	return nil
 }
 
 // mergeBilled folds dashboard usage into a row.
@@ -73,15 +78,21 @@ func billedAdds(tool account.Tool, ownTokens Tokens, ownCost Cost, tokens Tokens
 	return tokens, usd, true
 }
 
-func (d *DB) applyCursorDetail(ctx context.Context, det *SessionDetail) {
+func (d *DB) applyCursorDetail(ctx context.Context, det *SessionDetail) error {
 	led := d.cursorLedger()
-	if led == nil || !d.billedHere(ctx, det.Tool, det.ID) {
-		return
+	if led == nil || det.Tool != account.Cursor && det.Tool != account.CursorIDE {
+		return nil
 	}
-	kids := d.cursorChildren(ctx)
-	u := usageOf(led, det.ID, kids[det.ID], time.Time{}, time.Time{})
+	links, err := d.cursorLinks(ctx)
+	if err != nil {
+		return err
+	}
+	if !links.billedHere(det.Tool, det.ID) {
+		return nil
+	}
+	u := usageOf(led, det.ID, links.kids[det.ID], time.Time{}, time.Time{})
 	if u.Events == 0 {
-		return
+		return nil
 	}
 	by := map[string]int{}
 	for i := range det.ByModel {
@@ -125,6 +136,7 @@ func (d *DB) applyCursorDetail(ctx context.Context, det *SessionDetail) {
 		}
 		det.Files[i].Tokens, det.Files[i].Cost = mergeFile(det.Tool, det.Files[i].Tokens, det.Files[i].Cost, *one)
 	}
+	return nil
 }
 
 func mergeFile(tool account.Tool, tokens Tokens, cost float64, u cursorusage.Use) (Tokens, float64) {
@@ -167,33 +179,95 @@ func (d *DB) cursorLedger() *cursorusage.Ledger {
 	return d.use
 }
 
-func (d *DB) cursorChildren(ctx context.Context) map[string][]string {
-	d.kidOnce.Do(func() {
-		d.kids = map[string][]string{}
-		rows, err := d.sql().QueryContext(ctx, `SELECT session_id, agent_id FROM files WHERE kind = 'subagent' AND agent_id <> ''`)
-		if err != nil {
-			return
+// cursorLinks is what joins billed Cursor usage onto sessions.
+type cursorLinks struct {
+	kids   map[string][]string // a session's subagent ids
+	ideIDs map[string]string   // session and subagent ids in Cursor IDE accounts, to the account
+}
+
+// cursorLinks loads the joins once per DB. A load that fails returns its
+// error, so no total is shown short of a subagent's usage, and the next
+// caller tries again.
+func (d *DB) cursorLinks(ctx context.Context) (*cursorLinks, error) {
+	d.linkMu.Lock()
+	defer d.linkMu.Unlock()
+	if d.links != nil {
+		return d.links, nil
+	}
+	l := &cursorLinks{}
+	var err error
+	if l.kids, err = d.cursorChildren(ctx); err != nil {
+		return nil, fmt.Errorf("cursor subagents: %w", err)
+	}
+	if l.ideIDs, err = d.ideComposers(ctx); err != nil {
+		return nil, fmt.Errorf("cursor ide composers: %w", err)
+	}
+	d.links = l
+	return l, nil
+}
+
+func (d *DB) cursorChildren(ctx context.Context) (map[string][]string, error) {
+	rows, err := d.sql().QueryContext(ctx, `SELECT session_id, agent_id FROM files WHERE kind = 'subagent' AND agent_id <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	kids := map[string][]string{}
+	for rows.Next() {
+		var session, agent string
+		if err := rows.Scan(&session, &agent); err != nil {
+			return nil, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var session, agent string
-			if rows.Scan(&session, &agent) != nil || agent == session {
-				continue
-			}
-			d.kids[session] = append(d.kids[session], agent)
+		if agent != session {
+			kids[session] = append(kids[session], agent)
 		}
-	})
-	return d.kids
+	}
+	return kids, rows.Err()
+}
+
+// ideComposers maps every session and subagent id in the Cursor IDE
+// accounts to its account. A subagent composer counts too: its copy can be a
+// CLI session of its own when no chat store says whose subagent it is.
+func (d *DB) ideComposers(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	var names []any
+	marks := ""
+	for _, a := range d.accts {
+		if a.Kind() == account.CursorIDE {
+			names = append(names, a.Name)
+			marks += ",?"
+		}
+	}
+	if len(names) == 0 {
+		return out, nil
+	}
+	in := marks[1:]
+	rows, err := d.sql().QueryContext(ctx, `SELECT account, session_id FROM files WHERE account IN (`+in+`)
+		UNION SELECT account, agent_id FROM files WHERE account IN (`+in+`) AND agent_id <> ''`, append(names, names...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var acct, sid string
+		if err := rows.Scan(&acct, &sid); err != nil {
+			return nil, err
+		}
+		if out[sid] == "" {
+			out[sid] = acct
+		}
+	}
+	return out, rows.Err()
 }
 
 // billedHere says whether a session's row carries its billed Cursor usage:
 // any Cursor row except the IDE's copy of a composer, so a conversation is
 // billed once.
-func (d *DB) billedHere(ctx context.Context, tool account.Tool, id string) bool {
+func (l *cursorLinks) billedHere(tool account.Tool, id string) bool {
 	if tool != account.Cursor && tool != account.CursorIDE {
 		return false
 	}
-	return d.ideCopy(ctx, tool, id) == ""
+	return l.ideCopy(tool, id) == ""
 }
 
 // ideCopy names the Cursor IDE account when a Cursor CLI session is a copy
@@ -201,40 +275,11 @@ func (d *DB) billedHere(ctx context.Context, tool account.Tool, id string) bool 
 // ~/.cursor/projects as the CLI does, under the composer's id, so the same
 // conversation turns up in both accounts. The IDE is where it lives and is
 // resumed; the copy has no chat store of its own.
-func (d *DB) ideCopy(ctx context.Context, tool account.Tool, id string) string {
+func (l *cursorLinks) ideCopy(tool account.Tool, id string) string {
 	if tool != account.Cursor {
 		return ""
 	}
-	d.ideOnce.Do(func() {
-		d.ideIDs = map[string]string{}
-		var names []any
-		marks := ""
-		for _, a := range d.accts {
-			if a.Kind() == account.CursorIDE {
-				names = append(names, a.Name)
-				marks += ",?"
-			}
-		}
-		if len(names) == 0 {
-			return
-		}
-		// A subagent composer counts too: its copy can be a CLI session of
-		// its own when no chat store says whose subagent it is.
-		in := marks[1:]
-		rows, err := d.sql().QueryContext(ctx, `SELECT account, session_id FROM files WHERE account IN (`+in+`)
-			UNION SELECT account, agent_id FROM files WHERE account IN (`+in+`) AND agent_id <> ''`, append(names, names...)...)
-		if err != nil {
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var acct, sid string
-			if rows.Scan(&acct, &sid) == nil && d.ideIDs[sid] == "" {
-				d.ideIDs[sid] = acct
-			}
-		}
-	})
-	return d.ideIDs[id]
+	return l.ideIDs[id]
 }
 
 // addCursorAccountUsage adds billed Cursor usage onto account totals, and
@@ -250,13 +295,16 @@ func (d *DB) addCursorAccountUsage(ctx context.Context, f Filter, out []AccountS
 	if err != nil {
 		return err
 	}
-	kids := d.cursorChildren(ctx)
+	links, err := d.cursorLinks(ctx)
+	if err != nil {
+		return err
+	}
 	for _, s := range rows {
 		i, ok := idx[s.Account]
-		if !ok || !d.billedHere(ctx, s.Tool, s.ID) {
+		if !ok || !links.billedHere(s.Tool, s.ID) {
 			continue
 		}
-		u := usageOf(led, s.ID, kids[s.ID], f.Since, f.Until)
+		u := usageOf(led, s.ID, links.kids[s.ID], f.Since, f.Until)
 		if u.Events == 0 {
 			continue
 		}
@@ -273,20 +321,23 @@ func (d *DB) addCursorAccountUsage(ctx context.Context, f Filter, out []AccountS
 
 // addCursorOverview adds billed Cursor usage to the dashboard, under the
 // rule in billedAdds. Each event lands on its own day.
-func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Overview, days map[string]*Day, projects, models, accts map[string]*Share, projSess, modelSess, acctSess map[string]map[skey]bool, loc *time.Location) {
+func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Overview, days map[string]*Day, projects, models, accts map[string]*Share, projSess, modelSess, acctSess map[string]map[skey]bool, loc *time.Location) error {
 	led := d.cursorLedger()
 	if len(led.Sessions) == 0 {
-		return
+		return nil
 	}
-	kids := d.cursorChildren(ctx)
+	links, err := d.cursorLinks(ctx)
+	if err != nil {
+		return err
+	}
 	since, until := o.Filter.Since, o.Filter.Until
 	for i := range sessions {
 		s := &sessions[i]
-		if !d.billedHere(ctx, s.Tool, s.ID) {
+		if !links.billedHere(s.Tool, s.ID) {
 			continue
 		}
 		k := skey{s.Account, s.ID}
-		for _, h := range hitsOf(led, s.ID, kids[s.ID], since, until) {
+		for _, h := range hitsOf(led, s.ID, links.kids[s.ID], since, until) {
 			when := time.UnixMilli(h.At).In(loc)
 			t, usd, ok := billedAdds(s.Tool, s.ownTokens, s.ownCost, Tokens{Input: h.Input, Output: h.Output, CacheRead: h.CacheRead, CacheWrite: h.CacheWrite}, h.USD)
 			if !ok {
@@ -309,6 +360,7 @@ func (d *DB) addCursorOverview(ctx context.Context, sessions []SessionRow, o *Ov
 			}
 		}
 	}
+	return nil
 }
 
 func hitsOf(led *cursorusage.Ledger, id string, children []string, since, until time.Time) []cursorusage.Hit {

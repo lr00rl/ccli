@@ -87,6 +87,9 @@ func (s *Store) Reconcile(ctx context.Context, normalize func(string) string, we
 		keys = append(keys, k)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
 	for _, k := range keys {
 		if err := reconcileOne(ctx, tx, k, normalize, weigh); err != nil {
 			return 0, err

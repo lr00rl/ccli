@@ -135,7 +135,12 @@ func (d *DB) Overview(ctx context.Context, f Filter) (*Overview, error) {
 		addShare(accts, acctSess, k.account, k, t, c.USD)
 	}
 	rows.Close()
-	d.addCursorOverview(ctx, sessions, o, days, projects, models, accts, projSess, modelSess, acctSess, loc)
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.addCursorOverview(ctx, sessions, o, days, projects, models, accts, projSess, modelSess, acctSess, loc); err != nil {
+		return nil, err
+	}
 	if o.From.IsZero() && first > 0 {
 		o.From = time.UnixMilli(first * 3_600_000)
 	}
@@ -172,6 +177,9 @@ func (d *DB) Overview(ctx context.Context, f Filter) (*Overview, error) {
 		o.ActiveMS += msv
 	}
 	arows.Close()
+	if err := arows.Err(); err != nil {
+		return nil, err
+	}
 
 	// Session shape and token percentiles.
 	var perSession []int64
@@ -218,6 +226,9 @@ func (d *DB) Overview(ctx context.Context, f Filter) (*Overview, error) {
 		skillSess[name][k] = true
 	}
 	srows.Close()
+	if err := srows.Err(); err != nil {
+		return nil, err
+	}
 	for name, sk := range skills {
 		sk.Sessions = len(skillSess[name])
 		o.Skills = append(o.Skills, *sk)

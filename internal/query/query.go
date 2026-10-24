@@ -178,10 +178,8 @@ type DB struct {
 	cacheGen uint64                    // bumped when cached details go stale
 	useOnce  sync.Once
 	use      *cursorusage.Ledger
-	kidOnce  sync.Once
-	kids     map[string][]string
-	ideOnce  sync.Once
-	ideIDs   map[string]string // session and subagent ids in Cursor IDE accounts, to the account
+	linkMu   sync.Mutex
+	links    *cursorLinks // nil until loaded; a failed load is tried again
 }
 
 // CacheSessions makes Session keep what it loads for the life of the DB, so

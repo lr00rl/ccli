@@ -117,7 +117,9 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err := d.markHidden(ctx, out); err != nil {
 		return nil, err
 	}
-	d.applyCursorUsage(ctx, out)
+	if err := d.applyCursorUsage(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -283,6 +285,9 @@ func (d *DB) Accounts(ctx context.Context, f Filter) ([]AccountSummary, error) {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	rows, err = d.sql().QueryContext(ctx, `SELECT account, SUM(input), SUM(output), SUM(cache_read), SUM(cache_5m + cache_1h), SUM(web_search),
 		SUM(COALESCE(cost, 0)), SUM(cost IS NULL AND kind <> 'adjustment' AND input + output + cache_read + cache_5m + cache_1h + web_search > 0), SUM(CASE WHEN kind = 'adjustment' THEN COALESCE(cost, 0) ELSE 0 END)
 		FROM responses WHERE ts BETWEEN ? AND ? GROUP BY account`, f.sinceMS(), f.untilMS())

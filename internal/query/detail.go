@@ -401,6 +401,9 @@ func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
 		det.ByModel = append(det.ByModel, s)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	sort.SliceStable(det.ByModel, func(i, j int) bool { return det.ByModel[i].Cost > det.ByModel[j].Cost })
 	trows, err := d.sql().QueryContext(ctx, `SELECT t.name, t.skill, SUM(t.n) FROM tools t JOIN files f ON f.id = t.file_id
 		WHERE f.account = ? AND f.session_id = ? GROUP BY t.name, t.skill ORDER BY 3 DESC`, det.Account, det.ID)
@@ -425,8 +428,14 @@ func (d *DB) fillUsage(ctx context.Context, det *SessionDetail) error {
 			det.Tools = append(det.Tools, Count{name, n})
 		}
 	}
+	if err := trows.Err(); err != nil {
+		trows.Close()
+		return err
+	}
 	trows.Close()
-	d.applyCursorDetail(ctx, det)
+	if err := d.applyCursorDetail(ctx, det); err != nil {
+		return err
+	}
 	return d.sql().QueryRowContext(ctx, `SELECT COUNT(DISTINCT p.start_ms) FROM snapshots p JOIN files f ON f.id = p.file_id
 		WHERE f.account = ? AND f.session_id = ? AND p.imported = 0`, det.Account, det.ID).Scan(&det.Processes)
 }
