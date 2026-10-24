@@ -256,6 +256,12 @@ is filed under `subagentInfo.rootParentConversationId`. Some bubbles carry
 `tokenCount`; there is no price. There is no resume command: opening an IDE
 chat from the CLI can rewrite a transcript, so `show` says to open it from
 the Agents window. A composer is re-read when its `lastUpdatedAt` changes.
+The database can be gigabytes, and listing its composers is most of an
+index run, so a run that finds the database and its WAL as the last full
+read left them (size, time, the database header with its change counter,
+and the WAL header with its salt) keeps the composers it has without
+opening it. The stamp is saved only by a run that read every file without
+an error, and `index --rebuild` lists it regardless.
 
 `show` reads two more things for a Cursor session, both at the time it
 runs and neither kept in the index. The files the agents wrote come from

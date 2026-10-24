@@ -90,7 +90,8 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 	var jobs []job
 	var runs []store.Run
 	seen := map[string]bool{}
-	failed := map[string]bool{} // accounts whose scan failed keep their files as they were
+	failed := map[string]bool{}      // accounts whose scan failed keep their files as they were
+	ideStamps := map[string]string{} // IDE databases read in full, saved once the run has applied them
 	for _, a := range accts {
 		var found []discovered
 		var rs []store.Run
@@ -104,7 +105,15 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 		case account.Cursor:
 			found, err = scanCursor(a, known)
 		case account.CursorIDE:
-			found, err = scanCursorIDE(a)
+			stamp := ideStamp(a.Dir)
+			ok := false
+			if !opt.Rebuild {
+				found, ok = unchangedIDE(a, stamp, mustMeta(st, ideStampKey+a.Name), known)
+			}
+			if !ok {
+				found, err = scanCursorIDE(a)
+				ideStamps[a.Name] = stamp
+			}
 		default:
 			found, rs, err = scan(a, knownRuns, opt.Rebuild)
 		}
@@ -203,9 +212,22 @@ func Run(ctx context.Context, st *store.Store, accts []account.Account, prices *
 		return stats, err
 	}
 	stats.Reconciled = n
+	// A file that failed is retried by the next run, which needs a full read.
+	for name, stamp := range ideStamps {
+		if stats.Errors > 0 {
+			break
+		}
+		if err := st.SetMeta(ideStampKey+name, stamp); err != nil {
+			return stats, err
+		}
+	}
 	stats.Duration = time.Since(start)
 	return stats, nil
 }
+
+// ideStampKey, with the account name, keeps the stamp of a Cursor IDE
+// database as of the run that last read it in full (see ideStamp).
+const ideStampKey = "cursor-ide-stamp:"
 
 func mustMeta(st *store.Store, k string) string {
 	v, _ := st.Meta(k)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lr00rl/ccli/internal/account"
+	"github.com/lr00rl/ccli/internal/cursoride"
 	"github.com/lr00rl/ccli/internal/pricing"
 	"github.com/lr00rl/ccli/internal/query"
 	"github.com/lr00rl/ccli/internal/store"
@@ -201,5 +202,55 @@ func TestCursorIDEReadsBubbleRewrittenInPlace(t *testing.T) {
 	exec(`UPDATE cursorDiskKV SET value = ? WHERE key = ?`, reply(31200), "bubbleId:"+id+":r")
 	if got := e.sessions()[id]; got.Tokens.Input != 31200 {
 		t.Fatalf("input after the rewrite = %d, want 31200", got.Tokens.Input)
+	}
+}
+
+// An IDE database that has not changed since the last full read is not
+// listed again; a change, or --rebuild, lists it.
+func TestCursorIDEUnchangedDatabaseIsNotListedAgain(t *testing.T) {
+	user := filepath.Join(t.TempDir(), "Cursor", "User")
+	dbPath := filepath.Join(user, "globalStorage", "state.vscdb")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(qs ...string) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		for _, q := range qs {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	const id = "88888888-8888-4888-8888-888888888888"
+	write(`CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, createdAt INTEGER, lastUpdatedAt INTEGER, isSubagent INTEGER, value TEXT)`,
+		`CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`,
+		`INSERT INTO composerHeaders VALUES ('`+id+`', 1700000000000, 1700000001000, 0, '{"name":"chat"}')`,
+		`INSERT INTO cursorDiskKV VALUES ('bubbleId:`+id+`:b1', '{"type":1,"bubbleId":"b1","text":"explain","createdAt":1700000000500}')`)
+	lists := 0
+	listComposers = func(user string) ([]cursoride.Head, error) {
+		lists++
+		return cursoride.List(user)
+	}
+	t.Cleanup(func() { listComposers = cursoride.List })
+
+	e := newAgentEnv(t, account.Account{Name: "cursor-ide", Tool: account.CursorIDE, Dir: user})
+	if _, ok := e.sessions()[id]; !ok || lists != 1 {
+		t.Fatalf("first run: session found %v, listed %d times", ok, lists)
+	}
+	if got, ok := e.sessions()[id]; !ok || got.Missing || lists != 1 {
+		t.Fatalf("unchanged database: session found %v (missing %v), listed %d times, want once", ok, got.Missing, lists)
+	}
+	write(`INSERT INTO cursorDiskKV VALUES ('bubbleId:` + id + `:b2', '{"type":2,"bubbleId":"b2","text":"It scans.","createdAt":1700000002000,"tokenCount":{"inputTokens":30,"outputTokens":5}}')`)
+	if got := e.sessions()[id]; got.Tokens.Input != 30 || lists != 2 {
+		t.Fatalf("after a write: input %d, listed %d times", got.Tokens.Input, lists)
+	}
+	prices, _ := pricing.Load("")
+	if _, err := Run(context.Background(), e.st, e.accts, prices, Options{Rebuild: true}); err != nil || lists != 3 {
+		t.Fatalf("rebuild: %v, listed %d times", err, lists)
 	}
 }
