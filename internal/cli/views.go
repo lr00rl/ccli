@@ -512,18 +512,33 @@ func (a *app) resolveReadSession(ctx context.Context, svc *query.DB, ref string,
 	if len(page.Sessions) != len(copies.Accounts) {
 		return "", "", fmt.Errorf("session %s: copy list changed while reading; retry", copies.ID)
 	}
+	choice := copyChoice{Error: "ambiguous", Ref: ref, ID: copies.ID, Sessions: page.Sessions}
+	for _, row := range page.Sessions {
+		choice.Choose = append(choice.Choose, row.Account+":"+row.ID)
+	}
 	if c.json {
-		if err := a.printJSON(page); err != nil {
+		if err := a.printJSON(choice); err != nil {
 			return "", "", err
 		}
 	} else {
 		a.term(c).Sessions(page, true)
 	}
 	fmt.Fprintln(a.errw, "ccli: choose one with -a <account> or:")
-	for _, row := range page.Sessions {
-		fmt.Fprintf(a.errw, "  %s:%s\n", row.Account, row.ID)
+	for _, ref := range choice.Choose {
+		fmt.Fprintf(a.errw, "  %s\n", ref)
 	}
 	return "", "", exitCode(1)
+}
+
+// copyChoice is what --json prints, with exit status 1, when a reference
+// names a session that is in several accounts and no account. Error tells it
+// from a session's own output.
+type copyChoice struct {
+	Error    string             `json:"error"` // always "ambiguous"
+	Ref      string             `json:"ref"`   // the reference as given
+	ID       string             `json:"id"`
+	Choose   []string           `json:"choose"` // a full reference per copy, in the order of sessions
+	Sessions []query.SessionRow `json:"sessions"`
 }
 
 // flagSet reports whether the command line gave the flag.

@@ -536,6 +536,11 @@ ccli: choose one with -a <account> or:
   default:7a93706c-0000-4000-8000-000000000001
 ```
 
+With `--json` the choice is an object of its own, and the exit status is 1:
+`error` is `"ambiguous"`, `ref` and `id` say what was asked and what it
+matched, `choose` holds a full reference per copy, and `sessions` the rows
+above.
+
 `-a` always names the account you are looking at or working in:
 
 | Commands | Work on | `-a` means |

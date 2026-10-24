@@ -160,6 +160,10 @@ func TestReadCommandsPickACopy(t *testing.T) {
 		}
 		if slices.Contains(cmd, "--json") {
 			var page struct {
+				Error    string   `json:"error"`
+				Ref      string   `json:"ref"`
+				ID       string   `json:"id"`
+				Choose   []string `json:"choose"`
 				Sessions []struct {
 					Account string   `json:"account"`
 					ID      string   `json:"id"`
@@ -169,6 +173,10 @@ func TestReadCommandsPickACopy(t *testing.T) {
 			}
 			if err := json.Unmarshal(out.Bytes(), &page); err != nil || len(page.Sessions) != 2 {
 				t.Fatalf("%v: invalid candidates: %v %s", cmd, err, out.String())
+			}
+			if page.Error != "ambiguous" || page.Ref != roundTrip || page.ID != roundTrip ||
+				!slices.Equal(page.Choose, []string{page.Sessions[0].Account + ":" + roundTrip, page.Sessions[1].Account + ":" + roundTrip}) {
+				t.Fatalf("%v: the choice does not say what is ambiguous: %s", cmd, out.String())
 			}
 			accounts := []string{page.Sessions[0].Account, page.Sessions[1].Account}
 			slices.Sort(accounts)
