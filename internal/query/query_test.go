@@ -87,7 +87,10 @@ func setup(t *testing.T) *fixture {
 	w(0, "-work-alpha/"+next+".jsonl", prompt(60, "keep going")+`{"type":"custom-title","customTitle":"Part two"}`+"\n"+asst(61, "n1", "claude-opus-5", 10, 10, ""))
 	// A teammate of the lead.
 	w(0, "-work-beta/"+mate+".jsonl", strings.Replace(asst(5, "t1", "claude-opus-5-5", 10, 10, ""), `"type":"assistant"`, `"type":"assistant","teamName":"session-aaaaaaaa","agentName":"tester"`, 1))
-	// A copy of the lead in work, plus work's own session.
+	// A copy of the lead in work, plus work's own session. The file created
+	// first owns a shared response, and birth times are kept in
+	// milliseconds, so the copy must be born in a later one.
+	time.Sleep(2 * time.Millisecond)
 	w(1, "-work-alpha/"+lead+".jsonl", prompt(0, "build the thing")+asst(1, "m1", "claude-opus-5-5", 1_000_000, 100, ""))
 	w(1, "-work-gamma/"+other+".jsonl", prompt(120, "other work")+asst(121, "o1", "claude-opus-5-5", 2_000_000, 0, ""))
 
