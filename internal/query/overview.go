@@ -271,7 +271,10 @@ func shares(m map[string]*Share) []Share {
 		if out[i].Cost != out[j].Cost {
 			return out[i].Cost > out[j].Cost
 		}
-		return out[i].Tokens.All() > out[j].Tokens.All()
+		if a, b := out[i].Tokens.All(), out[j].Tokens.All(); a != b {
+			return a > b
+		}
+		return out[i].Name < out[j].Name // ties come from a map: keep runs alike
 	})
 	return out
 }
