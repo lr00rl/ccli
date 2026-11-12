@@ -125,6 +125,11 @@ func (d *DB) querySessions(ctx context.Context, f Filter, only *skey) ([]Session
 	if err := d.applyCursorUsage(ctx, out); err != nil {
 		return nil, err
 	}
+	// Whole conversations, as applyCursorUsage counts them: the range picks
+	// which sessions appear, not which of their events count.
+	if err := d.applyPiCursorUsage(ctx, out, time.Time{}, time.Time{}); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -386,6 +391,9 @@ func (d *DB) Accounts(ctx context.Context, f Filter) ([]AccountSummary, error) {
 		return nil, err
 	}
 	if err := d.addCursorAccountUsage(ctx, f, out, idx); err != nil {
+		return nil, err
+	}
+	if err := d.addPiCursorAccountUsage(ctx, f, out, idx); err != nil {
 		return nil, err
 	}
 	for _, l := range d.live {

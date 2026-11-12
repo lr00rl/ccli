@@ -28,7 +28,8 @@ import (
 
 // ParserVersion changes when parsing changes; files parsed by an older version
 // are read again from the start.
-// 4: pi subagent runs join their parent.
+// 4: pi subagent runs join their parent; pi records its Cursor conversation
+// ids; a pi reply whose cost is zero on tokens is left unpriced.
 const ParserVersion = 4
 
 const headBytes = 4096

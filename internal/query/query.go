@@ -148,11 +148,18 @@ type SessionRow struct {
 	GitBranch    string       `json:"git_branch,omitempty"`
 	Entrypoint   string       `json:"entrypoint,omitempty"`
 	Version      string       `json:"version,omitempty"`
+	// CursorBilled is the part of Cost that Cursor's usage page billed for a
+	// pi session's Cursor replies (through cursor-bridge), its subagent runs
+	// included; zero for other rows.
+	CursorBilled float64 `json:"cursor_billed_usd,omitempty"`
 
 	// A Cursor row's figures before billed usage was merged in. Account
 	// totals and the dashboard add billed usage under the same rule.
 	ownTokens Tokens
 	ownCost   Cost
+	// cursorUnpriced is how many of a pi row's replies were unpriced before
+	// Cursor's billed usage covered them, so totals can take the same off.
+	cursorUnpriced int64
 }
 
 // SessionPage is a filtered, sorted list of sessions.
@@ -180,6 +187,8 @@ type DB struct {
 	use      *cursorusage.Ledger
 	linkMu   sync.Mutex
 	links    *cursorLinks // nil until loaded; a failed load is tried again
+	piMu     sync.Mutex
+	pi       *piCursor // pi sessions' Cursor conversations; nil until loaded
 }
 
 // CacheSessions makes Session keep what it loads for the life of the DB, so
