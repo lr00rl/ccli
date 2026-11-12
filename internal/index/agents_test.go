@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -354,5 +355,97 @@ func TestPiTurnRange(t *testing.T) {
 	got, err = q.TurnRange(context.Background(), id[:8], 1, 2, false)
 	if !errors.Is(err, query.ErrStale) || len(got) != 2 || got[0].Turn == nil || got[1].Turn != nil {
 		t.Fatalf("err = %v, %d turns; want turn 1 read and turn 2 reported as changed", err, len(got))
+	}
+}
+
+// A pi subagent run is written beside its parent's file, at
+// <parent stem>/<run id>/run-0/session.jsonl, and names the parent's file in
+// its header. It is a subagent of the parent's row, not a session of its own,
+// and its tokens and cost count on the parent. A forked session, whose header
+// also names another file, stays its own session.
+func TestPiSubagentRunsJoinTheirParent(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "pi-agent")
+	dir := filepath.Join(home, "sessions", "--work-app--")
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		parentID = "01a00000-0000-7000-8000-00000000p001"
+		childID  = "01a00000-0000-7000-8000-00000000p002"
+		forkID   = "01a00000-0000-7000-8000-00000000p003"
+		runID    = "aaaaaaaa-0000-4000-8000-000000000001"
+	)
+	parentFile := filepath.Join(dir, "2026-08-01T00-00-00-000Z_"+parentID+".jsonl")
+	reply := func(id, parent string, out int) string {
+		return `{"type":"message","id":"` + id + `","parentId":"` + parent + `","timestamp":"2026-08-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"provider":"openai","model":"gpt-5.4","usage":{"input":10,"output":` + strconv.Itoa(out) + `,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.1}},"timestamp":2000}}` + "\n"
+	}
+	user := func(id, text string) string {
+		return `{"type":"message","id":"` + id + `","parentId":null,"timestamp":"2026-08-01T00:00:01Z","message":{"role":"user","content":"` + text + `","timestamp":1000}}` + "\n"
+	}
+	write(parentFile, `{"type":"session","version":3,"id":"`+parentID+`","timestamp":"2026-08-01T00:00:00Z","cwd":"/work/app"}`+"\n"+
+		user("u1", "research this")+reply("a1", "u1", 4))
+	write(filepath.Join(dir, "2026-08-01T00-00-00-000Z_"+parentID, runID, "run-0", "session.jsonl"),
+		`{"type":"session","version":3,"id":"`+childID+`","timestamp":"2026-08-01T00:01:00Z","cwd":"/work/app","parentSession":"`+parentFile+`"}`+"\n"+
+			user("c1", "look up the numbers")+reply("c2", "c1", 6))
+	write(filepath.Join(dir, "subagent-artifacts", runID+"_web-researcher_meta.json"), `{"runId":"`+runID+`","agent":"web-researcher"}`)
+	write(filepath.Join(dir, "subagent-artifacts", runID+"_web-researcher_transcript.jsonl"), `{"version":1}`+"\n")
+	write(filepath.Join(dir, "2026-08-02T00-00-00-000Z_"+forkID+".jsonl"),
+		`{"type":"session","version":3,"id":"`+forkID+`","timestamp":"2026-08-02T00:00:00Z","cwd":"/work/app","parentSession":"`+parentFile+`"}`+"\n"+
+			user("f1", "go on from there")+reply("f2", "f1", 2))
+
+	accts := []account.Account{{Name: "pi", Tool: account.Pi, Dir: home}}
+	st, err := store.Open(filepath.Join(root, "ccli.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	prices, err := pricing.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), st, accts, prices, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	q := query.New(st, accts)
+	page, err := q.Sessions(context.Background(), query.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]query.SessionRow{}
+	for _, s := range page.Sessions {
+		byID[s.ID] = s
+	}
+	if _, ok := byID[childID]; ok {
+		t.Fatal("the subagent run was listed as a session of its own")
+	}
+	if len(byID) != 2 {
+		t.Fatalf("sessions %d, want the parent and the fork: %+v", len(byID), page.Sessions)
+	}
+	p := byID[parentID]
+	if p.Subagents != 1 || p.Prompts != 1 || p.Tokens.Output != 10 || p.Cost.USD < 0.19 {
+		t.Fatalf("parent row %+v: want 1 subagent, 1 prompt, both replies' tokens and cost", p)
+	}
+	if f := byID[forkID]; f.Subagents != 0 || f.Prompts != 1 {
+		t.Fatalf("fork row %+v", f)
+	}
+	det, err := q.Session(context.Background(), parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sub *query.FileInfo
+	for i := range det.Files {
+		if det.Files[i].Kind == "subagent" {
+			sub = &det.Files[i]
+		}
+	}
+	if sub == nil || sub.AgentID != childID || sub.AgentType != "web-researcher" || sub.Description != "look up the numbers" {
+		t.Fatalf("subagent file %+v in %+v", sub, det.Files)
 	}
 }

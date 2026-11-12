@@ -28,7 +28,9 @@ import (
 
 // ParserVersion changes when parsing changes; files parsed by an older version
 // are read again from the start.
-const ParserVersion = 3
+// 4: pi subagent runs join their parent; pi records its Cursor conversation
+// ids; a pi reply whose cost is zero on tokens is left unpriced.
+const ParserVersion = 4
 
 const headBytes = 4096
 
@@ -670,6 +672,12 @@ func parseOne(j job) parsed {
 			thread = j.file.AgentID
 		}
 		res, err = pi.Parse(f, thread, j.state)
+		if err == nil && kind == transcript.Subagent {
+			agent = piAgentMeta(j.agentType, res.FirstPrompt)
+			// The run's header names its parent's file; that is the subagent
+			// link, not a session it continues.
+			res.ContinuedIn = nil
+		}
 	case account.Cursor:
 		side := cursorcli.Side{Cwd: j.cwd, Title: j.title, Created: j.started, Updated: j.ended}
 		if j.file.Kind == "main" {
@@ -695,7 +703,7 @@ func parseOne(j job) parsed {
 	if err != nil {
 		return parsed{err: err}
 	}
-	if j.tool == account.Cursor && j.file.Kind == "subagent" {
+	if (j.tool == account.Cursor || j.tool == account.Pi) && j.file.Kind == "subagent" {
 		asSubagent(&res)
 	}
 	if j.tool == account.Cursor {
@@ -756,9 +764,9 @@ func parseIDE(j job) parsed {
 	return parsed{up: up, bytes: res.Consumed}
 }
 
-// asSubagent drops what a Cursor subagent's transcript would add to the
-// session's prompts. Its first message is the task the parent gave it, which
-// labels the subagent instead, as for Claude Code subagents.
+// asSubagent drops what a Cursor or pi subagent's transcript would add to
+// the session's prompts. Its first message is the task the parent gave it,
+// which labels the subagent instead, as for Claude Code subagents.
 func asSubagent(res *transcript.Result) {
 	res.TypedPrompts, res.OtherPrompts = 0, 0
 	res.Turns, res.Commands = nil, nil

@@ -141,6 +141,9 @@ func (d *DB) Overview(ctx context.Context, f Filter) (*Overview, error) {
 	if err := d.addCursorOverview(ctx, sessions, o, days, projects, models, accts, projSess, modelSess, acctSess, loc); err != nil {
 		return nil, err
 	}
+	if err := d.addPiCursorOverview(ctx, sessions, o, days, projects, models, accts, projSess, modelSess, acctSess, loc); err != nil {
+		return nil, err
+	}
 	if o.From.IsZero() && first > 0 {
 		o.From = time.UnixMilli(first * 3_600_000)
 	}

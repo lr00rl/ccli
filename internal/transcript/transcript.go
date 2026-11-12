@@ -176,11 +176,15 @@ type Result struct {
 	Attribution     string // the agent type a subagent's lines carry (attributionAgent)
 	BridgeSessionID string
 	ContinuedIn     []string
-	Entrypoint      string
-	Version         string
-	GitBranch       string
-	CostUSD         float64
-	HasCost         bool
+	// CursorConversations are the Cursor conversation ids a pi session's
+	// requests went out under through cursor-bridge, as its plugin makes them.
+	// They join Cursor's usage page onto the session.
+	CursorConversations []string
+	Entrypoint          string
+	Version             string
+	GitBranch           string
+	CostUSD             float64
+	HasCost             bool
 	// Processes holds Claude Code's own per-process totals (cost-state
 	// lines), the latest snapshot per process.
 	Processes []Process

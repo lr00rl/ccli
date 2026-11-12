@@ -621,6 +621,11 @@ func apply(ctx context.Context, tx *sql.Tx, u *Update, cost CostFunc) error {
 			return err
 		}
 	}
+	for _, t := range r.CursorConversations {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO links(file_id, kind, target) VALUES(?, 'cursor-conversation', ?)`, f.ID, t); err != nil {
+			return err
+		}
+	}
 	for _, sp := range r.Spawns {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO spawns(file_id, tool_use_id, turn, tool) VALUES(?, ?, ?, ?)`, f.ID, sp.ToolUseID, sp.Turn, sp.Tool); err != nil {
 			return err

@@ -25,29 +25,43 @@ import (
 // Speaker names the model's side of a Pi conversation.
 const Speaker = "Pi"
 
-// Header is the first line of a session file: its id and the directory it
-// started in. A file that does not begin with a session line is skipped.
-func Header(path string) (id, cwd string, ok bool) {
+// SessionHeader is the first line of a session file.
+type SessionHeader struct {
+	ID  string
+	Cwd string
+	// ParentSession is the path of the session file this one came from: a
+	// fork, or a subagent run's parent. Empty for a session started anew.
+	ParentSession string
+}
+
+// ReadHeader reads a session file's first line. A file that does not begin
+// with a session line is skipped.
+func ReadHeader(path string) (SessionHeader, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", false
+		return SessionHeader{}, false
 	}
 	defer f.Close()
 	br := bufio.NewReader(f)
 	line, err := br.ReadBytes('\n')
 	if err != nil && len(line) == 0 {
-		return "", "", false
+		return SessionHeader{}, false
 	}
 	var v struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-		Cwd  string `json:"cwd"`
+		Type          string `json:"type"`
+		ID            string `json:"id"`
+		Cwd           string `json:"cwd"`
+		ParentSession string `json:"parentSession"`
 	}
 	if json.Unmarshal(bytes.TrimSpace(line), &v) != nil || v.Type != "session" || v.ID == "" {
-		return "", "", false
+		return SessionHeader{}, false
 	}
-	return v.ID, v.Cwd, true
+	return SessionHeader{ID: v.ID, Cwd: v.Cwd, ParentSession: v.ParentSession}, true
 }
+
+// FileSessionID is the session id in a session file's name,
+// <time>_<id>.jsonl, or "" when the name carries none.
+func FileSessionID(path string) string { return fileSessionID(path) }
 
 // Parse reads one session file from r. st.Base is the file offset r starts
 // at; a Pi file is re-read from the start whenever it changes, because a new
@@ -102,6 +116,7 @@ type rec struct {
 	toolName   string
 	isErr      bool
 	summary    string
+	userRaw    json.RawMessage // a user message's content as written, to rebuild what pi sent
 }
 
 type use struct {
@@ -145,6 +160,7 @@ func read(r io.Reader, session string, base int64, view bool) (transcript.Result
 	var prev int64
 	calls := map[string]*conv.Call{}
 	var model string
+	res.CursorConversations = cursorConversations(session, tree)
 	for i, rc := range tree {
 		on := active[i]
 		if rc.kind == "session_info" && on && rc.title != "" {
@@ -423,6 +439,9 @@ func decode(off int64, body []byte) (rec, bool) {
 		rc.usage = msg.Usage.conv()
 	}
 	rc.text, rc.think, rc.images, rc.tools = content(msg.Content)
+	if msg.Role == "user" {
+		rc.userRaw = msg.Content
+	}
 	rc.toolID, rc.toolName, rc.isErr = msg.ToolCallID, msg.ToolName, msg.IsError
 	return rc, true
 }
@@ -443,6 +462,15 @@ func (u *rawUse) conv() *use {
 		return nil
 	}
 	out := &use{in: u.Input, out: u.Output, cr: u.CacheRead, cw: u.CacheWrite, c1: u.CacheWrite1h}
+	// pi prices a reply from the provider's model card, and a provider that
+	// publishes no price (a subscription such as Cursor's, behind a local
+	// bridge) leaves every rate at zero. A zero total on tokens is then no
+	// price at all, not a free reply: it is left unpriced, so the list-price
+	// table or a billed ledger can fill it, and a total stays honest about
+	// what it doesn't know.
+	if u.Cost != nil && u.Cost.Total == 0 && u.Input+u.Output+u.CacheRead+u.CacheWrite > 0 {
+		return out
+	}
 	if u.Cost != nil {
 		out.cost, out.hasCost = u.Cost.Total, true
 	}
