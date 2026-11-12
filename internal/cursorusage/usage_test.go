@@ -537,3 +537,59 @@ func TestLockIsTakenOnceAndExpires(t *testing.T) {
 		t.Fatal("released lock still busy")
 	}
 }
+
+// The tests never read the real Keychain: cursor-agent's login is whatever
+// a test sets here, and nothing by default.
+func init() { cliToken = func() string { return "" } }
+
+// An expired IDE token next to a working cursor-agent token: the usage read
+// takes the one the service accepts instead of failing on the first.
+func TestRefusedTokenFallsBackToTheNextLogin(t *testing.T) {
+	const dead, good = "ide-token-expired", "agent-token-good"
+	seen := map[string]int{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		seen[tok]++
+		mu.Unlock()
+		if tok != good {
+			http.Error(w, `{"code":"unauthenticated"}`, http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "GetFilteredUsageEvents"):
+			fmtJSON(w, map[string]any{"totalUsageEventsCount": 1, "usageEventsDisplay": []any{
+				map[string]any{"conversationId": "c1", "model": "m", "chargedCents": 1, "tokenUsage": map[string]any{"inputTokens": 1, "outputTokens": 1}},
+			}})
+		case strings.HasSuffix(r.URL.Path, "GetCurrentPeriodUsage"):
+			fmtJSON(w, map[string]any{"planUsage": map[string]any{"limit": 2000}})
+		case strings.HasSuffix(r.URL.Path, "GetPlanInfo"):
+			fmtJSON(w, map[string]any{"planInfo": map[string]any{"planName": "Pro"}})
+		}
+	}))
+	defer srv.Close()
+	oldBase, oldDo, oldDB, oldCLI := apiBase, httpDo, stateDBOverride, cliToken
+	apiBase, httpDo, stateDBOverride = srv.URL+"/", srv.Client(), loginDB(t, dead)
+	cliToken = func() string { return good }
+	t.Cleanup(func() { apiBase, httpDo, stateDBOverride, cliToken = oldBase, oldDo, oldDB, oldCLI })
+
+	led, err := Refresh(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if led.Sessions["c1"] == nil || led.Period == nil || led.Period.Plan != "Pro" {
+		t.Fatalf("ledger %+v", led)
+	}
+	// cursor-agent's token is tried first, so the expired one is never sent.
+	if seen[dead] != 0 {
+		t.Fatalf("expired token sent %d times", seen[dead])
+	}
+
+	// With only the dead token, the 401 is reported, not swallowed.
+	cliToken = func() string { return "" }
+	_, err = Refresh(context.Background(), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("err %v", err)
+	}
+}
