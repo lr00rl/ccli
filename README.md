@@ -471,6 +471,13 @@ tool, use `export`.
 Pi keeps the dollar amount it recorded. Cursor's tokens and dollars come from
 the usage page, as [How it counts](#how-it-counts) describes.
 
+A Pi subagent run (pi-subagents writes it as
+`<parent session>/<run id>/run-N/session.jsonl`, with `parentSession` in its
+header) counts as a subagent of the session that started it, with its agent
+name from `subagent-artifacts/<run id>_<agent>_meta.json`, instead of a
+session of its own. A session forked with `parentSession` in another place
+stays a session.
+
 For a Cursor CLI or IDE session, `show` also lists the files its agents
 wrote, newest first, with the models that wrote them. Cursor records these
 in `~/.cursor/ai-tracking/ai-code-tracking.db` for the chat and its
