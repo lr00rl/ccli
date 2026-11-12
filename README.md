@@ -613,14 +613,20 @@ nothing, and `show` says the bill is in `cursor-ide`.
 ## What it touches
 
 ccli reads transcripts and keeps its own index in
-`~/.local/share/ccli/ccli.db`. It never reads the Keychain, never writes
-`settings.json` or `.claude.json`, and never calls a model. In a Codex home
+`~/.local/share/ccli/ccli.db`. It reads one Keychain item, Cursor's (below),
+and no other; it never writes `settings.json` or `.claude.json`, and never
+calls a model. In a Codex home
 it reads only the session logs: never `auth.json`, `config.toml` or Codex's
 own databases. For Cursor it reads the CLI's chats and `store.db`, the IDE's
 `state.vscdb`, and, for `show`, the AI code tracking database in
 `~/.cursor/ai-tracking`. Cursor is the one exception for logins: Cursor's transcripts
-have no usage figures, so ccli reads the login the Cursor IDE stored and
-sends it to Cursor, and nowhere else, to fetch them.
+have no usage figures, so ccli reads a stored Cursor login and sends it to
+Cursor, and nowhere else, to fetch them. It tries `CURSOR_TOKEN`, then
+cursor-agent's login in the macOS Keychain (`cursor-access-token`, written
+by `cursor-agent login`), then the login the Cursor IDE stored in
+`state.vscdb`, and moves to the next only when Cursor refuses one. The
+IDE's comes last because it stays in `state.vscdb` after it expires, until
+the app signs in again.
 
 `quota` starts Claude Code and Codex to ask for your limits. They update
 their own caches as on any start. `--offline` starts nothing. For Cursor,

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -48,6 +49,8 @@ var (
 	httpDo = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	// stateDBOverride is the state.vscdb tests point at. Empty uses the IDE's.
 	stateDBOverride string
+	// cliToken reads cursor-agent's login. Tests replace it.
+	cliToken = keychainToken
 )
 
 // Use is one conversation's usage, summed from the dashboard's event list.
@@ -295,13 +298,15 @@ func RefreshOption(ctx context.Context, dataDir string, opt Option) (*Ledger, er
 func FetchPeriod(ctx context.Context, opt Option) (*Period, error) {
 	ctx = withTrace(ctx, opt.Trace)
 	ctx = withBody(ctx, opt.Body)
-	token, err := accessToken()
-	if err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return period(ctx, token)
+	var p *Period
+	err := withToken(func(token string) error {
+		var err error
+		p, err = period(ctx, token)
+		return err
+	})
+	return p, err
 }
 
 func save(dataDir string, l *Ledger) error {
@@ -342,8 +347,7 @@ func save(dataDir string, l *Ledger) error {
 }
 
 func fetch(ctx context.Context, asking func(), cur *Ledger) (*Ledger, error) {
-	token, err := accessToken()
-	if err != nil {
+	if _, err := tokens(); err != nil {
 		return nil, err
 	}
 	if asking != nil {
@@ -351,16 +355,26 @@ func fetch(ctx context.Context, asking func(), cur *Ledger) (*Ledger, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+	// One cheap call picks the login the service accepts, so the parallel
+	// event pages below all use it instead of each finding the dead one.
+	var token string
+	var picked *Period
+	var pickErr error
+	if err := withToken(func(t string) error {
+		p, err := period(ctx, t)
+		if err != nil && errors.Is(err, errUnauthorized) {
+			return err
+		}
+		token, picked, pickErr = t, p, err
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	led := &Ledger{Version: ledgerVersion, FetchedAt: now.UTC(), Sessions: map[string]*Use{}}
-	// The billing period and the events are separate requests; ask both at once.
-	var p *Period
-	var soft error
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		p, soft = period(ctx, token)
-	}()
+	// The billing period came with the login probe; a failure there other
+	// than a refusal is soft, as it was when it ran beside the events.
+	p, soft := picked, pickErr
 	start, full := now.AddDate(-1, 0, 0), true
 	if from := cur.incrementalFrom(now); !from.IsZero() {
 		start, full = from, false
@@ -370,7 +384,6 @@ func fetch(ctx context.Context, asking func(), cur *Ledger) (*Ledger, error) {
 	trace(ctx, "cursor usage: events %s to %s (%s)", start.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339),
 		map[bool]string{true: "full read", false: "since the cached events"}[full])
 	ev, truncated, evErr := events(ctx, token, start, now)
-	<-done
 	led.Period = p
 	if full {
 		led.Truncated = truncated
@@ -802,6 +815,9 @@ func post(ctx context.Context, token, method string, body, dest any) error {
 	trace(ctx, "POST %s -> %d, %d bytes, %s", url, resp.StatusCode, len(raw), time.Since(started).Round(time.Millisecond))
 	bodyTrace(ctx, "request %s\n%s", method, prettyJSON(b))
 	bodyTrace(ctx, "response %s\n%s", method, prettyJSON(raw))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("cursor usage: %s returned %d: %w", method, resp.StatusCode, errUnauthorized)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("cursor usage: %s returned %d", method, resp.StatusCode)
 	}
@@ -812,6 +828,74 @@ func post(ctx context.Context, token, method string, body, dest any) error {
 		return fmt.Errorf("cursor usage: %s: %w", method, err)
 	}
 	return nil
+}
+
+// tokens are the logins this machine holds, the one most likely to work
+// first. CURSOR_TOKEN wins when set. cursor-agent's token comes before the
+// IDE's: cursor-agent renews it on each run, while the IDE's stays expired
+// in state.vscdb until the app is opened and signs in again, and the
+// service then answers 401 for it.
+func tokens() ([]string, error) {
+	var out []string
+	add := func(t string) {
+		if t = strings.TrimSpace(t); t != "" {
+			for _, have := range out {
+				if have == t {
+					return
+				}
+			}
+			out = append(out, t)
+		}
+	}
+	add(os.Getenv("CURSOR_TOKEN"))
+	add(cliToken())
+	if t, err := accessToken(); err == nil {
+		add(t)
+	}
+	if len(out) == 0 {
+		return nil, ErrNoLogin
+	}
+	return out, nil
+}
+
+// keychainToken is cursor-agent's login on a Mac: the Keychain item
+// `cursor-access-token`, account `cursor-user`, which `cursor-agent login`
+// writes. Elsewhere, and when the item is missing, it is "".
+func keychainToken() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "security", "find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// errUnauthorized is a 401 or 403: this token is refused, another may not be.
+var errUnauthorized = errors.New("cursor usage: login refused")
+
+// withToken runs call with each login in turn and moves on only when the
+// service refuses one, so a dead token in one store does not hide a working
+// one in another. The first refusal is the one reported when all fail.
+func withToken(call func(token string) error) error {
+	toks, err := tokens()
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, t := range toks {
+		err := call(t)
+		if err == nil || !errors.Is(err, errUnauthorized) {
+			return err
+		}
+		if first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // accessToken is the IDE's stored login. The value is not returned in errors.
